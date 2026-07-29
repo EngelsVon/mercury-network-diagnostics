@@ -4,13 +4,24 @@ import json
 import tempfile
 import tomllib
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mercury import MODEL_SCHEMA_VERSION, __version__
 from mercury.codec import result_from_json, result_to_json
 from mercury.history import HistoryError, HistoryStore
-from mercury.models import Disposition, EvidenceKind
+from mercury.models import (
+    Capability,
+    CapabilityState,
+    Confidence,
+    Direction,
+    Disposition,
+    EvidenceKind,
+    Health,
+    ModelError,
+    TaskState,
+)
 from mercury.planner import ABSOLUTE_CEILINGS
 
 from tests.helpers import sample_observation, sample_result
@@ -39,14 +50,23 @@ class FoundationContractTests(unittest.TestCase):
 
     def test_protocol_truth_table_round_trips(self) -> None:
         cases = (
+            (EvidenceKind.DNS_ANSWER, Disposition.POSITIVE),
+            (EvidenceKind.DNS_FAILURE, Disposition.NEGATIVE),
+            (EvidenceKind.DNS_FAILURE, Disposition.INCONCLUSIVE),
+            (EvidenceKind.DNS_FAILURE, Disposition.ERROR),
             (EvidenceKind.TCP_CONNECTED, Disposition.POSITIVE),
             (EvidenceKind.TCP_REFUSED, Disposition.NEGATIVE),
             (EvidenceKind.TCP_RESET, Disposition.NEGATIVE),
             (EvidenceKind.NETWORK_UNREACHABLE, Disposition.NEGATIVE),
             (EvidenceKind.HOST_UNREACHABLE, Disposition.NEGATIVE),
             (EvidenceKind.ICMP_UNREACHABLE, Disposition.NEGATIVE),
+            (EvidenceKind.ADMIN_PROHIBITED, Disposition.NEGATIVE),
             (EvidenceKind.UDP_APPLICATION_REPLY, Disposition.POSITIVE),
             (EvidenceKind.PEER_OBSERVED_ARRIVAL, Disposition.POSITIVE),
+            (EvidenceKind.TLS_HANDSHAKE, Disposition.POSITIVE),
+            (EvidenceKind.HTTP_RESPONSE, Disposition.POSITIVE),
+            (EvidenceKind.HTTP_RESPONSE, Disposition.NEGATIVE),
+            (EvidenceKind.LOCAL_FACT, Disposition.POSITIVE),
             (EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE),
             (EvidenceKind.SILENT, Disposition.INCONCLUSIVE),
             (EvidenceKind.UNSUPPORTED, Disposition.UNAVAILABLE),
@@ -54,6 +74,8 @@ class FoundationContractTests(unittest.TestCase):
             (EvidenceKind.EXECUTION_ERROR, Disposition.ERROR),
             (EvidenceKind.CANCELLED, Disposition.CANCELLED),
         )
+        self.assertEqual({kind for kind, _ in cases}, set(EvidenceKind))
+        self.assertEqual({disposition for _, disposition in cases}, set(Disposition))
         for index, (kind, disposition) in enumerate(cases, 1):
             with self.subTest(kind=kind):
                 observation = sample_observation(
@@ -67,6 +89,81 @@ class FoundationContractTests(unittest.TestCase):
                 restored = result_from_json(result_to_json(result))
                 self.assertEqual(restored.observations[0].evidence_kind, kind)
                 self.assertEqual(restored.observations[0].disposition, disposition)
+
+    def test_every_confidence_and_health_value_round_trips(self) -> None:
+        for enum_type, field in (
+            (Confidence, "confidence"),
+            (Health, "health"),
+        ):
+            for value in enum_type:
+                with self.subTest(field=field, value=value):
+                    result = sample_result()
+                    conclusion = replace(
+                        result.conclusions[0],
+                        **{field: value},
+                    )
+                    restored = result_from_json(
+                        result_to_json(
+                            replace(result, conclusions=(conclusion,))
+                        )
+                    )
+                    self.assertEqual(
+                        getattr(restored.conclusions[0], field),
+                        value,
+                    )
+
+    def test_every_direction_and_terminal_task_state_round_trips(self) -> None:
+        for direction in Direction:
+            with self.subTest(direction=direction):
+                result = sample_result()
+                observation = replace(
+                    result.observations[0],
+                    direction=direction,
+                )
+                restored = result_from_json(
+                    result_to_json(
+                        replace(
+                            result,
+                            direction=direction,
+                            observations=(observation,),
+                        )
+                    )
+                )
+                self.assertEqual(restored.direction, direction)
+                self.assertEqual(restored.observations[0].direction, direction)
+
+        terminal = {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }
+        for state in terminal:
+            with self.subTest(state=state):
+                restored = result_from_json(
+                    result_to_json(replace(sample_result(), state=state))
+                )
+                self.assertEqual(restored.state, state)
+        for state in set(TaskState) - terminal:
+            with self.subTest(nonterminal=state), self.assertRaises(ModelError):
+                replace(sample_result(), state=state)
+
+    def test_every_capability_state_round_trips(self) -> None:
+        for state in CapabilityState:
+            with self.subTest(state=state):
+                capability = Capability(
+                    name=f"fixture-{state.value}",
+                    state=state,
+                    source="tests",
+                )
+                restored = result_from_json(
+                    result_to_json(
+                        replace(
+                            sample_result(),
+                            capabilities=(capability,),
+                        )
+                    )
+                )
+                self.assertEqual(restored.capabilities[0].state, state)
 
     def test_silent_result_remains_inconclusive_through_history_json(self) -> None:
         observation = sample_observation(

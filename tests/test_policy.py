@@ -20,6 +20,7 @@ from mercury.planner import (
 from mercury.policy import (
     PolicyError,
     ScopeGrant,
+    TargetKind,
     authorize_targets,
     normalize_targets,
     parse_target,
@@ -328,15 +329,144 @@ class BudgetTests(unittest.TestCase):
             all(step.target == "192.0.2.0/30" for step in preview.steps)
         )
 
-    def test_config_cannot_raise_absolute_ceiling(self) -> None:
-        unsafe = BudgetLimits(
-            **{
-                **ABSOLUTE_CEILINGS.to_wire(),
-                "max_hosts": ABSOLUTE_CEILINGS.max_hosts + 1,
-            }
+    def test_every_budget_dimension_enforces_absolute_boundary(self) -> None:
+        for name, maximum in ABSOLUTE_CEILINGS.to_wire().items():
+            with self.subTest(name=name, boundary=maximum):
+                replace(
+                    ABSOLUTE_CEILINGS,
+                    **{name: maximum},
+                ).assert_within(ABSOLUTE_CEILINGS)
+            with self.subTest(name=name, one_past=maximum + 1):
+                unsafe = replace(
+                    ABSOLUTE_CEILINGS,
+                    **{name: maximum + 1},
+                )
+                with self.assertRaisesRegex(BudgetError, name):
+                    unsafe.assert_within(ABSOLUTE_CEILINGS)
+
+    def test_every_budget_dimension_requires_positive_exact_integer(self) -> None:
+        minimum = {name: 1 for name in ABSOLUTE_CEILINGS.to_wire()}
+        BudgetLimits(**minimum).assert_within(ABSOLUTE_CEILINGS)
+        for name in minimum:
+            for invalid in (0, True):
+                with self.subTest(name=name, invalid=invalid):
+                    values = {**minimum, name: invalid}
+                    with self.assertRaisesRegex(BudgetError, name):
+                        BudgetLimits(**values)
+
+    def test_plan_scalar_boundaries_are_table_driven(self) -> None:
+        common = {
+            "target_values": ("127.0.0.1",),
+            "ports": (53,),
+            "transports": ("udp",),
+            "grant": ScopeGrant(networks=()),
+            "now": NOW,
+        }
+        cases = (
+            ("repeats", 1, 0),
+            ("repeats", 100, 101),
+            ("payload_bytes_per_attempt", 0, -1),
+            ("payload_bytes_per_attempt", 1_400, 1_401),
+            ("datagrams_per_udp_attempt", 1, 0),
+            ("datagrams_per_udp_attempt", 100, 101),
         )
-        with self.assertRaisesRegex(BudgetError, "absolute"):
-            unsafe.assert_within(ABSOLUTE_CEILINGS)
+        for name, boundary, invalid in cases:
+            with self.subTest(name=name, boundary=boundary):
+                preview_plan(**common, **{name: boundary})
+            with self.subTest(name=name, invalid=invalid), self.assertRaises(
+                BudgetError
+            ):
+                preview_plan(**common, **{name: invalid})
+
+        for port in (1, 65_535):
+            with self.subTest(valid_port=port):
+                preview_plan(**{**common, "ports": (port,)})
+        for port in (0, 65_536):
+            with self.subTest(invalid_port=port), self.assertRaises(BudgetError):
+                preview_plan(**{**common, "ports": (port,)})
+
+    def test_estimated_work_dimensions_enforce_configured_limits(self) -> None:
+        loopback = {
+            "target_values": ("127.0.0.1",),
+            "ports": (53,),
+            "transports": ("tcp",),
+            "grant": ScopeGrant(networks=()),
+            "now": NOW,
+        }
+        network = ipaddress.ip_network("192.0.2.0/30")
+        cases = (
+            (
+                "max_hosts",
+                2,
+                {
+                    **loopback,
+                    "target_values": (str(network),),
+                    "grant": ScopeGrant(
+                        networks=(network,),
+                        ports=(53,),
+                        transports=("tcp",),
+                        attested=True,
+                    ),
+                },
+            ),
+            ("max_ports", 2, {**loopback, "ports": (53, 54)}),
+            ("max_attempts", 2, {**loopback, "ports": (53, 54)}),
+            (
+                "max_datagrams",
+                2,
+                {
+                    **loopback,
+                    "transports": ("udp",),
+                    "datagrams_per_udp_attempt": 2,
+                },
+            ),
+            (
+                "max_application_bytes",
+                2,
+                {
+                    **loopback,
+                    "transports": ("udp",),
+                    "payload_bytes_per_attempt": 2,
+                },
+            ),
+            ("max_events", 6, loopback),
+            ("max_output_bytes", 4_608, loopback),
+        )
+
+        def limits_for(name: str, value: int) -> BudgetLimits:
+            changes = {name: value}
+            if name == "max_attempts":
+                changes["max_concurrency"] = value
+            return replace(DEFAULT_LIMITS, **changes)
+
+        for name, boundary, arguments in cases:
+            with self.subTest(name=name, boundary=boundary):
+                preview_plan(
+                    **arguments,
+                    limits=limits_for(name, boundary),
+                )
+            with self.subTest(name=name, one_below=boundary - 1):
+                with self.assertRaises(BudgetError):
+                    preview_plan(
+                        **arguments,
+                        limits=limits_for(name, boundary - 1),
+                    )
+
+    def test_target_and_transport_enums_have_public_examples(self) -> None:
+        targets = (
+            parse_target("127.0.0.1"),
+            parse_target("192.0.2.0/24"),
+            parse_target("example.test"),
+        )
+        self.assertEqual({target.kind for target in targets}, set(TargetKind))
+        preview = preview_plan(
+            target_values=("127.0.0.1",),
+            ports=(53,),
+            transports=("tcp", "udp"),
+            grant=ScopeGrant(networks=()),
+            now=NOW,
+        )
+        self.assertEqual({step.transport for step in preview.steps}, set(Transport))
 
     def test_cross_product_is_rejected_cheaply(self) -> None:
         grant = ScopeGrant(
@@ -494,6 +624,13 @@ class BudgetTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ConfirmationError, "canonical"):
             authorize_plan(replace(preview, estimate=forged_estimate), now=NOW)
+        forged_scope = replace(
+            preview,
+            targets=(parse_target("203.0.113.9"),),
+            scope=ScopeGrant(networks=()),
+        )
+        with self.assertRaises((PolicyError, ConfirmationError)):
+            authorize_plan(forged_scope, now=NOW)
 
         plan = authorize_plan(preview, now=NOW)
         self.assertIs(validate_plan(plan, now=NOW), plan)

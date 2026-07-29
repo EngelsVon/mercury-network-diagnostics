@@ -45,6 +45,7 @@ def synthetic_plan(steps: int, *, limits=DEFAULT_LIMITS):
 
 def record_fixture(context: TaskContext, index: int, step_id: str) -> None:
     instant = context.wall_clock()
+    step = context.plan.step(step_id)
     context.record(
         Observation(
             id=f"{context.task_id}:custom:{index}",
@@ -52,11 +53,11 @@ def record_fixture(context: TaskContext, index: int, step_id: str) -> None:
             disposition=Disposition.POSITIVE,
             evidence_kind=EvidenceKind.LOCAL_FACT,
             direction=Direction.LOCAL,
-            target="offline",
+            target=step.address,
             started_at=instant,
             ended_at=instant,
             duration_ms=0,
-            attempt=index,
+            attempt=step.attempt,
             source="tests",
             detail={"index": index},
         ),
@@ -366,6 +367,54 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.progress.total, 1)
         self.assertEqual(result.progress.completed, 1)
 
+    async def test_observation_must_match_its_admitted_prepared_step(
+        self,
+    ) -> None:
+        async def attempts_forged_evidence(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            prepared = await context.admit(step.id)
+            instant = context.wall_clock()
+            observation = Observation(
+                id="bound-observation",
+                probe="custom-test",
+                disposition=Disposition.POSITIVE,
+                evidence_kind=EvidenceKind.LOCAL_FACT,
+                direction=Direction.LOCAL,
+                target=prepared.address,
+                started_at=instant,
+                ended_at=instant,
+                duration_ms=0.0,
+                attempt=prepared.step.attempt,
+                source="tests",
+            )
+            with self.assertRaisesRegex(TaskError, "identify"):
+                context.record(observation)
+            with self.assertRaisesRegex(TaskError, "target"):
+                context.record(
+                    replace(observation, target="192.0.2.99"),
+                    step_id=step.id,
+                )
+            with self.assertRaisesRegex(TaskError, "attempt"):
+                context.record(
+                    replace(
+                        observation,
+                        attempt=prepared.step.attempt + 1,
+                    ),
+                    step_id=step.id,
+                )
+            context.record(observation, step_id=step.id)
+            context.complete_attempt(step.id)
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            attempts_forged_evidence,
+            task_kind="synthetic",
+            task_id="bound-observation",
+        )
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        self.assertEqual(len(result.observations), 1)
+        self.assertEqual(result.observations[0].target, "127.0.0.1")
+
     async def test_complete_result_never_exceeds_output_budget(self) -> None:
         limits = replace(DEFAULT_LIMITS, max_output_bytes=5_000)
 
@@ -373,7 +422,6 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             step = context.plan.preview.steps[0]
             await context.admit(step.id)
             record_fixture(context, 1, step.id)
-            context.complete_attempt(step.id)
             for index in range(100):
                 context.add_capability(
                     Capability(
@@ -391,6 +439,9 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             task_id="bounded-output",
         )
         self.assertEqual(result.state, TaskState.FAILED)
+        self.assertTrue(
+            any("output budget" in error for error in result.errors)
+        )
         self.assertLessEqual(
             len(result_to_json(result).encode("utf-8")),
             limits.max_output_bytes,
@@ -400,6 +451,193 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(
             len(result_to_json(record.result).encode("utf-8")),
             limits.max_output_bytes,
+        )
+
+    async def test_context_collection_boundaries_are_enforced(self) -> None:
+        async def fills_collections(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
+            record_fixture(context, 1, step.id)
+            observation_id = context.observations[0].id
+            for index in range(256):
+                context.add_conclusion(
+                    Conclusion(
+                        id=f"runner-conclusion-{index}",
+                        title="Bounded conclusion",
+                        summary="Bounded summary",
+                        health=Health.HEALTHY,
+                        confidence=Confidence.HIGH,
+                        observation_ids=(observation_id,),
+                    )
+                )
+                context.add_capability(
+                    Capability(
+                        name=f"runner-capability-{index}",
+                        state=CapabilityState.AVAILABLE,
+                        source="tests",
+                    )
+                )
+                self.assertTrue(context.add_error(f"runner-error-{index}"))
+            with self.assertRaisesRegex(TaskError, "conclusions"):
+                context.add_conclusion(
+                    Conclusion(
+                        id="runner-conclusion-overflow",
+                        title="Overflow",
+                        summary="Overflow",
+                        health=Health.HEALTHY,
+                        confidence=Confidence.HIGH,
+                        observation_ids=(observation_id,),
+                    )
+                )
+            with self.assertRaisesRegex(TaskError, "capabilities"):
+                context.add_capability(
+                    Capability(
+                        name="runner-capability-overflow",
+                        state=CapabilityState.AVAILABLE,
+                        source="tests",
+                    )
+                )
+            self.assertFalse(context.add_error("runner-error-overflow"))
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            fills_collections,
+            task_kind="synthetic",
+            task_id="bounded-collections",
+        )
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        self.assertEqual(len(result.conclusions), 257)
+        self.assertEqual(len(result.capabilities), 256)
+        self.assertEqual(len(result.errors), 256)
+
+    async def test_duration_budget_interrupts_non_cooperative_runner(self) -> None:
+        limits = replace(DEFAULT_LIMITS, max_duration_s=1)
+
+        async def never_finishes(context: TaskContext) -> None:
+            await asyncio.sleep(60)
+
+        result = await self.service.run(
+            synthetic_plan(1, limits=limits),
+            never_finishes,
+            task_kind="synthetic",
+            task_id="duration-budget",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        self.assertEqual(
+            result.observations[-1].evidence_kind,
+            EvidenceKind.TIMEOUT,
+        )
+        self.assertIn("duration budget", result.errors[0])
+
+    async def test_event_budget_allows_boundary_and_rejects_next(self) -> None:
+        limits = replace(DEFAULT_LIMITS, max_events=6)
+
+        async def fills_events(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
+            instant = context.wall_clock()
+            for index in range(2):
+                context.record(
+                    Observation(
+                        id=f"event-boundary-{index}",
+                        probe="custom-test",
+                        disposition=Disposition.POSITIVE,
+                        evidence_kind=EvidenceKind.LOCAL_FACT,
+                        direction=Direction.LOCAL,
+                        target=step.address,
+                        started_at=instant,
+                        ended_at=instant,
+                        duration_ms=0.0,
+                        attempt=step.attempt,
+                        source="tests",
+                    ),
+                    step_id=step.id,
+                )
+            with self.assertRaisesRegex(TaskError, "event budget"):
+                context.record(
+                    Observation(
+                        id="event-overflow",
+                        probe="custom-test",
+                        disposition=Disposition.POSITIVE,
+                        evidence_kind=EvidenceKind.LOCAL_FACT,
+                        direction=Direction.LOCAL,
+                        target=step.address,
+                        started_at=instant,
+                        ended_at=instant,
+                        duration_ms=0.0,
+                        attempt=step.attempt,
+                        source="tests",
+                    ),
+                    step_id=step.id,
+                )
+            context.complete_attempt(step.id)
+
+        result = await self.service.run(
+            synthetic_plan(1, limits=limits),
+            fills_events,
+            task_kind="synthetic",
+            task_id="event-budget",
+        )
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        self.assertEqual(len(result.observations), 2)
+
+    async def test_global_and_per_target_rate_units_are_enforced(self) -> None:
+        class RecordingCancellation:
+            def __init__(self) -> None:
+                self.delays: list[float] = []
+
+            async def checkpoint(self) -> None:
+                return None
+
+            async def wait_or_timeout(self, delay: float) -> None:
+                self.delays.append(delay)
+
+        limits = replace(
+            DEFAULT_LIMITS,
+            max_global_rate=4,
+            max_target_rate=2,
+        )
+
+        async def admission_delays(targets, ports) -> list[float]:
+            preview = preview_plan(
+                target_values=targets,
+                ports=ports,
+                transports=("tcp",),
+                grant=ScopeGrant(networks=()),
+                limits=limits,
+            )
+            plan = authorize_plan(preview)
+            cancellation = RecordingCancellation()
+            context = TaskContext(
+                task_id="rate-boundary",
+                task_kind="synthetic",
+                plan=plan,
+                requested_config={},
+                started_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+                history=self.history,
+                cancellation=cancellation,  # type: ignore[arg-type]
+                wall_clock=lambda: datetime(
+                    2026,
+                    7,
+                    30,
+                    tzinfo=timezone.utc,
+                ),
+                monotonic=lambda: 0.0,
+                resolver=None,
+            )
+            await context.admit(preview.steps[0].id)
+            await context.admit(preview.steps[1].id)
+            return cancellation.delays
+
+        same_target = await admission_delays(("127.0.0.1",), (9, 10))
+        distinct_targets = await admission_delays(
+            ("127.0.0.1", "::1"),
+            (9,),
+        )
+        self.assertAlmostEqual(same_target[-1], 1 / limits.max_target_rate)
+        self.assertAlmostEqual(
+            distinct_targets[-1],
+            1 / limits.max_global_rate,
         )
 
     async def test_result_envelope_is_reserved_before_history_creation(self) -> None:

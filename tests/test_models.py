@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime
 
 from mercury.codec import (
@@ -14,12 +14,14 @@ from mercury.codec import (
 )
 from mercury.models import (
     Capability,
+    CapabilityState,
     Conclusion,
     Confidence,
     Direction,
     Disposition,
     EffectiveConfig,
     EvidenceKind,
+    Health,
     ModelError,
     Observation,
     Progress,
@@ -185,6 +187,15 @@ class ModelTests(unittest.TestCase):
                 confidence=Confidence.HIGH,
                 observation_ids=("obs",),
             )
+        with self.assertRaises(ModelError):
+            Conclusion(
+                id="fixture",
+                title="Fixture",
+                summary="Fixture",
+                health=Health.HEALTHY,
+                confidence="high",  # type: ignore[arg-type]
+                observation_ids=("obs",),
+            )
 
     def test_direct_result_constructor_rejects_mutable_or_wrong_members(self) -> None:
         result = sample_result()
@@ -215,6 +226,17 @@ class ModelTests(unittest.TestCase):
                 progress=result.progress,
                 observations=("not-an-observation",),  # type: ignore[arg-type]
             )
+        invalid_members = (
+            ("state", "completed"),
+            ("effective_config", {}),
+            ("progress", {}),
+            ("conclusions", ("not-a-conclusion",)),
+            ("capabilities", ("not-a-capability",)),
+            ("errors", "not-an-error-sequence"),
+        )
+        for field, invalid in invalid_members:
+            with self.subTest(field=field), self.assertRaises(ModelError):
+                replace(result, **{field: invalid})
 
     def test_naive_timestamp_is_rejected(self) -> None:
         observation = sample_observation()
@@ -250,6 +272,29 @@ class ModelTests(unittest.TestCase):
         )
         self.assertEqual(len(expanded.observations), 2)
         self.assertEqual(expanded.progress.completed, 1)
+
+    def test_result_collection_count_limits_reject_one_past_boundary(self) -> None:
+        result = sample_result()
+        cases = (
+            ("observations", result.observations[0], 100_000),
+            ("conclusions", result.conclusions[0], 100_000),
+            (
+                "capabilities",
+                Capability(
+                    name="fixture",
+                    state=CapabilityState.AVAILABLE,
+                    source="tests",
+                ),
+                4_096,
+            ),
+            ("errors", "fixture", 256),
+        )
+        for field, item, maximum in cases:
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ModelError,
+                "too many",
+            ):
+                replace(result, **{field: (item,) * (maximum + 1)})
 
 
 class CodecTests(unittest.TestCase):

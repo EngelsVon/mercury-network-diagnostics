@@ -368,6 +368,7 @@ class TaskContext:
         self._next_target_start: dict[str, float] = {}
         self._steps = {step.id: step for step in plan.preview.steps}
         self._admitted_steps: set[str] = set()
+        self._prepared_steps: dict[str, PreparedStep] = {}
         self._completed_steps: set[str] = set()
         self._admission_lock = asyncio.Lock()
 
@@ -492,6 +493,7 @@ class TaskContext:
             self.generated_datagrams = next_datagrams
             self.application_bytes = next_bytes
             self._admitted_steps.add(step_id)
+            self._prepared_steps[step_id] = prepared
             self.admitted += 1
             return prepared
 
@@ -513,8 +515,15 @@ class TaskContext:
             raise TaskError("runner evidence must be an Observation")
         if self.admitted == 0:
             raise TaskError("runner produced evidence before admitting work")
-        if step_id is not None and step_id not in self._admitted_steps:
+        if step_id is None:
+            raise TaskError("runner evidence must identify its admitted step")
+        prepared = self._prepared_steps.get(step_id)
+        if prepared is None:
             raise TaskError("runner attached evidence to an unadmitted plan step")
+        if observation.target != prepared.address:
+            raise TaskError("runner evidence target does not match its admitted step")
+        if observation.attempt != prepared.step.attempt:
+            raise TaskError("runner evidence attempt does not match its admitted step")
         if observation.id in _RESERVED_TASK_OBSERVATION_IDS:
             raise TaskError("runner cannot use a reserved task observation ID")
         self._append_observation(observation)
@@ -598,7 +607,7 @@ class SyntheticRunner:
 
     async def __call__(self, context: TaskContext) -> None:
         for index, step in enumerate(context.plan.preview.steps, 1):
-            await context.admit(step.id)
+            prepared = await context.admit(step.id)
             started_at = context.wall_clock()
             started_mono = context.monotonic()
             await context.cancellation.wait_or_timeout(self.delay_s)
@@ -611,11 +620,11 @@ class SyntheticRunner:
                     disposition=Disposition.POSITIVE,
                     evidence_kind=EvidenceKind.LOCAL_FACT,
                     direction=Direction.LOCAL,
-                    target="offline",
+                    target=prepared.address,
                     started_at=started_at,
                     ended_at=ended_at,
                     duration_ms=max(0.0, (ended_mono - started_mono) * 1000),
-                    attempt=step.attempt,
+                    attempt=prepared.step.attempt,
                     source="mercury.synthetic",
                     detail={"index": index, "network_io": False},
                 ),
