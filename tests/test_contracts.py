@@ -6,6 +6,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from mercury import MODEL_SCHEMA_VERSION, __version__
 from mercury.codec import result_from_json, result_to_json
 from mercury.history import HistoryError, HistoryStore
 from mercury.models import Disposition, EvidenceKind
@@ -111,6 +112,18 @@ class FoundationContractTests(unittest.TestCase):
         dependencies = document["project"]["dependencies"]
         self.assertEqual(len(dependencies), 1)
         self.assertTrue(dependencies[0].startswith("psutil"))
+
+    def test_package_and_document_versions_have_single_sources(self) -> None:
+        with Path("pyproject.toml").open("rb") as handle:
+            document = tomllib.load(handle)
+        self.assertNotIn("version", document["project"])
+        self.assertIn("version", document["project"]["dynamic"])
+        self.assertEqual(
+            document["tool"]["setuptools"]["dynamic"]["version"]["attr"],
+            "mercury.__version__",
+        )
+        self.assertRegex(__version__, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(MODEL_SCHEMA_VERSION, "1.0")
 
 
 if __name__ == "__main__":

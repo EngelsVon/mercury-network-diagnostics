@@ -286,6 +286,14 @@ class CodecTests(unittest.TestCase):
         with self.assertRaisesRegex(CodecError, "unsupported schema"):
             result_from_json(encoded)
 
+    def test_compatible_minor_schema_round_trips(self) -> None:
+        encoded = result_to_json(sample_result()).replace(
+            '"schema_version":"1.0"', '"schema_version":"1.7"'
+        )
+        restored = result_from_json(encoded)
+        self.assertEqual(restored.schema_version, "1.7")
+        self.assertIn('"schema_version":"1.7"', result_to_json(restored))
+
 
 if __name__ == "__main__":
     unittest.main()

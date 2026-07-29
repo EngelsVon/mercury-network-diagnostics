@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable, Mapping, TypeVar
 
-from . import MODEL_SCHEMA_VERSION
+from . import MODEL_SCHEMA_VERSION, is_compatible_model_schema
 from .models import (
     Capability,
     CapabilityState,
@@ -379,10 +379,10 @@ def result_from_wire(value: Any) -> TaskResult:
         field="result",
     )
     version = _text(item["schema_version"], "schema_version")
-    if version != MODEL_SCHEMA_VERSION:
+    if not is_compatible_model_schema(version):
         raise CodecError(
-            f"unsupported schema version {version!r}; expected "
-            f"{MODEL_SCHEMA_VERSION!r}"
+            f"unsupported schema version {version!r}; supported major is "
+            f"{MODEL_SCHEMA_VERSION.partition('.')[0]!r}"
         )
     try:
         return TaskResult(

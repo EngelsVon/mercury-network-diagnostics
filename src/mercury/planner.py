@@ -7,6 +7,7 @@ from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from typing import Iterable
 
+from . import MODEL_SCHEMA_VERSION
 from .codec import dumps_document
 from .policy import (
     ResolutionSnapshot,
@@ -132,7 +133,7 @@ class PlanPreview:
 
     def to_wire(self) -> dict[str, object]:
         return {
-            "schema_version": "1.0",
+            "schema_version": MODEL_SCHEMA_VERSION,
             "profile": self.profile,
             "targets": [target.canonical for target in self.targets],
             "ports": list(self.ports),
@@ -389,7 +390,7 @@ def preview_plan(
         required.append("custom_udp")
 
     draft = {
-        "schema_version": "1.0",
+        "schema_version": MODEL_SCHEMA_VERSION,
         "profile": profile,
         "targets": [target.canonical for target in targets],
         "ports": list(port_tuple),

@@ -13,7 +13,7 @@ import math
 from types import MappingProxyType
 from typing import Any, Mapping, TypeAlias
 
-from . import MODEL_SCHEMA_VERSION
+from . import MODEL_SCHEMA_VERSION, is_compatible_model_schema
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
@@ -386,10 +386,10 @@ class TaskResult:
         if not isinstance(self.errors, (list, tuple)):
             raise ModelError("errors must be a sequence")
         object.__setattr__(self, "errors", tuple(self.errors))
-        if self.schema_version != MODEL_SCHEMA_VERSION:
+        if not is_compatible_model_schema(self.schema_version):
             raise ModelError(
                 f"unsupported schema version {self.schema_version!r}; "
-                f"expected {MODEL_SCHEMA_VERSION!r}"
+                f"supported major is {MODEL_SCHEMA_VERSION.partition('.')[0]!r}"
             )
         if self.state in (TaskState.PENDING, TaskState.RUNNING):
             raise ModelError("TaskResult must have a terminal state")

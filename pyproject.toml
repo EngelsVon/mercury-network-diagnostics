@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mercury-netdiag"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Evidence-first local and paired network reachability diagnostics"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +25,9 @@ mercury = "mercury.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "mercury.__version__"}
 
 [tool.setuptools.package-data]
 mercury = ["web/static/*"]
