@@ -4,7 +4,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 MODEL_SCHEMA_VERSION = "1.0"
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 
 
 def is_compatible_model_schema(value: object) -> bool:

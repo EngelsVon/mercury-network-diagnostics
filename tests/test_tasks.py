@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mercury.codec import result_to_json
@@ -154,6 +155,66 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
                 record.result.observations[-1].evidence_kind,
                 EvidenceKind.CANCELLED,
             )
+
+    async def test_service_start_recovers_only_expired_foreign_lease(
+        self,
+    ) -> None:
+        plan = synthetic_plan(2)
+        created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        expired_at = created_at + timedelta(minutes=1)
+        live_until = created_at + timedelta(hours=1)
+        for task_id, lease_expires_at in (
+            ("expired-owner", expired_at),
+            ("live-owner", live_until),
+        ):
+            self.history.create_task(
+                task_id=task_id,
+                task_kind="synthetic",
+                request={"steps": 2},
+                plan=plan.to_wire(),
+                owner_id=f"owner-{task_id}",
+                lease_expires_at=lease_expires_at,
+                created_at=created_at,
+            )
+            self.history.mark_running(
+                task_id,
+                owner_id=f"owner-{task_id}",
+                lease_expires_at=lease_expires_at,
+                at=created_at,
+            )
+
+        TaskService(
+            self.history,
+            wall_clock=lambda: created_at + timedelta(minutes=2),
+        )
+
+        recovered = self.history.get_task("expired-owner")
+        assert recovered is not None and recovered.result is not None
+        self.assertEqual(recovered.state, TaskState.FAILED)
+        self.assertEqual(
+            (
+                recovered.result.progress.admitted,
+                recovered.result.progress.completed,
+                recovered.result.progress.total,
+            ),
+            (0, 0, 2),
+        )
+        self.assertEqual(
+            recovered.result.observations[0].id,
+            "task-process-interrupted",
+        )
+        self.assertEqual(
+            recovered.result.observations[0].detail["error_type"],
+            "process_interrupted",
+        )
+        self.assertEqual(
+            self.history.list_events("expired-owner")[-1].event_type,
+            "recovered",
+        )
+        live = self.history.get_task("live-owner")
+        assert live is not None
+        self.assertEqual(live.state, TaskState.RUNNING)
+        self.assertIsNone(live.result)
 
     async def test_cancel_prevents_new_admission(self) -> None:
         task_id = self.service.submit(

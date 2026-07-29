@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Protocol
 
 from .codec import (
@@ -16,6 +17,7 @@ from .codec import (
     result_to_json,
 )
 from .history import (
+    HistoryRecord,
     HistoryStore,
     assert_persistence_safe,
     project_history_request,
@@ -48,6 +50,7 @@ class TaskError(RuntimeError):
 MAX_CONTEXT_CONCLUSIONS = 256
 MAX_CONTEXT_CAPABILITIES = 256
 MAX_CONTEXT_ERRORS = 256
+LEASE_FINALIZATION_GRACE_SECONDS = 60
 _OUTPUT_BUDGET_ERROR = (
     "task result exceeded the output budget; detailed evidence was omitted"
 )
@@ -182,6 +185,109 @@ def _output_budget_result(
         conclusions=(conclusion,),
         errors=(_OUTPUT_BUDGET_ERROR,),
     )
+
+
+def _recovered_task_result(
+    record: HistoryRecord,
+    recovered_at: datetime,
+) -> TaskResult:
+    plan = record.plan
+    profile = plan.get("profile")
+    if type(profile) is not str or not profile or len(profile) > 128:
+        profile = "recovered-task"
+    raw_targets = plan.get("targets")
+    targets = (
+        tuple(raw_targets)
+        if isinstance(raw_targets, (list, tuple))
+        and raw_targets
+        and all(
+            type(target) is str and target and len(target) <= 1_024
+            for target in raw_targets
+        )
+        else ("task",)
+    )
+    scope = plan.get("scope")
+    authorized = (
+        scope.get("attested")
+        if isinstance(scope, Mapping)
+        and type(scope.get("attested")) is bool
+        else False
+    )
+    digest = plan.get("digest")
+    if type(digest) is not str or not digest:
+        raise TaskError("recovery plan has no digest")
+    limits = plan.get("limits")
+    estimate = plan.get("estimate")
+    limits = dict(limits) if isinstance(limits, Mapping) else {}
+    estimate = dict(estimate) if isinstance(estimate, Mapping) else {}
+    total = estimate.get("logical_attempts", 0)
+    if type(total) is not int or total < 0:
+        total = 0
+    effective = EffectiveConfig(
+        profile=profile,
+        targets=targets,
+        authorized=authorized,
+        policy_digest=digest,
+        budget={
+            "limits": limits,
+            "estimate": estimate,
+            "logical_units": {
+                "rate": "attempt_starts_per_second",
+                "datagrams": "mercury_generated_udp_datagrams",
+                "bytes": "application_payload_bytes",
+            },
+        },
+        warnings=(
+            "Volatile partial evidence was unavailable after process interruption.",
+        ),
+    )
+    instant = max(record.created_at, recovered_at)
+    observation = Observation(
+        id="task-process-interrupted",
+        probe="task_recovery",
+        disposition=Disposition.ERROR,
+        evidence_kind=EvidenceKind.EXECUTION_ERROR,
+        direction=Direction.LOCAL,
+        target="task",
+        started_at=instant,
+        ended_at=instant,
+        duration_ms=0.0,
+        source="mercury.tasks",
+        detail={
+            "error_type": "process_interrupted",
+            "scope": "aggregate_task",
+        },
+    )
+    result = _make_result(
+        task_id=record.task_id,
+        task_kind=record.task_kind,
+        state=TaskState.FAILED,
+        started_at=record.created_at,
+        ended_at=instant,
+        requested_config=dict(record.request),
+        effective_config=effective,
+        progress=Progress(admitted=0, completed=0, total=total),
+        observations=(observation,),
+        conclusions=_derive_conclusion(
+            (observation,),
+            state=TaskState.FAILED,
+        ),
+        errors=(
+            "task owner lease expired; volatile partial evidence was unavailable",
+        ),
+    )
+    maximum = limits.get("max_output_bytes")
+    if type(maximum) is int and _result_bytes(result) > maximum:
+        return _output_budget_result(
+            task_id=record.task_id,
+            task_kind=record.task_kind,
+            started_at=record.created_at,
+            ended_at=instant,
+            requested_config=dict(record.request),
+            effective_config=effective,
+            progress=Progress(admitted=0, completed=0, total=total),
+        )
+    return result
 
 
 class CooperativeCancellation(Exception):
@@ -757,9 +863,14 @@ class TaskService:
         self._wall_clock = wall_clock
         self._monotonic = monotonic
         self._resolver = resolver
+        self._owner_id = uuid.uuid4().hex
         self._tokens: dict[str, CancellationToken] = {}
         self._tasks: dict[str, asyncio.Task[TaskResult]] = {}
         self._results: dict[str, TaskResult] = {}
+        self.history.recover_interrupted(
+            _recovered_task_result,
+            now=self._wall_clock(),
+        )
 
     def submit(
         self,
@@ -804,6 +915,12 @@ class TaskService:
             task_kind=task_kind,
             request=request,
             plan=plan.to_wire(),
+            owner_id=self._owner_id,
+            lease_expires_at=validation_time
+            + timedelta(
+                seconds=plan.preview.limits.max_duration_s
+                + LEASE_FINALIZATION_GRACE_SECONDS
+            ),
             created_at=validation_time,
             accepted_payload={
                 "state": TaskState.PENDING.value,
@@ -931,6 +1048,12 @@ class TaskService:
             try:
                 self.history.mark_running(
                     task_id,
+                    owner_id=self._owner_id,
+                    lease_expires_at=started_at
+                    + timedelta(
+                        seconds=plan.preview.limits.max_duration_s
+                        + LEASE_FINALIZATION_GRACE_SECONDS
+                    ),
                     at=started_at,
                     event_payload={"state": TaskState.RUNNING.value},
                 )
@@ -1039,14 +1162,14 @@ class TaskService:
                     ended_at=ended_at,
                 )
             try:
-                self.history.finish_task(result)
+                self.history.finish_task(result, owner_id=self._owner_id)
             except Exception as exc:
                 result = _finalization_failure_result(
                     context,
                     exc,
                     ended_at=self._wall_clock(),
                 )
-                self.history.finish_task(result)
+                self.history.finish_task(result, owner_id=self._owner_id)
             self._results[task_id] = result
             return result
         finally:

@@ -4,6 +4,7 @@ import json
 import tempfile
 import tomllib
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mercury import MODEL_SCHEMA_VERSION, __version__
@@ -73,16 +74,29 @@ class FoundationContractTests(unittest.TestCase):
             disposition=Disposition.INCONCLUSIVE,
         )
         result = sample_result(task_id="silent", observation=observation)
+        created_at = datetime(2026, 7, 30, tzinfo=timezone.utc)
+        lease_expires_at = created_at + timedelta(hours=1)
         with tempfile.TemporaryDirectory() as temporary:
             with HistoryStore(Path(temporary) / "history.sqlite3") as history:
                 history.create_task(
                     task_id="silent",
                     task_kind="synthetic",
                     request={"profile": "udp-silence-fixture"},
-                    plan={"digest": "fixture"},
+                    plan={"digest": result.effective_config.policy_digest},
+                    owner_id="contract-test-owner",
+                    lease_expires_at=lease_expires_at,
+                    created_at=created_at,
                 )
-                history.mark_running("silent")
-                history.finish_task(result)
+                history.mark_running(
+                    "silent",
+                    owner_id="contract-test-owner",
+                    lease_expires_at=lease_expires_at,
+                    at=created_at,
+                )
+                history.finish_task(
+                    result,
+                    owner_id="contract-test-owner",
+                )
                 stored = history.get_task("silent")
                 assert stored is not None and stored.result is not None
                 wire = json.loads(result_to_json(stored.result))
@@ -94,6 +108,7 @@ class FoundationContractTests(unittest.TestCase):
 
     def test_credential_key_variants_are_rejected_recursively(self) -> None:
         with HistoryStore(":memory:") as history:
+            created_at = datetime(2026, 7, 30, tzinfo=timezone.utc)
             for index, key in enumerate(
                 ("access_token", "bearer-token", "private.key", "pairingSecret"),
                 1,
@@ -103,7 +118,10 @@ class FoundationContractTests(unittest.TestCase):
                         task_id=f"secret-{index}",
                         task_kind="fixture",
                         request={"outer": [{"inner": {key: "value"}}]},
-                        plan={},
+                        plan={"digest": f"secret-{index}"},
+                        owner_id="contract-test-owner",
+                        lease_expires_at=created_at + timedelta(hours=1),
+                        created_at=created_at,
                     )
 
     def test_pyproject_has_one_runtime_dependency(self) -> None:

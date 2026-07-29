@@ -21,6 +21,7 @@ MAX_TASKS_ABSOLUTE = 10_000
 MAX_AGE_DAYS_ABSOLUTE = 365
 MAX_EVENT_BYTES = 64 * 1024
 MAX_AUX_JSON_BYTES = 8 * 1024 * 1024
+LEGACY_ACTIVE_LEASE_SECONDS = 3_660
 
 _SECRET_KEY_PARTS = (
     "token",
@@ -291,6 +292,22 @@ def _wire_time(value: datetime) -> str:
     )
 
 
+def _validate_lifecycle_text(value: str, name: str) -> None:
+    if type(value) is not str or not value.strip() or len(value) > 128:
+        raise HistoryError(f"{name} must be bounded non-empty text")
+    if "\x00" in value:
+        raise HistoryError(f"{name} contains NUL")
+
+
+def _validate_lifecycle_time(value: datetime, name: str) -> None:
+    if (
+        type(value) is not datetime
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise HistoryError(f"{name} must be timezone-aware")
+
+
 class HistoryStore:
     """A single-engine-thread SQLite store.
 
@@ -388,10 +405,14 @@ class HistoryStore:
                         updated_at TEXT NOT NULL,
                         request_json TEXT NOT NULL,
                         plan_json TEXT NOT NULL,
-                        result_json TEXT
+                        result_json TEXT,
+                        owner_id TEXT,
+                        lease_expires_at TEXT
                     );
                     CREATE INDEX tasks_updated_at_idx
                         ON tasks(updated_at DESC, task_id DESC);
+                    CREATE INDEX tasks_active_lease_idx
+                        ON tasks(state, lease_expires_at);
                     CREATE TABLE events (
                         task_id TEXT NOT NULL
                             REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -405,22 +426,132 @@ class HistoryStore:
                 )
                 self._connection.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
 
-    def recover_interrupted(self) -> int:
-        now = _wire_time(self._clock())
-        with self._connection:
-            cursor = self._connection.execute(
-                """
-                UPDATE tasks SET state = ?, updated_at = ?
-                WHERE state IN (?, ?)
-                """,
-                (
-                    TaskState.FAILED.value,
-                    now,
-                    TaskState.PENDING.value,
-                    TaskState.RUNNING.value,
-                ),
+        if current == 1:
+            with self._connection:
+                self._connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN owner_id TEXT"
+                )
+                self._connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT"
+                )
+                self._connection.execute(
+                    """
+                    CREATE INDEX tasks_active_lease_idx
+                    ON tasks(state, lease_expires_at)
+                    """
+                )
+                rows = self._connection.execute(
+                    """
+                    SELECT task_id, updated_at FROM tasks
+                    WHERE state IN (?, ?)
+                    """,
+                    (TaskState.PENDING.value, TaskState.RUNNING.value),
+                ).fetchall()
+                self._connection.executemany(
+                    """
+                    UPDATE tasks SET owner_id = ?, lease_expires_at = ?
+                    WHERE task_id = ?
+                    """,
+                    (
+                        (
+                            "legacy-v1",
+                            _wire_time(
+                                _parse_time(row["updated_at"])
+                                + timedelta(seconds=LEGACY_ACTIVE_LEASE_SECONDS)
+                            ),
+                            row["task_id"],
+                        )
+                        for row in rows
+                    ),
+                )
+                self._connection.execute(
+                    f"PRAGMA user_version = {DB_SCHEMA_VERSION}"
+                )
+
+    def recover_interrupted(
+        self,
+        result_factory: Callable[[HistoryRecord, datetime], TaskResult],
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        if not callable(result_factory):
+            raise HistoryError("recovery result factory must be callable")
+        timestamp = now or self._clock()
+        _validate_lifecycle_time(timestamp, "recovery time")
+        wire_now = _wire_time(timestamp)
+        rows = self._connection.execute(
+            """
+            SELECT * FROM tasks
+            WHERE state IN (?, ?)
+              AND (
+                  owner_id IS NULL
+                  OR lease_expires_at IS NULL
+                  OR lease_expires_at <= ?
+              )
+            ORDER BY updated_at ASC, task_id ASC
+            """,
+            (
+                TaskState.PENDING.value,
+                TaskState.RUNNING.value,
+                wire_now,
+            ),
+        ).fetchall()
+        recovered = 0
+        for row in rows:
+            record = self._record_from_row(row)
+            result = result_factory(record, timestamp)
+            if type(result) is not TaskResult or result.state is not TaskState.FAILED:
+                raise HistoryError("recovery must produce a failed TaskResult")
+            self._assert_result_identity(record, result)
+            result_json = result_to_json(result)
+            _assert_secret_free(json.loads(result_json), path="$.result")
+            payload_json = _json_for_store(
+                {
+                    "state": TaskState.FAILED.value,
+                    "completed": result.progress.completed,
+                    "total": result.progress.total,
+                    "recovered": True,
+                    "error_type": "process_interrupted",
+                    "plan_digest": result.effective_config.policy_digest,
+                },
+                maximum=MAX_EVENT_BYTES,
+                allowed_keys=_EVENT_KEYS,
+                path="$.event",
             )
-        return cursor.rowcount
+            try:
+                with self._connection:
+                    cursor = self._connection.execute(
+                        """
+                        UPDATE tasks
+                        SET state = ?, updated_at = ?, result_json = ?,
+                            owner_id = NULL, lease_expires_at = NULL
+                        WHERE task_id = ? AND state = ?
+                          AND owner_id IS ? AND lease_expires_at IS ?
+                        """,
+                        (
+                            TaskState.FAILED.value,
+                            _wire_time(result.ended_at),
+                            result_json,
+                            record.task_id,
+                            record.state.value,
+                            row["owner_id"],
+                            row["lease_expires_at"],
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        continue
+                    self._insert_event(
+                        task_id=record.task_id,
+                        event_type="recovered",
+                        payload_json=payload_json,
+                        occurred_at=result.ended_at,
+                    )
+            except sqlite3.Error as exc:
+                raise HistoryError(
+                    f"could not atomically recover task {record.task_id!r}"
+                ) from exc
+            recovered += 1
+        return recovered
 
     def create_task(
         self,
@@ -429,10 +560,22 @@ class HistoryStore:
         task_kind: str,
         request: Mapping[str, Any],
         plan: Mapping[str, Any],
+        owner_id: str,
+        lease_expires_at: datetime,
         created_at: datetime | None = None,
         accepted_payload: Mapping[str, Any] | None = None,
     ) -> None:
         timestamp = created_at or self._clock()
+        _validate_lifecycle_text(task_id, "task_id")
+        _validate_lifecycle_text(task_kind, "task_kind")
+        _validate_lifecycle_text(owner_id, "owner_id")
+        _validate_lifecycle_time(timestamp, "created_at")
+        _validate_lifecycle_time(lease_expires_at, "lease_expires_at")
+        if lease_expires_at <= timestamp:
+            raise HistoryError("task lease must expire after creation")
+        digest = plan.get("digest")
+        if type(digest) is not str or not digest or len(digest) > 256:
+            raise HistoryError("task plan must contain a bounded digest")
         request_json = _json_for_store(
             request,
             maximum=MAX_AUX_JSON_BYTES,
@@ -466,8 +609,9 @@ class HistoryStore:
                     """
                     INSERT INTO tasks(
                         task_id, task_kind, state, created_at, updated_at,
-                        request_json, plan_json, result_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                        request_json, plan_json, result_json,
+                        owner_id, lease_expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                     """,
                     (
                         task_id,
@@ -477,6 +621,8 @@ class HistoryStore:
                         _wire_time(timestamp),
                         request_json,
                         plan_json,
+                        owner_id,
+                        _wire_time(lease_expires_at),
                     ),
                 )
                 if accepted_json is not None:
@@ -493,10 +639,18 @@ class HistoryStore:
         self,
         task_id: str,
         *,
+        owner_id: str,
+        lease_expires_at: datetime,
         at: datetime | None = None,
         event_payload: Mapping[str, Any] | None = None,
     ) -> None:
         timestamp = at or self._clock()
+        _validate_lifecycle_text(task_id, "task_id")
+        _validate_lifecycle_text(owner_id, "owner_id")
+        _validate_lifecycle_time(timestamp, "running time")
+        _validate_lifecycle_time(lease_expires_at, "lease_expires_at")
+        if lease_expires_at <= timestamp:
+            raise HistoryError("task lease must expire after start")
         payload_json = (
             None
             if event_payload is None
@@ -515,14 +669,17 @@ class HistoryStore:
         with self._connection:
             cursor = self._connection.execute(
                 """
-                UPDATE tasks SET state = ?, updated_at = ?
-                WHERE task_id = ? AND state = ?
+                UPDATE tasks
+                SET state = ?, updated_at = ?, lease_expires_at = ?
+                WHERE task_id = ? AND state = ? AND owner_id = ?
                 """,
                 (
                     TaskState.RUNNING.value,
                     _wire_time(timestamp),
+                    _wire_time(lease_expires_at),
                     task_id,
                     TaskState.PENDING.value,
+                    owner_id,
                 ),
             )
             if cursor.rowcount != 1:
@@ -541,12 +698,12 @@ class HistoryStore:
         self,
         result: TaskResult,
         *,
+        owner_id: str,
         event_payload: Mapping[str, Any] | None = None,
     ) -> None:
-        _assert_secret_free(
-            json.loads(result_to_json(result)),
-            path="$.result",
-        )
+        _validate_lifecycle_text(owner_id, "owner_id")
+        result_json = result_to_json(result)
+        _assert_secret_free(json.loads(result_json), path="$.result")
         payload = event_payload or {
             "state": result.state.value,
             "completed": result.progress.completed,
@@ -564,32 +721,39 @@ class HistoryStore:
             allowed_keys=_EVENT_KEYS,
             path="$.event",
         )
-        result_json = result_to_json(result)
-        expected = (TaskState.RUNNING, TaskState.PENDING)
         try:
             with self._connection:
                 row = self._connection.execute(
-                    "SELECT state FROM tasks WHERE task_id = ?", (result.task_id,)
+                    "SELECT * FROM tasks WHERE task_id = ?", (result.task_id,)
                 ).fetchone()
                 if row is None:
                     raise HistoryError(f"unknown task {result.task_id!r}")
-                if TaskState(row["state"]) not in expected:
+                record = self._record_from_row(row)
+                if record.state is not TaskState.RUNNING:
                     raise HistoryError(
                         f"cannot finish task from state {row['state']!r}"
                     )
-                self._connection.execute(
+                if row["owner_id"] != owner_id:
+                    raise HistoryError("task owner does not match terminal result")
+                self._assert_result_identity(record, result)
+                cursor = self._connection.execute(
                     """
                     UPDATE tasks
-                    SET state = ?, updated_at = ?, result_json = ?
-                    WHERE task_id = ?
+                    SET state = ?, updated_at = ?, result_json = ?,
+                        owner_id = NULL, lease_expires_at = NULL
+                    WHERE task_id = ? AND state = ? AND owner_id = ?
                     """,
                     (
                         result.state.value,
                         _wire_time(result.ended_at),
                         result_json,
                         result.task_id,
+                        TaskState.RUNNING.value,
+                        owner_id,
                     ),
                 )
+                if cursor.rowcount != 1:
+                    raise HistoryError("task changed during terminal transition")
                 self._insert_event(
                     task_id=result.task_id,
                     event_type="terminal",
@@ -608,6 +772,22 @@ class HistoryStore:
                 RuntimeWarning,
                 stacklevel=2,
             )
+
+    @staticmethod
+    def _assert_result_identity(
+        record: HistoryRecord,
+        result: TaskResult,
+    ) -> None:
+        if record.task_id != result.task_id:
+            raise HistoryError("task ID does not match terminal result")
+        if record.task_kind != result.task_kind:
+            raise HistoryError("task kind does not match terminal result")
+        plan_digest = record.plan.get("digest")
+        if (
+            type(plan_digest) is not str
+            or plan_digest != result.effective_config.policy_digest
+        ):
+            raise HistoryError("task plan digest does not match terminal result")
 
     def _insert_event(
         self,

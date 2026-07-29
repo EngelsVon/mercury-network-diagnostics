@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from mercury import DB_SCHEMA_VERSION
 from mercury.history import HistoryError, HistoryStore
-from mercury.models import TaskState
+from mercury.models import Progress, TaskState
 
 from tests.helpers import sample_result
 
@@ -28,21 +31,56 @@ class HistoryTests(unittest.TestCase):
         self.store = HistoryStore(
             self.path, max_tasks=2, max_age_days=7, clock=self.clock
         )
+        self.owner_id = "history-test-owner"
 
     def tearDown(self) -> None:
         self.store.close()
         self.temporary.cleanup()
 
-    def _create_and_finish(self, task_id: str):
+    def _create_task(self, **kwargs) -> None:
         self.store.create_task(
+            owner_id=self.owner_id,
+            lease_expires_at=self.clock() + timedelta(hours=1),
+            **kwargs,
+        )
+
+    def _mark_running(self, task_id: str, **kwargs) -> None:
+        self.store.mark_running(
+            task_id,
+            owner_id=self.owner_id,
+            lease_expires_at=self.clock() + timedelta(hours=1),
+            **kwargs,
+        )
+
+    def _finish_task(self, result, **kwargs) -> None:
+        self.store.finish_task(result, owner_id=self.owner_id, **kwargs)
+
+    @staticmethod
+    def _recovery_result(record, recovered_at):
+        result = sample_result(task_id=record.task_id, state=TaskState.FAILED)
+        return replace(
+            result,
+            task_kind=record.task_kind,
+            started_at=record.created_at,
+            ended_at=max(record.created_at, recovered_at),
+            requested_config=dict(record.request),
+            effective_config=replace(
+                result.effective_config,
+                policy_digest=record.plan["digest"],
+            ),
+            progress=Progress(admitted=0, completed=0, total=1),
+        )
+
+    def _create_and_finish(self, task_id: str):
+        result = sample_result(task_id=task_id)
+        self._create_task(
             task_id=task_id,
             task_kind="synthetic",
             request={"steps": 1},
-            plan={"digest": task_id},
+            plan={"digest": result.effective_config.policy_digest},
             created_at=self.clock(),
         )
-        self.store.mark_running(task_id, at=self.clock())
-        result = sample_result(task_id=task_id)
+        self._mark_running(task_id, at=self.clock())
         result = type(result)(
             task_id=result.task_id,
             task_kind=result.task_kind,
@@ -73,7 +111,7 @@ class HistoryTests(unittest.TestCase):
             ),
             conclusions=result.conclusions,
         )
-        self.store.finish_task(result)
+        self._finish_task(result)
         return result
 
     def test_round_trip_and_reopen(self) -> None:
@@ -90,11 +128,11 @@ class HistoryTests(unittest.TestCase):
         self.assertIsNotNone(self.store.get_task("task-1"))
 
     def test_event_sequence_and_replay(self) -> None:
-        self.store.create_task(
+        self._create_task(
             task_id="events",
             task_kind="synthetic",
             request={},
-            plan={},
+            plan={"digest": "events"},
         )
         first = self.store.append_event(
             task_id="events", event_type="accepted", payload={"state": "pending"}
@@ -109,12 +147,12 @@ class HistoryTests(unittest.TestCase):
     def test_credential_fields_are_never_persisted(self) -> None:
         for key in ("token", "bearer-token", "private_key", "clientSecret"):
             with self.subTest(key=key), self.assertRaises(HistoryError):
-                self.store.create_task(
+                self._create_task(
                     task_id=f"secret-{key}",
                     task_kind="synthetic",
                     request={"nested": {key: "sensitive"}},
-                    plan={},
-                    )
+                    plan={"digest": f"secret-{key}"},
+                )
         self.assertEqual(self.store.list_tasks(), ())
 
     def test_unredacted_payload_fields_are_never_persisted(self) -> None:
@@ -122,18 +160,24 @@ class HistoryTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaisesRegex(
                 HistoryError, "unredacted content"
             ):
-                self.store.create_task(
+                self._create_task(
                     task_id=f"payload-{key}",
                     task_kind="fixture",
                     request={"nested": [{key: "do-not-store"}]},
-                    plan={"payload_bytes_per_attempt": 12},
+                    plan={
+                        "payload_bytes_per_attempt": 12,
+                        "digest": f"payload-{key}",
+                    },
                 )
 
-        self.store.create_task(
+        self._create_task(
             task_id="payload-metadata",
             task_kind="fixture",
             request={"payload_bytes": 12},
-            plan={"payload_bytes_per_attempt": 12},
+            plan={
+                "payload_bytes_per_attempt": 12,
+                "digest": "payload-metadata",
+            },
         )
         self.assertIsNotNone(self.store.get_task("payload-metadata"))
 
@@ -159,7 +203,7 @@ class HistoryTests(unittest.TestCase):
         )
         for index, request in enumerate(cases, 1):
             with self.subTest(request=request), self.assertRaises(HistoryError):
-                self.store.create_task(
+                self._create_task(
                     task_id=f"bypass-{index}",
                     task_kind="fixture",
                     request=request,
@@ -168,7 +212,7 @@ class HistoryTests(unittest.TestCase):
 
     def test_history_request_projection_rejects_unknown_safe_fields(self) -> None:
         with self.assertRaisesRegex(HistoryError, "unsupported fields"):
-            self.store.create_task(
+            self._create_task(
                 task_id="unknown-request-field",
                 task_kind="fixture",
                 request={"surprise": "not part of the typed projection"},
@@ -184,11 +228,11 @@ class HistoryTests(unittest.TestCase):
 
     def test_age_retention_does_not_delete_active_task(self) -> None:
         self._create_and_finish("old-terminal")
-        self.store.create_task(
+        self._create_task(
             task_id="active",
             task_kind="synthetic",
             request={},
-            plan={},
+            plan={"digest": "active"},
         )
         self.clock.value += timedelta(days=8)
         self.store.prune()
@@ -220,16 +264,333 @@ class HistoryTests(unittest.TestCase):
     def test_invalid_state_transition_is_rejected(self) -> None:
         self._create_and_finish("done")
         with self.assertRaises(HistoryError):
-            self.store.mark_running("done")
+            self._mark_running("done")
+
+    def test_fresh_database_uses_lease_schema(self) -> None:
+        version = self.store._connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        columns = {
+            row["name"]
+            for row in self.store._connection.execute(
+                "PRAGMA table_info(tasks)"
+            ).fetchall()
+        }
+        indexes = {
+            row["name"]
+            for row in self.store._connection.execute(
+                "PRAGMA index_list(tasks)"
+            ).fetchall()
+        }
+        self.assertEqual(version, DB_SCHEMA_VERSION)
+        self.assertIn("owner_id", columns)
+        self.assertIn("lease_expires_at", columns)
+        self.assertIn("tasks_active_lease_idx", indexes)
+
+    def test_v1_database_migrates_active_rows_with_conservative_lease(
+        self,
+    ) -> None:
+        legacy_path = Path(self.temporary.name) / "legacy.sqlite3"
+        timestamp = "2026-07-01T00:00:00.000Z"
+        connection = sqlite3.connect(legacy_path)
+        connection.executescript(
+            """
+            CREATE TABLE tasks (
+                task_id TEXT PRIMARY KEY,
+                task_kind TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                result_json TEXT
+            );
+            CREATE INDEX tasks_updated_at_idx
+                ON tasks(updated_at DESC, task_id DESC);
+            CREATE TABLE events (
+                task_id TEXT NOT NULL
+                    REFERENCES tasks(task_id) ON DELETE CASCADE,
+                sequence INTEGER NOT NULL CHECK(sequence > 0),
+                occurred_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(task_id, sequence)
+            );
+            PRAGMA user_version = 1;
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO tasks(
+                task_id, task_kind, state, created_at, updated_at,
+                request_json, plan_json, result_json
+            ) VALUES (?, 'synthetic', ?, ?, ?, '{}', ?, NULL)
+            """,
+            (
+                (
+                    "legacy-running",
+                    TaskState.RUNNING.value,
+                    timestamp,
+                    timestamp,
+                    '{"digest":"legacy-running"}',
+                ),
+                (
+                    "legacy-terminal",
+                    TaskState.COMPLETED.value,
+                    timestamp,
+                    timestamp,
+                    '{"digest":"legacy-terminal"}',
+                ),
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        with HistoryStore(legacy_path, clock=self.clock) as migrated:
+            self.assertEqual(
+                migrated._connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0],
+                DB_SCHEMA_VERSION,
+            )
+            active = migrated._connection.execute(
+                """
+                SELECT owner_id, lease_expires_at FROM tasks
+                WHERE task_id = 'legacy-running'
+                """
+            ).fetchone()
+            terminal = migrated._connection.execute(
+                """
+                SELECT owner_id, lease_expires_at FROM tasks
+                WHERE task_id = 'legacy-terminal'
+                """
+            ).fetchone()
+            self.assertEqual(active["owner_id"], "legacy-v1")
+            self.assertEqual(
+                active["lease_expires_at"],
+                "2026-07-01T01:01:00.000Z",
+            )
+            self.assertIsNone(terminal["owner_id"])
+            self.assertIsNone(terminal["lease_expires_at"])
+
+    def test_pending_task_cannot_finish_normally(self) -> None:
+        result = sample_result(task_id="pending-terminal")
+        self._create_task(
+            task_id=result.task_id,
+            task_kind=result.task_kind,
+            request={"steps": 1},
+            plan={"digest": result.effective_config.policy_digest},
+        )
+        with self.assertRaisesRegex(HistoryError, "state 'pending'"):
+            self._finish_task(result)
+        record = self.store.get_task(result.task_id)
+        assert record is not None
+        self.assertEqual(record.state, TaskState.PENDING)
+        self.assertIsNone(record.result)
+        self.assertEqual(self.store.list_events(result.task_id), ())
+
+    def test_terminal_identity_and_owner_must_match_atomically(self) -> None:
+        cases = (
+            (
+                "wrong-kind",
+                {"task_kind": "other"},
+                self.owner_id,
+                "task kind",
+            ),
+            (
+                "wrong-digest",
+                {
+                    "effective_config": replace(
+                        sample_result().effective_config,
+                        policy_digest="different",
+                    )
+                },
+                self.owner_id,
+                "plan digest",
+            ),
+            (
+                "wrong-owner",
+                {},
+                "different-owner",
+                "owner",
+            ),
+        )
+        for task_id, changes, owner_id, message in cases:
+            with self.subTest(task_id=task_id):
+                result = replace(sample_result(task_id=task_id), **changes)
+                plan_digest = (
+                    "sha256:test"
+                    if task_id == "wrong-digest"
+                    else result.effective_config.policy_digest
+                )
+                self._create_task(
+                    task_id=task_id,
+                    task_kind="synthetic",
+                    request={"steps": 1},
+                    plan={"digest": plan_digest},
+                )
+                self._mark_running(task_id)
+                with self.assertRaisesRegex(HistoryError, message):
+                    self.store.finish_task(result, owner_id=owner_id)
+                record = self.store.get_task(task_id)
+                assert record is not None
+                self.assertEqual(record.state, TaskState.RUNNING)
+                self.assertIsNone(record.result)
+                self.assertNotIn(
+                    "terminal",
+                    [
+                        event.event_type
+                        for event in self.store.list_events(task_id)
+                    ],
+                )
+
+    def test_terminal_transition_clears_owner_and_lease(self) -> None:
+        self._create_and_finish("cleared-lease")
+        row = self.store._connection.execute(
+            """
+            SELECT owner_id, lease_expires_at FROM tasks
+            WHERE task_id = 'cleared-lease'
+            """
+        ).fetchone()
+        self.assertIsNone(row["owner_id"])
+        self.assertIsNone(row["lease_expires_at"])
+
+    def test_recovery_only_claims_expired_tasks(self) -> None:
+        expires_at = self.clock() + timedelta(minutes=1)
+        for task_id in ("expired-pending", "expired-running", "live-running"):
+            lease = (
+                self.clock() + timedelta(hours=1)
+                if task_id == "live-running"
+                else expires_at
+            )
+            self.store.create_task(
+                task_id=task_id,
+                task_kind="synthetic",
+                request={"steps": 1},
+                plan={"digest": "sha256:test"},
+                owner_id=f"owner-{task_id}",
+                lease_expires_at=lease,
+                created_at=self.clock(),
+            )
+            if task_id != "expired-pending":
+                self.store.mark_running(
+                    task_id,
+                    owner_id=f"owner-{task_id}",
+                    lease_expires_at=lease,
+                    at=self.clock(),
+                )
+        self.clock.value += timedelta(minutes=2)
+
+        recovered = self.store.recover_interrupted(
+            self._recovery_result,
+            now=self.clock(),
+        )
+
+        self.assertEqual(recovered, 2)
+        for task_id in ("expired-pending", "expired-running"):
+            record = self.store.get_task(task_id)
+            assert record is not None and record.result is not None
+            self.assertEqual(record.state, TaskState.FAILED)
+            self.assertEqual(record.result.state, TaskState.FAILED)
+            event = self.store.list_events(task_id)[-1]
+            self.assertEqual(event.event_type, "recovered")
+            self.assertTrue(event.payload["recovered"])
+            self.assertEqual(
+                event.payload["error_type"],
+                "process_interrupted",
+            )
+        live = self.store.get_task("live-running")
+        assert live is not None
+        self.assertEqual(live.state, TaskState.RUNNING)
+        self.assertIsNone(live.result)
+
+    def test_recovery_uses_stale_lease_compare_and_swap(self) -> None:
+        expired = self.clock() + timedelta(minutes=1)
+        self.store.create_task(
+            task_id="renewed-during-recovery",
+            task_kind="synthetic",
+            request={"steps": 1},
+            plan={"digest": "sha256:test"},
+            owner_id="old-owner",
+            lease_expires_at=expired,
+            created_at=self.clock(),
+        )
+        self.store.mark_running(
+            "renewed-during-recovery",
+            owner_id="old-owner",
+            lease_expires_at=expired,
+            at=self.clock(),
+        )
+        self.clock.value += timedelta(minutes=2)
+
+        def renew_before_result(record, recovered_at):
+            self.store._connection.execute(
+                """
+                UPDATE tasks SET lease_expires_at = ?
+                WHERE task_id = ?
+                """,
+                (
+                    (self.clock() + timedelta(hours=1))
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z"),
+                    record.task_id,
+                ),
+            )
+            self.store._connection.commit()
+            return self._recovery_result(record, recovered_at)
+
+        self.assertEqual(
+            self.store.recover_interrupted(
+                renew_before_result,
+                now=self.clock(),
+            ),
+            0,
+        )
+        record = self.store.get_task("renewed-during-recovery")
+        assert record is not None
+        self.assertEqual(record.state, TaskState.RUNNING)
+        self.assertIsNone(record.result)
+
+    def test_recovery_event_and_result_commit_atomically(self) -> None:
+        expired = self.clock() + timedelta(minutes=1)
+        self.store.create_task(
+            task_id="atomic-recovery",
+            task_kind="synthetic",
+            request={"steps": 1},
+            plan={"digest": "sha256:test"},
+            owner_id="dead-owner",
+            lease_expires_at=expired,
+            created_at=self.clock(),
+        )
+        self.clock.value += timedelta(minutes=2)
+        self.store._connection.execute(
+            """
+            CREATE TRIGGER reject_recovery_event
+            BEFORE INSERT ON events
+            WHEN NEW.event_type = 'recovered'
+            BEGIN
+                SELECT RAISE(ABORT, 'recovery event rejected');
+            END
+            """
+        )
+        with self.assertRaisesRegex(HistoryError, "atomically recover"):
+            self.store.recover_interrupted(
+                self._recovery_result,
+                now=self.clock(),
+            )
+        record = self.store.get_task("atomic-recovery")
+        assert record is not None
+        self.assertEqual(record.state, TaskState.PENDING)
+        self.assertIsNone(record.result)
 
     def test_terminal_event_state_and_result_commit_atomically(self) -> None:
-        self.store.create_task(
+        self._create_task(
             task_id="atomic-terminal",
             task_kind="synthetic",
             request={"steps": 1},
             plan={"digest": "sha256:test"},
         )
-        self.store.mark_running("atomic-terminal")
+        self._mark_running("atomic-terminal")
         self.store._connection.execute(
             """
             CREATE TRIGGER reject_terminal_event
@@ -241,7 +602,7 @@ class HistoryTests(unittest.TestCase):
             """
         )
         with self.assertRaisesRegex(HistoryError, "atomically finish"):
-            self.store.finish_task(sample_result(task_id="atomic-terminal"))
+            self._finish_task(sample_result(task_id="atomic-terminal"))
         record = self.store.get_task("atomic-terminal")
         assert record is not None
         self.assertEqual(record.state, TaskState.RUNNING)
