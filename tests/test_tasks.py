@@ -9,6 +9,8 @@ from pathlib import Path
 from mercury.codec import result_to_json
 from mercury.history import HistoryStore
 from mercury.models import (
+    Capability,
+    CapabilityState,
     Direction,
     Disposition,
     EvidenceKind,
@@ -25,13 +27,14 @@ from mercury.policy import ScopeGrant
 from mercury.tasks import SyntheticRunner, TaskContext, TaskError, TaskService
 
 
-def synthetic_plan(steps: int):
+def synthetic_plan(steps: int, *, limits=DEFAULT_LIMITS):
     preview = preview_plan(
         target_values=("127.0.0.1",),
         ports=range(1, steps + 1),
         transports=("tcp",),
         grant=ScopeGrant(networks=()),
         profile="synthetic-v1",
+        limits=limits,
     )
     return authorize_plan(preview)
 
@@ -187,6 +190,54 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.state, TaskState.FAILED)
         self.assertEqual(result.progress.total, 1)
         self.assertEqual(result.progress.completed, 1)
+
+    async def test_complete_result_never_exceeds_output_budget(self) -> None:
+        limits = replace(DEFAULT_LIMITS, max_output_bytes=5_000)
+
+        async def floods_metadata(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
+            record_fixture(context, 1, step.id)
+            context.complete_attempt(step.id)
+            for index in range(100):
+                context.add_capability(
+                    Capability(
+                        name=f"capability-{index}",
+                        state=CapabilityState.AVAILABLE,
+                        source="tests",
+                        detail="x" * 1_000,
+                    )
+                )
+
+        result = await self.service.run(
+            synthetic_plan(1, limits=limits),
+            floods_metadata,
+            task_kind="synthetic",
+            task_id="bounded-output",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        self.assertLessEqual(
+            len(result_to_json(result).encode("utf-8")),
+            limits.max_output_bytes,
+        )
+        record = self.history.get_task("bounded-output")
+        assert record is not None and record.result is not None
+        self.assertLessEqual(
+            len(result_to_json(record.result).encode("utf-8")),
+            limits.max_output_bytes,
+        )
+
+    async def test_result_envelope_is_reserved_before_history_creation(self) -> None:
+        limits = replace(DEFAULT_LIMITS, max_output_bytes=5_000)
+        with self.assertRaisesRegex(TaskError, "canonical task result"):
+            self.service.submit(
+                synthetic_plan(1, limits=limits),
+                SyntheticRunner(),
+                task_kind="synthetic",
+                requested_config={"purpose": "x" * 4_000},
+                task_id="oversized-envelope",
+            )
+        self.assertIsNone(self.history.get_task("oversized-envelope"))
 
     async def test_unknown_or_finished_task_cannot_be_cancelled(self) -> None:
         self.assertFalse(self.service.cancel("missing"))

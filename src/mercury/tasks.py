@@ -12,8 +12,8 @@ from typing import Callable, Protocol
 from .codec import (
     capability_to_wire,
     conclusion_to_wire,
-    dumps_document,
     observation_to_wire,
+    result_to_json,
 )
 from .history import (
     HistoryStore,
@@ -43,6 +43,136 @@ from .policy import Resolver
 
 class TaskError(RuntimeError):
     """Task submission or lifecycle failed."""
+
+
+MAX_CONTEXT_CONCLUSIONS = 256
+MAX_CONTEXT_CAPABILITIES = 256
+MAX_CONTEXT_ERRORS = 256
+_OUTPUT_BUDGET_ERROR = (
+    "task result exceeded the output budget; detailed evidence was omitted"
+)
+
+
+def _effective_config(plan: ProbePlan) -> EffectiveConfig:
+    return EffectiveConfig(
+        profile=plan.preview.profile,
+        targets=tuple(target.canonical for target in plan.preview.targets),
+        authorized=plan.preview.scope.attested,
+        policy_digest=plan.digest,
+        budget={
+            "limits": plan.preview.limits.to_wire(),
+            "estimate": plan.preview.estimate.to_wire(),
+            "logical_units": {
+                "rate": "attempt_starts_per_second",
+                "datagrams": "mercury_generated_udp_datagrams",
+                "bytes": "application_payload_bytes",
+            },
+        },
+        warnings=(
+            "Packet and byte counters exclude kernel retransmissions and framing.",
+        ),
+    )
+
+
+def _result_target(effective: EffectiveConfig) -> str:
+    joined = ",".join(effective.targets)
+    if len(joined) <= 1_024:
+        return joined
+    return f"{effective.targets[0]} (+{len(effective.targets) - 1} more targets)"
+
+
+def _make_result(
+    *,
+    task_id: str,
+    task_kind: str,
+    state: TaskState,
+    started_at: datetime,
+    ended_at: datetime,
+    requested_config: dict[str, object],
+    effective_config: EffectiveConfig,
+    progress: Progress,
+    observations: tuple[Observation, ...] = (),
+    conclusions: tuple[Conclusion, ...] = (),
+    capabilities: tuple[Capability, ...] = (),
+    errors: tuple[str, ...] = (),
+) -> TaskResult:
+    return TaskResult(
+        task_id=task_id,
+        task_kind=task_kind,
+        direction=Direction.LOCAL,
+        target=_result_target(effective_config),
+        state=state,
+        started_at=started_at,
+        ended_at=max(started_at, ended_at),
+        requested_config=requested_config,
+        effective_config=effective_config,
+        progress=progress,
+        observations=observations,
+        conclusions=conclusions,
+        capabilities=capabilities,
+        errors=errors,
+    )
+
+
+def _result_bytes(result: TaskResult) -> int:
+    return len(result_to_json(result).encode("utf-8"))
+
+
+def _output_budget_evidence(
+    instant: datetime,
+) -> tuple[Observation, Conclusion]:
+    observation = Observation(
+        id="task-output-budget",
+        probe="task_output",
+        disposition=Disposition.ERROR,
+        evidence_kind=EvidenceKind.EXECUTION_ERROR,
+        direction=Direction.LOCAL,
+        target="task",
+        started_at=instant,
+        ended_at=instant,
+        duration_ms=0.0,
+        source="mercury.tasks",
+        detail={"scope": "aggregate_result"},
+    )
+    conclusion = Conclusion(
+        id="task-output-summary",
+        title="Task output was bounded",
+        summary=(
+            "The full result exceeded its authorized output ceiling; "
+            "detailed evidence was omitted."
+        ),
+        health=Health.FAILED,
+        confidence=Confidence.HIGH,
+        observation_ids=(observation.id,),
+        limitations=("Only the bounded terminal summary was retained.",),
+    )
+    return observation, conclusion
+
+
+def _output_budget_result(
+    *,
+    task_id: str,
+    task_kind: str,
+    started_at: datetime,
+    ended_at: datetime,
+    requested_config: dict[str, object],
+    effective_config: EffectiveConfig,
+    progress: Progress,
+) -> TaskResult:
+    observation, conclusion = _output_budget_evidence(max(started_at, ended_at))
+    return _make_result(
+        task_id=task_id,
+        task_kind=task_kind,
+        state=TaskState.FAILED,
+        started_at=started_at,
+        ended_at=ended_at,
+        requested_config=requested_config,
+        effective_config=effective_config,
+        progress=progress,
+        observations=(observation,),
+        conclusions=(conclusion,),
+        errors=(_OUTPUT_BUDGET_ERROR,),
+    )
 
 
 class CooperativeCancellation(Exception):
@@ -88,7 +218,10 @@ class TaskContext:
         self,
         *,
         task_id: str,
+        task_kind: str,
         plan: ProbePlan,
+        requested_config: dict[str, object],
+        started_at: datetime,
         history: HistoryStore,
         cancellation: CancellationToken,
         wall_clock: Callable[[], datetime],
@@ -96,7 +229,11 @@ class TaskContext:
         resolver: Resolver | None,
     ) -> None:
         self.task_id = task_id
+        self.task_kind = task_kind
         self.plan = plan
+        self.requested_config = requested_config
+        self.started_at = started_at
+        self.effective_config = _effective_config(plan)
         self.history = history
         self.cancellation = cancellation
         self.wall_clock = wall_clock
@@ -110,7 +247,6 @@ class TaskContext:
         self.completed = 0
         self.generated_datagrams = 0
         self.application_bytes = 0
-        self._output_bytes = 0
         # accepted + running already exist; reserve one cancellation event.
         self._event_count = 3
         self._next_global_start = self.monotonic()
@@ -139,6 +275,51 @@ class TaskContext:
     @property
     def errors(self) -> tuple[str, ...]:
         return tuple(self._errors)
+
+    def _candidate_result(
+        self,
+        *,
+        observations: tuple[Observation, ...] | None = None,
+        conclusions: tuple[Conclusion, ...] | None = None,
+        capabilities: tuple[Capability, ...] | None = None,
+        errors: tuple[str, ...] | None = None,
+    ) -> TaskResult:
+        return _make_result(
+            task_id=self.task_id,
+            task_kind=self.task_kind,
+            state=TaskState.COMPLETED,
+            started_at=self.started_at,
+            ended_at=self.wall_clock(),
+            requested_config=self.requested_config,
+            effective_config=self.effective_config,
+            progress=Progress(
+                admitted=self.admitted,
+                completed=self.completed,
+                total=self.total,
+            ),
+            observations=observations
+            if observations is not None
+            else tuple(self._observations),
+            conclusions=conclusions
+            if conclusions is not None
+            else tuple(self._conclusions),
+            capabilities=capabilities
+            if capabilities is not None
+            else tuple(self._capabilities),
+            errors=errors if errors is not None else tuple(self._errors),
+        )
+
+    def _assert_output_fits(self, **changes: object) -> None:
+        try:
+            candidate = self._candidate_result(**changes)
+        except Exception as exc:
+            raise TaskError("runner contribution would make the result invalid") from exc
+        size = _result_bytes(candidate)
+        if size > self.plan.preview.limits.max_output_bytes:
+            raise TaskError(
+                "task output budget exhausted "
+                f"({size}>{self.plan.preview.limits.max_output_bytes} bytes)"
+            )
 
     async def admit(
         self,
@@ -221,17 +402,10 @@ class TaskContext:
             raise TaskError("runner attached evidence to an unadmitted plan step")
         wire = observation_to_wire(observation)
         assert_persistence_safe(wire, path="$.result.observations[]")
-        encoded_bytes = len(
-            dumps_document(wire).encode("utf-8")
-        )
-        if (
-            self._output_bytes + encoded_bytes
-            > self.plan.preview.limits.max_output_bytes
-        ):
-            raise TaskError("task output budget exhausted")
         if self._event_count + 2 > self.plan.preview.limits.max_events:
             raise TaskError("task event budget exhausted")
-        self._output_bytes += encoded_bytes
+        candidate = (*self._observations, observation)
+        self._assert_output_fits(observations=candidate)
         self._observations.append(observation)
         self._event_count += 1
         self.history.append_event(
@@ -250,26 +424,40 @@ class TaskContext:
     def add_conclusion(self, conclusion: Conclusion) -> None:
         if type(conclusion) is not Conclusion:
             raise TaskError("runner conclusion must be a Conclusion")
+        if len(self._conclusions) >= MAX_CONTEXT_CONCLUSIONS:
+            raise TaskError("too many task conclusions")
         assert_persistence_safe(
             conclusion_to_wire(conclusion),
             path="$.result.conclusions[]",
         )
+        candidate = (*self._conclusions, conclusion)
+        self._assert_output_fits(conclusions=candidate)
         self._conclusions.append(conclusion)
 
     def add_capability(self, capability: Capability) -> None:
         if type(capability) is not Capability:
             raise TaskError("runner capability must be a Capability")
+        if len(self._capabilities) >= MAX_CONTEXT_CAPABILITIES:
+            raise TaskError("too many task capabilities")
         assert_persistence_safe(
             capability_to_wire(capability),
             path="$.result.capabilities[]",
         )
+        candidate = (*self._capabilities, capability)
+        self._assert_output_fits(capabilities=candidate)
         self._capabilities.append(capability)
 
-    def add_error(self, value: object) -> None:
-        if len(self._errors) >= 256:
-            raise TaskError("too many task errors")
+    def add_error(self, value: object) -> bool:
+        if len(self._errors) >= MAX_CONTEXT_ERRORS:
+            return False
         message = sanitize_persisted_text(value, maximum=1_024)
-        self._errors.append(message or "unspecified task error")
+        candidate = (*self._errors, message or "unspecified task error")
+        try:
+            self._assert_output_fits(errors=candidate)
+        except TaskError:
+            return False
+        self._errors.append(candidate[-1])
+        return True
 
 
 class SyntheticRunner:
@@ -406,6 +594,29 @@ class TaskService:
         if identifier in self._tasks or identifier in self._results:
             raise TaskError(f"duplicate task ID {identifier!r}")
         request = project_history_request(dict(requested_config or {}))
+        effective = _effective_config(plan)
+        try:
+            fallback = _output_budget_result(
+                task_id=identifier,
+                task_kind=task_kind,
+                started_at=validation_time,
+                ended_at=validation_time,
+                requested_config=request,
+                effective_config=effective,
+                progress=Progress(
+                    admitted=0,
+                    completed=0,
+                    total=plan.preview.estimate.logical_attempts,
+                ),
+            )
+        except Exception as exc:
+            raise TaskError("task metadata cannot form a valid result") from exc
+        fallback_bytes = _result_bytes(fallback)
+        if fallback_bytes > plan.preview.limits.max_output_bytes:
+            raise TaskError(
+                "max_output_bytes cannot hold the canonical task result "
+                f"({fallback_bytes}>{plan.preview.limits.max_output_bytes} bytes)"
+            )
         self.history.create_task(
             task_id=identifier,
             task_kind=task_kind,
@@ -493,7 +704,10 @@ class TaskService:
         started_at = self._wall_clock()
         context = TaskContext(
             task_id=task_id,
+            task_kind=task_kind,
             plan=plan,
+            requested_config=requested_config,
+            started_at=started_at,
             history=self.history,
             cancellation=token,
             wall_clock=self._wall_clock,
@@ -573,34 +787,14 @@ class TaskService:
         conclusions = tuple(context.conclusions) or _derive_conclusion(
             observations, cancelled=cancelled, failed=failed
         )
-        effective = EffectiveConfig(
-            profile=plan.preview.profile,
-            targets=tuple(target.canonical for target in plan.preview.targets),
-            authorized=plan.preview.scope.attested,
-            policy_digest=plan.digest,
-            budget={
-                "limits": plan.preview.limits.to_wire(),
-                "estimate": plan.preview.estimate.to_wire(),
-                "logical_units": {
-                    "rate": "attempt_starts_per_second",
-                    "datagrams": "mercury_generated_udp_datagrams",
-                    "bytes": "application_payload_bytes",
-                },
-            },
-            warnings=(
-                "Packet and byte counters exclude kernel retransmissions and framing.",
-            ),
-        )
-        result = TaskResult(
+        result = _make_result(
             task_id=task_id,
             task_kind=task_kind,
-            direction=Direction.LOCAL,
-            target=",".join(effective.targets),
             state=state,
             started_at=started_at,
             ended_at=ended_at,
             requested_config=requested_config,
-            effective_config=effective,
+            effective_config=context.effective_config,
             progress=Progress(
                 admitted=context.admitted,
                 completed=context.completed,
@@ -611,6 +805,20 @@ class TaskService:
             capabilities=tuple(context.capabilities),
             errors=tuple(context.errors),
         )
+        if _result_bytes(result) > plan.preview.limits.max_output_bytes:
+            result = _output_budget_result(
+                task_id=task_id,
+                task_kind=task_kind,
+                started_at=started_at,
+                ended_at=ended_at,
+                requested_config=requested_config,
+                effective_config=context.effective_config,
+                progress=Progress(
+                    admitted=context.admitted,
+                    completed=context.completed,
+                    total=context.total,
+                ),
+            )
         self.history.append_event(
             task_id=task_id,
             event_type="terminal",
