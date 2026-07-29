@@ -12,7 +12,7 @@ engine.
 
 ## Phases
 
-- [ ] **Phase 1: Evidence and Safety Foundation** - Establish the package, versioned observations, policy/budgets, task lifecycle and local history.
+- [x] **Phase 1: Evidence and Safety Foundation** - Establish the package, versioned observations, policy/budgets, task lifecycle and local history.
 - [ ] **Phase 2: Local Snapshot and Layered Diagnosis** - Deliver a useful cross-platform CLI for network facts and multi-layer reachability.
 - [ ] **Phase 3: Authenticated Paired Differential Diagnostics** - Run one bounded cross-layer plan from both Mercury endpoints and explain directional differences.
 - [ ] **Phase 4: Safe Discovery, Topology Evidence, and Routes** - Add passive-first subnet context, bounded TCP discovery, honest route evidence, neighbors and optional LLDP.
@@ -43,9 +43,9 @@ confidence-aware result model and an immutable authorized budget.
 
 Plans:
 
-- [ ] 01-01: Create the lean Python package, result/capability models, JSON codec and SQLite history.
-- [ ] 01-02: Implement target canonicalization, scope authorization, cost preview, hard budgets and cancellable task execution.
-- [ ] 01-03: Add baseline model/policy/history/task tests and installation/version commands.
+- [x] 01-01: Create the lean Python package, result/capability models, JSON codec and SQLite history.
+- [x] 01-02: Implement target canonicalization, scope authorization, cost preview, hard budgets and cancellable task execution.
+- [x] 01-03: Add baseline model/policy/history/task tests and installation/version commands.
 
 ### Phase 2: Local Snapshot and Layered Diagnosis
 
@@ -182,7 +182,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Evidence and Safety Foundation | 0/3 | Not started | - |
+| 1. Evidence and Safety Foundation | 3/3 | Complete | 2026-07-30 |
 | 2. Local Snapshot and Layered Diagnosis | 0/3 | Not started | - |
 | 3. Authenticated Paired Differential Diagnostics | 0/3 | Not started | - |
 | 4. Safe Discovery, Topology Evidence, and Routes | 0/2 | Not started | - |

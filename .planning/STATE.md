@@ -5,30 +5,31 @@
 See: `.planning/PROJECT.md` (updated 2026-07-30)
 
 **Core value:** 在用户明确授权的网络范围内，以安全、可解释且可复现的方式定位节点间可达性故障及其网络层原因。  
-**Current focus:** Phase 1 — Evidence and Safety Foundation
+**Current focus:** Phase 2 — Local Snapshot and Layered Diagnosis
 
 ## Current Position
 
-Phase: 1 of 5 (Evidence and Safety Foundation)  
+Phase: 2 of 5 (Local Snapshot and Layered Diagnosis)
+
 Plan: 0 of 3 in current phase  
 Status: Ready to plan  
-Last activity: 2026-07-30 — Research completed; 42 requirements mapped to five phases
+Last activity: 2026-07-30 — Phase 1 passed independent review and verification
 
-Progress: [----------] 0%
+Progress: [##--------] 20%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: 0 hours
+- Total plans completed: 3
+- Average duration: not separately tracked (combined Phase 1 execution)
+- Total execution time: approximately 2.8 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| Phase 1 | 3 | approximately 2.8 hours | combined execution |
 
 **Recent Trend:** No completed plans yet.
 
@@ -45,6 +46,10 @@ Full decisions live in `.planning/PROJECT.md`.
   separate token; remote Web uses TLS/token; neither may become a scan oracle.
 - Roadmap: the paired cross-layer differential slice precedes discovery/LLDP,
   which remains a bounded context feature rather than the product thesis.
+- Phase 1: a successful task must complete every immutable step with at least
+  one observation bound to authoritative step/target/port/transport metadata.
+- Phase 1: persisted requests use exact per-field projections; credential text
+  and raw custom content fail before SQLite.
 
 ### Pending Todos
 
@@ -67,5 +72,6 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-07-30  
-Stopped at: Roadmap ready; Phase 1 planning next  
+Stopped at: Phase 1 verified; Phase 2 ready for research reconciliation and planning
+
 Resume file: None

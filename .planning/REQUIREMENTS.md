@@ -7,17 +7,17 @@
 
 ### Evidence and task semantics
 
-- [ ] **EVID-01**: 用户获得的每次诊断结果都包含模式版本、任务 ID、方向、目标、开始/结束时间、有效配置和结构化观测。
-- [ ] **EVID-02**: 用户能区分成功、拒绝、超时、静默、不支持、权限不足和执行错误，而不会把 UDP/ICMP 静默误报为确定结论。
-- [ ] **EVID-03**: 用户看到的结论包含置信度、支持它的观测和可能的其他解释。
-- [ ] **EVID-04**: 用户可以取消长任务，并保留状态为 cancelled 的有效部分结果。
+- [x] **EVID-01**: 用户获得的每次诊断结果都包含模式版本、任务 ID、方向、目标、开始/结束时间、有效配置和结构化观测。
+- [x] **EVID-02**: 用户能区分成功、拒绝、超时、静默、不支持、权限不足和执行错误，而不会把 UDP/ICMP 静默误报为确定结论。
+- [x] **EVID-03**: 用户看到的结论包含置信度、支持它的观测和可能的其他解释。
+- [x] **EVID-04**: 用户可以取消长任务，并保留状态为 cancelled 的有效部分结果。
 
 ### Safety and authorization
 
-- [ ] **SAFE-01**: 用户发起主动探测前能看到规范化目标范围和预计主机、端口、尝试次数及最坏耗时。
-- [ ] **SAFE-02**: 系统对每个任务强制执行主机数、端口数、逻辑尝试、Mercury 生成的 UDP 数据报/应用载荷字节、全局与每目标 attempt-start 速率、并发数、持续时间、事件数和输出大小的不可绕过绝对上限；绝对上限至少允许单主机 1–65535 TCP 检查，但不允许多维无界笛卡尔积，且不得声称精确计量内核重传或线上帧开销。
-- [ ] **SAFE-03**: 任何非 loopback 主动任务都需要用户显式声明已获目标授权；全 TCP 端口模式和自定义 UDP 载荷还分别需要独立危险确认。
-- [ ] **SAFE-04**: 用户输入的 IPv4、IPv6、CIDR 和主机名在连接时按解析后的每个地址重新接受范围策略检查。
+- [x] **SAFE-01**: 用户发起主动探测前能看到规范化目标范围和预计主机、端口、尝试次数及最坏耗时。
+- [x] **SAFE-02**: 系统对每个任务强制执行主机数、端口数、逻辑尝试、Mercury 生成的 UDP 数据报/应用载荷字节、全局与每目标 attempt-start 速率、并发数、持续时间、事件数和输出大小的不可绕过绝对上限；绝对上限至少允许单主机 1–65535 TCP 检查，但不允许多维无界笛卡尔积，且不得声称精确计量内核重传或线上帧开销。
+- [x] **SAFE-03**: 任何非 loopback 主动任务都需要用户显式声明已获目标授权；全 TCP 端口模式和自定义 UDP 载荷还分别需要独立危险确认。
+- [x] **SAFE-04**: 用户输入的 IPv4、IPv6、CIDR 和主机名在连接时按解析后的每个地址重新接受范围策略检查。
 - [ ] **SAFE-05**: 非 loopback 的 Mercury agent 在没有 TLS 证书、私钥、受信客户端证书和访问令牌时拒绝启动；仅显式开发覆盖可关闭 mTLS，且必须产生醒目审计警告。
 
 ### Local network inventory
@@ -58,7 +58,7 @@
 - [ ] **WEB-02**: 用户可从 WebUI 提交 basic 诊断、paired 差异诊断、授权 discovery 和 route 任务，轮询查看进度、取消并打开结构化结果及 A↔B 分层矩阵。
 - [ ] **WEB-03**: WebUI 使用与 CLI 完全相同的服务函数和结果模型，不维护第二套探测逻辑。
 - [ ] **WEB-04**: WebUI 默认仅绑定 loopback，并校验 Host、Origin、SameSite session、CSRF header、请求体上限和 CSP；非 loopback 绑定在没有 TLS 证书、私钥和访问令牌时拒绝启动，除非用户显式启用仅供开发的不安全模式。
-- [ ] **HIST-01**: 用户的任务请求、有效计划、状态和原始结果保存在仅当前用户可访问的本地 SQLite 中，并受数量/时间保留上限控制；token、私钥、配对密钥和未截断自定义载荷永不持久化。
+- [x] **HIST-01**: 用户的任务请求、有效计划、状态和原始结果保存在仅当前用户可访问的本地 SQLite 中，并受数量/时间保留上限控制；token、私钥、配对密钥和未截断自定义载荷永不持久化。
 - [ ] **HIST-02**: 用户可从 CLI/WebUI 查看和比较两个兼容的历史任务，并导出 JSON 或自包含 HTML 报告。
 - [ ] **HIST-03**: 导出默认脱敏访问令牌、主机名、MAC、公网 IP 和原始载荷；用户必须显式选择保留敏感字段。
 
@@ -66,7 +66,7 @@
 
 - [ ] **PACK-01**: 用户从同一个 Python wheel/安装目录获得 `mercury` CLI、agent 和 WebUI 静态资源。
 - [ ] **PACK-02**: Windows、Linux 和 macOS 普通用户都能运行 inventory、TCP/TLS/HTTP 和 WebUI 基线，并看到特权/工具缺失的降级说明。
-- [ ] **TEST-01**: 维护者能用标准库测试运行证据模型、目标策略、预算、状态迁移、历史保留及取消逻辑。
+- [x] **TEST-01**: 维护者能用标准库测试运行证据模型、目标策略、预算、状态迁移、历史保留及取消逻辑。
 - [ ] **TEST-02**: 维护者能在受控环境验证成功、拒绝、超时/丢弃、UDP 静默、DNS 失败、延迟和不对称路径，而 CI 不会扫描未授权公网。
 - [ ] **TEST-03**: 维护者能用标准库测试平台解析器、Web API 安全边界、peer mTLS/token 鉴权、重放/越权拒绝和双端证据关联。
 - [ ] **DOCS-01**: 用户文档包含安全授权说明、快速开始、各平台能力、TLS agent 配置、结果语义和明确非目标。
@@ -107,14 +107,14 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EVID-01 | Phase 1 | Pending |
-| EVID-02 | Phase 1 | Pending |
-| EVID-03 | Phase 1 | Pending |
-| EVID-04 | Phase 1 | Pending |
-| SAFE-01 | Phase 1 | Pending |
-| SAFE-02 | Phase 1 | Pending |
-| SAFE-03 | Phase 1 | Pending |
-| SAFE-04 | Phase 1 | Pending |
+| EVID-01 | Phase 1 | Complete |
+| EVID-02 | Phase 1 | Complete |
+| EVID-03 | Phase 1 | Complete |
+| EVID-04 | Phase 1 | Complete |
+| SAFE-01 | Phase 1 | Complete |
+| SAFE-02 | Phase 1 | Complete |
+| SAFE-03 | Phase 1 | Complete |
+| SAFE-04 | Phase 1 | Complete |
 | SAFE-05 | Phase 3 | Pending |
 | INVT-01 | Phase 2 | Pending |
 | INVT-02 | Phase 2 | Pending |
@@ -140,12 +140,12 @@
 | WEB-02 | Phase 5 | Pending |
 | WEB-03 | Phase 5 | Pending |
 | WEB-04 | Phase 5 | Pending |
-| HIST-01 | Phase 1 | Pending |
+| HIST-01 | Phase 1 | Complete |
 | HIST-02 | Phase 5 | Pending |
 | HIST-03 | Phase 5 | Pending |
 | PACK-01 | Phase 5 | Pending |
 | PACK-02 | Phase 5 | Pending |
-| TEST-01 | Phase 1 | Pending |
+| TEST-01 | Phase 1 | Complete |
 | TEST-02 | Phase 5 | Pending |
 | TEST-03 | Phase 5 | Pending |
 | DOCS-01 | Phase 5 | Pending |
