@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -40,6 +41,12 @@ _SENSITIVE_VALUE_PATTERNS = (
         r"(?i)\b(?:authorization|proxy-authorization|x-api-key)\s*:\s*\S+"
     ),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{4,}"),
+    re.compile(
+        r"(?i)\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|"
+        r"api[_-]?key|password|passwd|client[_-]?secret|private[_-]?key|"
+        r"pairing[_-]?key|credential|cookie|session[_-]?id)"
+        r"\s*(?:=|:)\s*[\"']?[^\s,\"';]+"
+    ),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
 
@@ -255,7 +262,109 @@ def project_history_request(value: Mapping[str, Any]) -> dict[str, Any]:
             "history request contains unsupported fields: "
             + ", ".join(sorted(str(item) for item in unknown))
         )
-    return json.loads(dumps_document(value))
+
+    projected: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"profile", "payload_profile"}:
+            if (
+                type(item) is not str
+                or not item
+                or len(item) > 128
+                or "\x00" in item
+            ):
+                raise HistoryError(f"history request {key} is invalid")
+            projected[key] = item
+        elif key == "purpose":
+            if type(item) is not str or len(item) > 8_192 or "\x00" in item:
+                raise HistoryError("history request purpose is invalid")
+            projected[key] = item
+        elif key == "targets":
+            if (
+                not isinstance(item, (list, tuple))
+                or not item
+                or len(item) > 4_096
+            ):
+                raise HistoryError("history request targets must be a bounded sequence")
+            targets: list[str] = []
+            for target in item:
+                if (
+                    type(target) is not str
+                    or not target
+                    or len(target) > 1_024
+                    or "\x00" in target
+                ):
+                    raise HistoryError("history request target is invalid")
+                targets.append(target)
+            projected[key] = targets
+        elif key == "ports":
+            if (
+                not isinstance(item, (list, tuple))
+                or not item
+                or len(item) > 65_535
+            ):
+                raise HistoryError("history request ports must be a bounded sequence")
+            ports: list[int] = []
+            for port in item:
+                if type(port) is not int or not 1 <= port <= 65_535:
+                    raise HistoryError("history request port is invalid")
+                ports.append(port)
+            projected[key] = ports
+        elif key == "transports":
+            if (
+                not isinstance(item, (list, tuple))
+                or not item
+                or len(item) > 2
+            ):
+                raise HistoryError(
+                    "history request transports must be a bounded sequence"
+                )
+            transports: list[str] = []
+            for transport in item:
+                if (
+                    type(transport) is not str
+                    or transport.casefold() not in {"tcp", "udp"}
+                ):
+                    raise HistoryError("history request transport is invalid")
+                transports.append(transport.casefold())
+            projected[key] = transports
+        elif key in {"steps", "repeats", "datagrams"}:
+            maximum = {
+                "steps": 100_000,
+                "repeats": 100,
+                "datagrams": 200_000,
+            }[key]
+            if type(item) is not int or not 1 <= item <= maximum:
+                raise HistoryError(f"history request {key} is invalid")
+            projected[key] = item
+        elif key in {"payload_bytes", "payload_length"}:
+            if type(item) is not int or not 0 <= item <= 64 * 1024 * 1024:
+                raise HistoryError(f"history request {key} is invalid")
+            projected[key] = item
+        elif key == "payload_sha256":
+            if type(item) is not str or not re.fullmatch(r"[0-9a-f]{64}", item):
+                raise HistoryError("history request payload_sha256 is invalid")
+            projected[key] = item
+        elif key in {"delay_s", "timeout_s"}:
+            if type(item) not in (int, float):
+                raise HistoryError(f"history request {key} is invalid")
+            number = float(item)
+            minimum = 0.0 if key == "delay_s" else 0.0
+            if (
+                not math.isfinite(number)
+                or number < minimum
+                or (key == "timeout_s" and number == 0)
+                or number > 3_600
+            ):
+                raise HistoryError(f"history request {key} is invalid")
+            projected[key] = number
+        elif key == "network_io":
+            if type(item) is not bool:
+                raise HistoryError("history request network_io is invalid")
+            projected[key] = item
+        else:  # guarded by the top-level allowlist above
+            raise HistoryError(f"history request {key} is unsupported")
+
+    return json.loads(dumps_document(projected))
 
 
 def _json_for_store(
@@ -578,7 +687,7 @@ class HistoryStore:
         if type(digest) is not str or not digest or len(digest) > 256:
             raise HistoryError("task plan must contain a bounded digest")
         request_json = _json_for_store(
-            request,
+            project_history_request(request),
             maximum=MAX_AUX_JSON_BYTES,
             allowed_keys=_REQUEST_KEYS,
             path="$.request",

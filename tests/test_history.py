@@ -219,6 +219,41 @@ class HistoryTests(unittest.TestCase):
                 plan={"digest": "unknown"},
             )
 
+    def test_allowed_request_fields_cannot_hide_raw_content(self) -> None:
+        cases = (
+            {"steps": [{"data": "RAW-CUSTOM-UDP-BYTES"}]},
+            {"targets": [{"content": "RAW-RESPONSE"}]},
+            {"ports": [True]},
+            {"transports": ["icmp"]},
+            {"network_io": 1},
+        )
+        for index, request in enumerate(cases, 1):
+            with self.subTest(request=request), self.assertRaises(HistoryError):
+                self._create_task(
+                    task_id=f"typed-request-{index}",
+                    task_kind="fixture",
+                    request=request,
+                    plan={"digest": f"typed-request-{index}"},
+                )
+
+    def test_credential_assignments_in_text_are_rejected(self) -> None:
+        for index, text in enumerate(
+            (
+                "access_token=top-secret",
+                "password: hunter2",
+                "client-secret='do-not-store'",
+                "session_id=opaque-value",
+            ),
+            1,
+        ):
+            with self.subTest(text=text), self.assertRaises(HistoryError):
+                self._create_task(
+                    task_id=f"credential-text-{index}",
+                    task_kind="fixture",
+                    request={"purpose": text},
+                    plan={"digest": f"credential-text-{index}"},
+                )
+
     def test_count_retention_prunes_oldest_terminal_tasks(self) -> None:
         for index in range(3):
             self.clock.value += timedelta(minutes=1)

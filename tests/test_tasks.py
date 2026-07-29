@@ -328,27 +328,39 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary.health, Health.PARTIAL)
 
     async def test_exception_credentials_are_sanitized_before_persistence(self) -> None:
-        async def leaks_secret(context: TaskContext) -> None:
-            raise RuntimeError("Authorization: Bearer top-secret")
+        for index, secret in enumerate(
+            (
+                "Authorization: Bearer top-secret",
+                "access_token=top-secret",
+                "password: hunter2",
+            ),
+            1,
+        ):
+            async def leaks_secret(
+                context: TaskContext,
+                secret: str = secret,
+            ) -> None:
+                raise RuntimeError(secret)
 
-        result = await self.service.run(
-            synthetic_plan(1),
-            leaks_secret,
-            task_kind="synthetic",
-            task_id="sanitize-exception",
-        )
-        self.assertEqual(result.state, TaskState.FAILED)
-        record = self.history.get_task("sanitize-exception")
-        assert record is not None and record.result is not None
-        serialized = result_to_json(record.result)
-        self.assertNotIn("top-secret", serialized)
-        self.assertIn("redacted", serialized)
-        observation = next(
-            item
-            for item in record.result.observations
-            if item.evidence_kind is EvidenceKind.EXECUTION_ERROR
-        )
-        self.assertIn("redacted", observation.detail["message"])
+            task_id = f"sanitize-exception-{index}"
+            result = await self.service.run(
+                synthetic_plan(1),
+                leaks_secret,
+                task_kind="synthetic",
+                task_id=task_id,
+            )
+            self.assertEqual(result.state, TaskState.FAILED)
+            record = self.history.get_task(task_id)
+            assert record is not None and record.result is not None
+            serialized = result_to_json(record.result)
+            self.assertNotIn(secret, serialized)
+            self.assertIn("redacted", serialized)
+            observation = next(
+                item
+                for item in record.result.observations
+                if item.evidence_kind is EvidenceKind.EXECUTION_ERROR
+            )
+            self.assertIn("redacted", observation.detail["message"])
 
     async def test_runner_cannot_exceed_immutable_total(self) -> None:
         async def excessive(context: TaskContext) -> None:
@@ -414,6 +426,102 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.state, TaskState.COMPLETED)
         self.assertEqual(len(result.observations), 1)
         self.assertEqual(result.observations[0].target, "127.0.0.1")
+        self.assertRegex(
+            result.observations[0].detail["plan_step_id"],
+            r"^step-[0-9a-f]{64}$",
+        )
+        self.assertEqual(result.observations[0].detail["port"], 1)
+        self.assertEqual(result.observations[0].detail["transport"], "tcp")
+        self.assertFalse(result.observations[0].detail["dns_changed"])
+
+    async def test_step_evidence_transport_and_reserved_fields_are_bound(
+        self,
+    ) -> None:
+        preview = preview_plan(
+            target_values=("127.0.0.1",),
+            ports=(53,),
+            transports=("udp",),
+            grant=ScopeGrant(networks=()),
+        )
+
+        async def records_bound_evidence(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            prepared = await context.admit(step.id)
+            instant = context.wall_clock()
+            base = Observation(
+                id="udp-bound-observation",
+                probe="custom-test",
+                disposition=Disposition.POSITIVE,
+                evidence_kind=EvidenceKind.LOCAL_FACT,
+                direction=Direction.LOCAL,
+                target=prepared.address,
+                started_at=instant,
+                ended_at=instant,
+                duration_ms=0.0,
+                attempt=step.attempt,
+                source="tests",
+            )
+            with self.assertRaisesRegex(TaskError, "transport"):
+                context.record(
+                    replace(
+                        base,
+                        evidence_kind=EvidenceKind.TCP_CONNECTED,
+                    ),
+                    step_id=step.id,
+                )
+            with self.assertRaisesRegex(TaskError, "reserved"):
+                context.record(
+                    replace(base, detail={"port": 1}),
+                    step_id=step.id,
+                )
+            context.record(base, step_id=step.id)
+            context.complete_attempt(step.id)
+
+        result = await self.service.run(
+            authorize_plan(preview),
+            records_bound_evidence,
+            task_kind="synthetic",
+            task_id="transport-bound-evidence",
+        )
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        detail = result.observations[0].detail
+        self.assertEqual(detail["port"], 53)
+        self.assertEqual(detail["transport"], "udp")
+        self.assertEqual(
+            detail["plan_step_id"],
+            preview.steps[0].id,
+        )
+
+    async def test_success_requires_every_step_to_finish_with_evidence(self) -> None:
+        async def returns_without_work(context: TaskContext) -> None:
+            return None
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            returns_without_work,
+            task_kind="synthetic",
+            task_id="empty-success",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        self.assertEqual(result.progress.completed, 0)
+        self.assertTrue(
+            any("every authorized plan step" in error for error in result.errors)
+        )
+
+        async def completes_without_evidence(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
+            with self.assertRaisesRegex(TaskError, "without evidence"):
+                context.complete_attempt(step.id)
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            completes_without_evidence,
+            task_kind="synthetic",
+            task_id="evidence-free-completion",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        self.assertEqual(result.progress.completed, 0)
 
     async def test_complete_result_never_exceeds_output_budget(self) -> None:
         limits = replace(DEFAULT_LIMITS, max_output_bytes=5_000)
@@ -797,7 +905,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(prepared.address, "127.0.0.1")
             with self.assertRaisesRegex(TaskError, "twice"):
                 await context.admit(step.id)
-            context.complete_attempt(step.id)
+            record_fixture(context, 1, step.id)
 
         result = await self.service.run(
             synthetic_plan(1),

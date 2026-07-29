@@ -6,7 +6,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable, Protocol
 
@@ -39,7 +39,7 @@ from .models import (
     TaskState,
     utc_now,
 )
-from .planner import PreparedStep, ProbePlan, validate_plan
+from .planner import PreparedStep, ProbePlan, Transport, validate_plan
 from .policy import Resolver
 
 
@@ -61,6 +61,30 @@ _RESERVED_TASK_OBSERVATION_IDS = frozenset(
         "task-finalization-error",
         "task-output-budget",
         "task-timeout",
+    }
+)
+_RESERVED_STEP_DETAIL_KEYS = frozenset(
+    {
+        "plan_step_id",
+        "planned_target",
+        "port",
+        "transport",
+        "dns_changed",
+    }
+)
+_TCP_ONLY_EVIDENCE = frozenset(
+    {
+        EvidenceKind.TCP_CONNECTED,
+        EvidenceKind.TCP_REFUSED,
+        EvidenceKind.TCP_RESET,
+        EvidenceKind.TLS_HANDSHAKE,
+        EvidenceKind.HTTP_RESPONSE,
+    }
+)
+_UDP_ONLY_EVIDENCE = frozenset(
+    {
+        EvidenceKind.UDP_APPLICATION_REPLY,
+        EvidenceKind.SILENT,
     }
 )
 
@@ -369,6 +393,7 @@ class TaskContext:
         self._steps = {step.id: step for step in plan.preview.steps}
         self._admitted_steps: set[str] = set()
         self._prepared_steps: dict[str, PreparedStep] = {}
+        self._observed_steps: set[str] = set()
         self._completed_steps: set[str] = set()
         self._admission_lock = asyncio.Lock()
 
@@ -446,12 +471,6 @@ class TaskContext:
         if type(step_id) is not str or step_id not in self._steps:
             raise TaskError("runner requested an unknown plan step ID")
         await self.cancellation.checkpoint()
-        preflight_kwargs: dict[str, object] = {"now": self.wall_clock()}
-        if self.resolver is not None:
-            preflight_kwargs["resolver"] = self.resolver
-        if payload is not None:
-            preflight_kwargs["payload"] = payload
-        prepared = self.plan.preflight_step(step_id, **preflight_kwargs)
         async with self._admission_lock:
             await self.cancellation.checkpoint()
             if step_id in self._admitted_steps:
@@ -463,6 +482,12 @@ class TaskContext:
                 >= self.plan.preview.limits.max_concurrency
             ):
                 raise TaskError("runner exceeded the in-flight concurrency ceiling")
+            preflight_kwargs: dict[str, object] = {"now": self.wall_clock()}
+            if self.resolver is not None:
+                preflight_kwargs["resolver"] = self.resolver
+            if payload is not None:
+                preflight_kwargs["payload"] = payload
+            prepared = self.plan.preflight_step(step_id, **preflight_kwargs)
             target_key = prepared.address
             now = self.monotonic()
             next_target = self._next_target_start.get(target_key, now)
@@ -502,6 +527,8 @@ class TaskContext:
             raise TaskError("runner completed work that was not admitted")
         if step_id in self._completed_steps:
             raise TaskError("runner completed a plan step twice")
+        if step_id not in self._observed_steps:
+            raise TaskError("runner cannot complete a plan step without evidence")
         self._completed_steps.add(step_id)
         self.completed += 1
 
@@ -520,13 +547,43 @@ class TaskContext:
         prepared = self._prepared_steps.get(step_id)
         if prepared is None:
             raise TaskError("runner attached evidence to an unadmitted plan step")
+        if step_id in self._completed_steps:
+            raise TaskError("runner attached evidence to a completed plan step")
         if observation.target != prepared.address:
             raise TaskError("runner evidence target does not match its admitted step")
         if observation.attempt != prepared.step.attempt:
             raise TaskError("runner evidence attempt does not match its admitted step")
+        if (
+            prepared.step.transport is Transport.UDP
+            and observation.evidence_kind in _TCP_ONLY_EVIDENCE
+        ) or (
+            prepared.step.transport is Transport.TCP
+            and observation.evidence_kind in _UDP_ONLY_EVIDENCE
+        ):
+            raise TaskError(
+                "runner evidence kind does not match its admitted transport"
+            )
+        conflicting = _RESERVED_STEP_DETAIL_KEYS.intersection(observation.detail)
+        if conflicting:
+            raise TaskError(
+                "runner cannot supply reserved step evidence fields: "
+                + ", ".join(sorted(conflicting))
+            )
         if observation.id in _RESERVED_TASK_OBSERVATION_IDS:
             raise TaskError("runner cannot use a reserved task observation ID")
-        self._append_observation(observation)
+        detail = dict(observation.detail)
+        detail.update(
+            {
+                "plan_step_id": step_id,
+                "planned_target": prepared.step.target,
+                "port": prepared.step.port,
+                "transport": prepared.step.transport.value,
+                "dns_changed": prepared.dns_changed,
+            }
+        )
+        bound_observation = replace(observation, detail=detail)
+        self._append_observation(bound_observation)
+        self._observed_steps.add(step_id)
 
     def _record_task_observation(self, observation: Observation) -> None:
         """Record aggregate terminal evidence without changing probe progress."""
@@ -1068,6 +1125,13 @@ class TaskService:
                 )
                 async with asyncio.timeout(plan.preview.limits.max_duration_s):
                     await runner(context)
+                    if token.cancelled:
+                        raise CooperativeCancellation
+                    if context.completed != context.total:
+                        raise TaskError(
+                            "runner returned before completing every authorized "
+                            "plan step"
+                        )
             except (CooperativeCancellation, asyncio.CancelledError):
                 token.cancel()
                 cancelled = True
