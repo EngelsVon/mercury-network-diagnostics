@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mercury-netdiag"
+version = "0.1.0"
+description = "Evidence-first local and paired network reachability diagnostics"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["psutil>=7.0,<8"]
+authors = [{name = "Mercury contributors"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Networking",
+]
+
+[project.scripts]
+mercury = "mercury.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mercury = ["web/static/*"]
+
