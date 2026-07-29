@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Iterable
 
 from . import MODEL_SCHEMA_VERSION
@@ -29,6 +30,11 @@ class BudgetError(ValueError):
 
 class ConfirmationError(PermissionError):
     """A digest-bound high-risk confirmation is missing."""
+
+
+class Transport(StrEnum):
+    TCP = "tcp"
+    UDP = "udp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +141,143 @@ class WorkEstimate:
 
 
 @dataclass(frozen=True, slots=True)
+class PayloadMetadata:
+    profile: str
+    length: int
+    sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.profile) is not str
+            or not self.profile
+            or len(self.profile) > 128
+        ):
+            raise BudgetError("payload profile is invalid")
+        if type(self.length) is not int or not 0 <= self.length <= 1_400:
+            raise BudgetError("payload length must be within 0..1400")
+        if self.sha256 is not None and (
+            type(self.sha256) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", self.sha256)
+        ):
+            raise BudgetError("payload sha256 must be lowercase SHA-256")
+
+    @property
+    def custom(self) -> bool:
+        return self.sha256 is not None
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "profile": self.profile,
+            "length": self.length,
+            "sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StepCost:
+    logical_attempts: int
+    generated_datagrams: int
+    application_bytes: int
+
+    def __post_init__(self) -> None:
+        if type(self.logical_attempts) is not int or self.logical_attempts != 1:
+            raise BudgetError("step logical_attempts must equal one")
+        for name in ("generated_datagrams", "application_bytes"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise BudgetError(f"step {name} must be a non-negative integer")
+
+    def to_wire(self) -> dict[str, int]:
+        return {
+            "logical_attempts": self.logical_attempts,
+            "generated_datagrams": self.generated_datagrams,
+            "application_bytes": self.application_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeStep:
+    id: str
+    target: str
+    address: str
+    scope_id: str | None
+    port: int
+    transport: Transport
+    attempt: int
+    source_hostname: str | None
+    resolution_slot: int | None
+    payload: PayloadMetadata
+    cost: StepCost
+
+    def __post_init__(self) -> None:
+        if type(self.id) is not str or not re.fullmatch(r"step-[0-9a-f]{64}", self.id):
+            raise BudgetError("step id must be a canonical SHA-256 identifier")
+        if type(self.target) is not str:
+            raise BudgetError("step target must be text")
+        canonical_target = normalize_targets((self.target,))[0]
+        if canonical_target.canonical != self.target:
+            raise BudgetError("step target is not canonical")
+        if type(self.address) is not str:
+            raise BudgetError("step address must be text")
+        address_target = normalize_targets((self.address,))[0]
+        if address_target.kind is not TargetKind.ADDRESS:
+            raise BudgetError("step address must be a concrete address")
+        if address_target.scope_id != self.scope_id:
+            raise BudgetError("step scope ID does not match its address")
+        if type(self.port) is not int or not 1 <= self.port <= 65_535:
+            raise BudgetError("step port is invalid")
+        if type(self.transport) is not Transport:
+            raise BudgetError("step transport must be Transport")
+        if type(self.attempt) is not int or not 1 <= self.attempt <= 100:
+            raise BudgetError("step attempt is invalid")
+        if self.source_hostname is not None:
+            if (
+                type(self.source_hostname) is not str
+                or canonical_target.hostname != self.source_hostname
+                or type(self.resolution_slot) is not int
+                or self.resolution_slot < 0
+            ):
+                raise BudgetError("step hostname resolution metadata is invalid")
+        elif self.resolution_slot is not None:
+            raise BudgetError("non-hostname step cannot have a resolution slot")
+        if type(self.payload) is not PayloadMetadata:
+            raise BudgetError("step payload must be PayloadMetadata")
+        if type(self.cost) is not StepCost:
+            raise BudgetError("step cost must be StepCost")
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "target": self.target,
+            "address": self.address,
+            "scope_id": self.scope_id,
+            "port": self.port,
+            "transport": self.transport.value,
+            "attempt": self.attempt,
+            "source_hostname": self.source_hostname,
+            "resolution_slot": self.resolution_slot,
+            "payload_metadata": self.payload.to_wire(),
+            "cost": self.cost.to_wire(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedStep:
+    step: ProbeStep
+    address: str
+    dns_changed: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.step) is not ProbeStep:
+            raise ConfirmationError("prepared step must reference ProbeStep")
+        address = normalize_targets((self.address,))[0]
+        if address.kind is not TargetKind.ADDRESS:
+            raise ConfirmationError("prepared step address must be concrete")
+        if type(self.dns_changed) is not bool:
+            raise ConfirmationError("dns_changed must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
 class PlanPreview:
     profile: str
     targets: tuple[Target, ...]
@@ -143,6 +286,7 @@ class PlanPreview:
     repeats: int
     payload_bytes_per_attempt: int
     datagrams_per_udp_attempt: int
+    steps: tuple[ProbeStep, ...]
     scope: ScopeGrant
     resolutions: tuple[ResolutionSnapshot, ...]
     limits: BudgetLimits
@@ -157,6 +301,7 @@ class PlanPreview:
         for attribute, item_type, name in (
             ("targets", Target, "targets"),
             ("resolutions", ResolutionSnapshot, "resolutions"),
+            ("steps", ProbeStep, "steps"),
         ):
             value = getattr(self, attribute)
             if not isinstance(value, (list, tuple)):
@@ -172,6 +317,11 @@ class PlanPreview:
             object.__setattr__(self, attribute, tuple(value))
         if not self.targets:
             raise BudgetError("plan must contain at least one target")
+        if not self.steps:
+            raise BudgetError("plan must contain at least one finite step")
+        step_ids = tuple(step.id for step in self.steps)
+        if len(step_ids) != len(set(step_ids)):
+            raise BudgetError("plan step IDs must be unique")
         if any(type(port) is not int or not 1 <= port <= 65_535 for port in self.ports):
             raise BudgetError("plan contains an invalid port")
         if any(
@@ -225,6 +375,7 @@ class PlanPreview:
             "repeats": self.repeats,
             "payload_bytes_per_attempt": self.payload_bytes_per_attempt,
             "datagrams_per_udp_attempt": self.datagrams_per_udp_attempt,
+            "steps": [step.to_wire() for step in self.steps],
             "scope": self.scope.to_wire(),
             "resolutions": [
                 {
@@ -283,6 +434,66 @@ class ProbePlan:
             .replace("+00:00", "Z"),
         }
 
+    def step(self, step_id: str) -> ProbeStep:
+        if type(step_id) is not str:
+            raise ConfirmationError("step ID must be text")
+        for step in self.preview.steps:
+            if step.id == step_id:
+                return step
+        raise ConfirmationError("step ID is not part of the authorized plan")
+
+    def preflight_step(
+        self,
+        step_id: str,
+        *,
+        resolver: Resolver | None = None,
+        now: datetime | None = None,
+    ) -> PreparedStep:
+        """Return service-validated socket parameters for one finite step."""
+        step = self.step(step_id)
+        self.preview.scope.assert_current(now)
+        target = normalize_targets((step.target,))[0]
+        authorize_targets((target,), self.preview.scope, now=now)
+        if not target.is_loopback and not self.preview.scope.permits_step(
+            step.port, step.transport.value
+        ):
+            raise ConfirmationError("step port or transport escaped scope")
+        if step.source_hostname is None:
+            return PreparedStep(step=step, address=step.address)
+        snapshot = next(
+            (
+                item
+                for item in self.preview.resolutions
+                if item.hostname == step.source_hostname
+            ),
+            None,
+        )
+        if snapshot is None or step.resolution_slot is None:
+            raise ConfirmationError("hostname step has no resolution reservation")
+        if resolver is None:
+            addresses = recheck_resolution(snapshot, self.preview.scope, now=now)
+        else:
+            addresses = recheck_resolution(
+                snapshot,
+                self.preview.scope,
+                resolver=resolver,
+                now=now,
+            )
+        if len(addresses) > len(snapshot.addresses):
+            raise ConfirmationError(
+                "DNS rotation exceeds the reserved address-step cardinality"
+            )
+        if step.resolution_slot >= len(addresses):
+            raise ConfirmationError(
+                "DNS rotation removed the address reserved for this step"
+            )
+        address = addresses[step.resolution_slot]
+        return PreparedStep(
+            step=step,
+            address=address,
+            dns_changed=addresses != snapshot.addresses,
+        )
+
     def preflight_addresses(
         self,
         target: Target,
@@ -302,8 +513,12 @@ class ProbePlan:
         if target.address is not None:
             return (target.canonical,)
         if target.network is not None:
-            raise ConfirmationError(
-                "network targets must be expanded into budgeted address targets"
+            return tuple(
+                dict.fromkeys(
+                    step.address
+                    for step in self.preview.steps
+                    if step.target == target.canonical
+                )
             )
         snapshot = next(
             (
@@ -316,13 +531,19 @@ class ProbePlan:
         if snapshot is None:
             raise ConfirmationError("authorized hostname has no resolution snapshot")
         if resolver is None:
-            return recheck_resolution(snapshot, self.preview.scope, now=now)
-        return recheck_resolution(
-            snapshot,
-            self.preview.scope,
-            resolver=resolver,
-            now=now,
-        )
+            addresses = recheck_resolution(snapshot, self.preview.scope, now=now)
+        else:
+            addresses = recheck_resolution(
+                snapshot,
+                self.preview.scope,
+                resolver=resolver,
+                now=now,
+            )
+        if len(addresses) > len(snapshot.addresses):
+            raise ConfirmationError(
+                "DNS rotation exceeds the reserved address-step cardinality"
+            )
+        return addresses
 
 
 def _checked_product(values: Iterable[int], *, ceiling: int, name: str) -> int:
@@ -363,6 +584,88 @@ def _assert_estimate_within(estimate: WorkEstimate, limits: BudgetLimits) -> Non
     for name, actual, maximum in comparisons:
         if actual > maximum:
             raise BudgetError(f"{name}={actual} exceeds configured limit {maximum}")
+
+
+def _step_identifier(value: dict[str, object]) -> str:
+    digest = hashlib.sha256(dumps_document(value).encode("utf-8")).hexdigest()
+    return f"step-{digest}"
+
+
+def _compile_steps(
+    *,
+    targets: tuple[Target, ...],
+    resolutions: tuple[ResolutionSnapshot, ...],
+    ports: tuple[int, ...],
+    transports: tuple[str, ...],
+    repeats: int,
+    payload: PayloadMetadata,
+    datagrams_per_udp_attempt: int,
+) -> tuple[ProbeStep, ...]:
+    snapshots = {item.hostname: item for item in resolutions}
+    concrete: list[tuple[Target, str, str | None, int | None]] = []
+    for target in targets:
+        if target.address is not None:
+            concrete.append((target, target.canonical, None, None))
+        elif target.network is not None:
+            concrete.extend(
+                (target, str(address), None, None)
+                for address in target.network.hosts()
+            )
+        else:
+            snapshot = snapshots[target.hostname]
+            concrete.extend(
+                (target, address, target.hostname, slot)
+                for slot, address in enumerate(snapshot.addresses)
+            )
+
+    steps: list[ProbeStep] = []
+    for target, address, source_hostname, resolution_slot in concrete:
+        address_target = normalize_targets((address,))[0]
+        for port in ports:
+            for transport_text in transports:
+                transport = Transport(transport_text)
+                datagrams = (
+                    datagrams_per_udp_attempt
+                    if transport is Transport.UDP
+                    else 0
+                )
+                application_bytes = payload.length * (
+                    datagrams if transport is Transport.UDP else 1
+                )
+                cost = StepCost(
+                    logical_attempts=1,
+                    generated_datagrams=datagrams,
+                    application_bytes=application_bytes,
+                )
+                for attempt in range(1, repeats + 1):
+                    identity = {
+                        "target": target.canonical,
+                        "address": address_target.canonical,
+                        "scope_id": address_target.scope_id,
+                        "port": port,
+                        "transport": transport.value,
+                        "attempt": attempt,
+                        "source_hostname": source_hostname,
+                        "resolution_slot": resolution_slot,
+                        "payload_metadata": payload.to_wire(),
+                        "cost": cost.to_wire(),
+                    }
+                    steps.append(
+                        ProbeStep(
+                            id=_step_identifier(identity),
+                            target=target.canonical,
+                            address=address_target.canonical,
+                            scope_id=address_target.scope_id,
+                            port=port,
+                            transport=transport,
+                            attempt=attempt,
+                            source_hostname=source_hostname,
+                            resolution_slot=resolution_slot,
+                            payload=payload,
+                            cost=cost,
+                        )
+                    )
+    return tuple(steps)
 
 
 def preview_plan(
@@ -465,35 +768,41 @@ def preview_plan(
         ceiling=ABSOLUTE_CEILINGS.max_attempts,
         name="logical_attempts",
     )
-    udp_attempts = (
-        _checked_product(
-            (host_count, len(port_tuple), repeats),
-            ceiling=ABSOLUTE_CEILINGS.max_attempts,
-            name="udp_attempts",
+    payload = PayloadMetadata(
+        profile=(
+            "custom-unbound-v1"
+            if custom_udp_payload
+            else "zero-bytes-v1"
+            if payload_bytes_per_attempt
+            else "none-v1"
+        ),
+        length=payload_bytes_per_attempt,
+    )
+    steps = _compile_steps(
+        targets=targets,
+        resolutions=tuple(resolutions),
+        ports=port_tuple,
+        transports=transport_tuple,
+        repeats=repeats,
+        payload=payload,
+        datagrams_per_udp_attempt=datagrams_per_udp_attempt,
+    )
+    if len(steps) != logical_attempts:
+        raise BudgetError("compiled step count does not match reserved attempts")
+    generated_datagrams = sum(
+        step.cost.generated_datagrams for step in steps
+    )
+    application_bytes = sum(step.cost.application_bytes for step in steps)
+    if generated_datagrams > ABSOLUTE_CEILINGS.max_datagrams:
+        raise BudgetError(
+            "generated_datagrams exceeds the absolute ceiling "
+            f"{ABSOLUTE_CEILINGS.max_datagrams}"
         )
-        if "udp" in transport_tuple
-        else 0
-    )
-    generated_datagrams = _checked_product(
-        (udp_attempts, datagrams_per_udp_attempt),
-        ceiling=ABSOLUTE_CEILINGS.max_datagrams,
-        name="generated_datagrams",
-    )
-    tcp_attempts = (
-        _checked_product(
-            (host_count, len(port_tuple), repeats),
-            ceiling=ABSOLUTE_CEILINGS.max_attempts,
-            name="tcp_attempts",
+    if application_bytes > ABSOLUTE_CEILINGS.max_application_bytes:
+        raise BudgetError(
+            "application_bytes exceeds the absolute ceiling "
+            f"{ABSOLUTE_CEILINGS.max_application_bytes}"
         )
-        if "tcp" in transport_tuple
-        else 0
-    )
-    application_units = tcp_attempts + generated_datagrams
-    application_bytes = _checked_product(
-        (application_units, payload_bytes_per_attempt),
-        ceiling=ABSOLUTE_CEILINGS.max_application_bytes,
-        name="application_bytes",
-    )
     # accepted + running + a reserved cancellation event + terminal
     events = logical_attempts + 4
     output_bytes = logical_attempts * 512 + 4_096
@@ -532,6 +841,7 @@ def preview_plan(
         "repeats": repeats,
         "payload_bytes_per_attempt": payload_bytes_per_attempt,
         "datagrams_per_udp_attempt": datagrams_per_udp_attempt,
+        "steps": [step.to_wire() for step in steps],
         "scope": grant.to_wire(),
         "resolutions": [
             {"hostname": item.hostname, "addresses": list(item.addresses)}
@@ -550,6 +860,7 @@ def preview_plan(
         repeats=repeats,
         payload_bytes_per_attempt=payload_bytes_per_attempt,
         datagrams_per_udp_attempt=datagrams_per_udp_attempt,
+        steps=steps,
         scope=grant,
         resolutions=tuple(resolutions),
         limits=limits,
@@ -692,8 +1003,13 @@ __all__ = [
     "BudgetError",
     "BudgetLimits",
     "ConfirmationError",
+    "PayloadMetadata",
     "PlanPreview",
+    "PreparedStep",
     "ProbePlan",
+    "ProbeStep",
+    "StepCost",
+    "Transport",
     "WorkEstimate",
     "authorize_plan",
     "confirmation_phrase",

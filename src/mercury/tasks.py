@@ -26,7 +26,8 @@ from .models import (
     TaskState,
     utc_now,
 )
-from .planner import ProbePlan, validate_plan
+from .planner import PreparedStep, ProbePlan, validate_plan
+from .policy import Resolver
 
 
 class TaskError(RuntimeError):
@@ -81,6 +82,7 @@ class TaskContext:
         cancellation: CancellationToken,
         wall_clock: Callable[[], datetime],
         monotonic: Callable[[], float],
+        resolver: Resolver | None,
     ) -> None:
         self.task_id = task_id
         self.plan = plan
@@ -88,6 +90,7 @@ class TaskContext:
         self.cancellation = cancellation
         self.wall_clock = wall_clock
         self.monotonic = monotonic
+        self.resolver = resolver
         self.observations: list[Observation] = []
         self.conclusions: list[Conclusion] = []
         self.capabilities: list[Capability] = []
@@ -101,15 +104,27 @@ class TaskContext:
         self._event_count = 3
         self._next_global_start = self.monotonic()
         self._next_target_start: dict[str, float] = {}
+        self._steps = {step.id: step for step in plan.preview.steps}
+        self._admitted_steps: set[str] = set()
+        self._completed_steps: set[str] = set()
         self._admission_lock = asyncio.Lock()
 
     @property
     def total(self) -> int:
         return self.plan.preview.estimate.logical_attempts
 
-    async def admit(self, target: str = "") -> None:
+    async def admit(self, step_id: str) -> PreparedStep:
+        if type(step_id) is not str or step_id not in self._steps:
+            raise TaskError("runner requested an unknown plan step ID")
+        await self.cancellation.checkpoint()
+        preflight_kwargs: dict[str, object] = {"now": self.wall_clock()}
+        if self.resolver is not None:
+            preflight_kwargs["resolver"] = self.resolver
+        prepared = self.plan.preflight_step(step_id, **preflight_kwargs)
         async with self._admission_lock:
             await self.cancellation.checkpoint()
+            if step_id in self._admitted_steps:
+                raise TaskError("runner attempted to admit a plan step twice")
             if self.admitted >= self.total:
                 raise TaskError("runner attempted to exceed the immutable plan")
             if (
@@ -117,7 +132,7 @@ class TaskContext:
                 >= self.plan.preview.limits.max_concurrency
             ):
                 raise TaskError("runner exceeded the in-flight concurrency ceiling")
-            target_key = target or self.plan.preview.targets[0].canonical
+            target_key = prepared.address
             now = self.monotonic()
             next_target = self._next_target_start.get(target_key, now)
             start_at = max(now, self._next_global_start, next_target)
@@ -131,35 +146,43 @@ class TaskContext:
                 max(start_at, actual_start)
                 + 1 / self.plan.preview.limits.max_target_rate
             )
+            next_datagrams = (
+                self.generated_datagrams
+                + prepared.step.cost.generated_datagrams
+            )
+            next_bytes = (
+                self.application_bytes + prepared.step.cost.application_bytes
+            )
+            if next_datagrams > self.plan.preview.estimate.generated_datagrams:
+                raise TaskError("step admission exceeded the datagram reservation")
+            if next_bytes > self.plan.preview.estimate.application_bytes:
+                raise TaskError(
+                    "step admission exceeded the application-byte reservation"
+                )
+            self.generated_datagrams = next_datagrams
+            self.application_bytes = next_bytes
+            self._admitted_steps.add(step_id)
             self.admitted += 1
+            return prepared
 
-    def complete_attempt(self) -> None:
-        if self.completed >= self.admitted:
+    def complete_attempt(self, step_id: str) -> None:
+        if type(step_id) is not str or step_id not in self._admitted_steps:
             raise TaskError("runner completed work that was not admitted")
+        if step_id in self._completed_steps:
+            raise TaskError("runner completed a plan step twice")
+        self._completed_steps.add(step_id)
         self.completed += 1
 
     def account_io(self, *, datagrams: int = 0, application_bytes: int = 0) -> None:
-        if (
-            isinstance(datagrams, bool)
-            or isinstance(application_bytes, bool)
-            or not isinstance(datagrams, int)
-            or not isinstance(application_bytes, int)
-            or datagrams < 0
-            or application_bytes < 0
-        ):
-            raise TaskError("I/O accounting values must be non-negative integers")
-        next_datagrams = self.generated_datagrams + datagrams
-        next_bytes = self.application_bytes + application_bytes
-        if next_datagrams > self.plan.preview.estimate.generated_datagrams:
-            raise TaskError("runner exceeded the immutable datagram estimate")
-        if next_bytes > self.plan.preview.estimate.application_bytes:
-            raise TaskError("runner exceeded the immutable application-byte estimate")
-        self.generated_datagrams = next_datagrams
-        self.application_bytes = next_bytes
+        raise TaskError(
+            "I/O reservations are service-controlled by the authorized plan step"
+        )
 
-    def record(self, observation: Observation) -> None:
+    def record(self, observation: Observation, *, step_id: str | None = None) -> None:
         if self.admitted == 0:
             raise TaskError("runner produced evidence before admitting work")
+        if step_id is not None and step_id not in self._admitted_steps:
+            raise TaskError("runner attached evidence to an unadmitted plan step")
         encoded_bytes = len(
             dumps_document(observation_to_wire(observation)).encode("utf-8")
         )
@@ -202,8 +225,8 @@ class SyntheticRunner:
         self.delay_s = delay_s
 
     async def __call__(self, context: TaskContext) -> None:
-        for index in range(context.total):
-            await context.admit()
+        for index, step in enumerate(context.plan.preview.steps, 1):
+            await context.admit(step.id)
             started_at = context.wall_clock()
             started_mono = context.monotonic()
             await context.cancellation.wait_or_timeout(self.delay_s)
@@ -211,7 +234,7 @@ class SyntheticRunner:
             ended_at = context.wall_clock()
             context.record(
                 Observation(
-                    id=f"{context.task_id}:obs:{index + 1}",
+                    id=f"{context.task_id}:obs:{index}",
                     probe="synthetic",
                     disposition=Disposition.POSITIVE,
                     evidence_kind=EvidenceKind.LOCAL_FACT,
@@ -220,12 +243,13 @@ class SyntheticRunner:
                     started_at=started_at,
                     ended_at=ended_at,
                     duration_ms=max(0.0, (ended_mono - started_mono) * 1000),
-                    attempt=index + 1,
+                    attempt=step.attempt,
                     source="mercury.synthetic",
-                    detail={"index": index + 1, "network_io": False},
-                )
+                    detail={"index": index, "network_io": False},
+                ),
+                step_id=step.id,
             )
-            context.complete_attempt()
+            context.complete_attempt(step.id)
 
 
 def _derive_conclusion(
@@ -285,12 +309,8 @@ def _record_terminal_observation(
     observation: Observation,
 ) -> None:
     """Best-effort terminal evidence without risking loss of finalization."""
-    if context.admitted == 0 and context.total > 0:
-        context.admitted = 1
     try:
         context.record(observation)
-        if context.completed < context.admitted:
-            context.complete_attempt()
     except Exception as exc:
         context.errors.append(
             f"terminal evidence could not be recorded: {type(exc).__name__}: {exc}"
@@ -304,10 +324,12 @@ class TaskService:
         *,
         wall_clock: Callable[[], datetime] = utc_now,
         monotonic: Callable[[], float] = time.monotonic,
+        resolver: Resolver | None = None,
     ) -> None:
         self.history = history
         self._wall_clock = wall_clock
         self._monotonic = monotonic
+        self._resolver = resolver
         self._tokens: dict[str, CancellationToken] = {}
         self._tasks: dict[str, asyncio.Task[TaskResult]] = {}
         self._results: dict[str, TaskResult] = {}
@@ -419,6 +441,7 @@ class TaskService:
             cancellation=token,
             wall_clock=self._wall_clock,
             monotonic=self._monotonic,
+            resolver=self._resolver,
         )
         failed = False
         cancelled = False

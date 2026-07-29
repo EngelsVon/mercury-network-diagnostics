@@ -11,6 +11,7 @@ from mercury.planner import (
     BudgetError,
     BudgetLimits,
     ConfirmationError,
+    Transport,
     authorize_plan,
     confirmation_phrase,
     preview_plan,
@@ -229,6 +230,37 @@ class TargetPolicyTests(unittest.TestCase):
             ("192.0.2.11",),
         )
 
+    def test_dns_rotation_cannot_increase_reserved_step_slots(self) -> None:
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            hostnames=("rotate.test",),
+            ports=(443,),
+            transports=("tcp",),
+            attested=True,
+        )
+        preview = preview_plan(
+            target_values=("rotate.test",),
+            ports=(443,),
+            transports=("tcp",),
+            grant=grant,
+            resolver=lambda _: ("192.0.2.10",),
+            now=NOW,
+        )
+        plan = authorize_plan(preview, now=NOW)
+        with self.assertRaisesRegex(ConfirmationError, "cardinality"):
+            plan.preflight_step(
+                preview.steps[0].id,
+                resolver=lambda _: ("192.0.2.11", "192.0.2.12"),
+                now=NOW,
+            )
+        prepared = plan.preflight_step(
+            preview.steps[0].id,
+            resolver=lambda _: ("192.0.2.11",),
+            now=NOW,
+        )
+        self.assertEqual(prepared.address, "192.0.2.11")
+        self.assertTrue(prepared.dns_changed)
+
     def test_dns_out_of_scope_is_rejected_before_plan(self) -> None:
         grant = ScopeGrant(
             networks=(ipaddress.ip_network("192.0.2.0/24"),),
@@ -260,9 +292,41 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(estimate.logical_attempts, 8)
         self.assertEqual(estimate.generated_datagrams, 8)
         self.assertEqual(estimate.application_bytes, 192)
+        self.assertEqual(len(preview.steps), 8)
+        self.assertEqual(len({step.id for step in preview.steps}), 8)
+        first = preview.steps[0]
+        self.assertEqual(first.address, "127.0.0.1")
+        self.assertEqual(first.transport, Transport.TCP)
+        self.assertEqual(first.attempt, 1)
+        self.assertEqual(first.cost.logical_attempts, 1)
         wire = preview.to_wire()
+        self.assertEqual(len(wire["steps"]), 8)
         self.assertIn("max_global_rate", wire["limits"])
         self.assertIn("max_output_bytes", wire["limits"])
+
+    def test_networks_compile_to_concrete_finite_steps(self) -> None:
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("192.0.2.0/30"),),
+            ports=(443,),
+            transports=("tcp",),
+            attested=True,
+        )
+        preview = preview_plan(
+            target_values=("192.0.2.0/30",),
+            ports=(443,),
+            transports=("tcp",),
+            grant=grant,
+            repeats=2,
+            now=NOW,
+        )
+        self.assertEqual(
+            {step.address for step in preview.steps},
+            {"192.0.2.1", "192.0.2.2"},
+        )
+        self.assertEqual(len(preview.steps), 4)
+        self.assertTrue(
+            all(step.target == "192.0.2.0/30" for step in preview.steps)
+        )
 
     def test_config_cannot_raise_absolute_ceiling(self) -> None:
         unsafe = BudgetLimits(

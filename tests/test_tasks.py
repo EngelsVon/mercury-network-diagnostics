@@ -21,7 +21,7 @@ from mercury.planner import (
     preview_plan,
 )
 from mercury.policy import ScopeGrant
-from mercury.tasks import SyntheticRunner, TaskContext, TaskService
+from mercury.tasks import SyntheticRunner, TaskContext, TaskError, TaskService
 
 
 def synthetic_plan(steps: int):
@@ -35,7 +35,7 @@ def synthetic_plan(steps: int):
     return authorize_plan(preview)
 
 
-def record_fixture(context: TaskContext, index: int) -> None:
+def record_fixture(context: TaskContext, index: int, step_id: str) -> None:
     instant = context.wall_clock()
     context.record(
         Observation(
@@ -51,9 +51,10 @@ def record_fixture(context: TaskContext, index: int) -> None:
             attempt=index,
             source="tests",
             detail={"index": index},
-        )
+        ),
+        step_id=step_id,
     )
-    context.complete_attempt()
+    context.complete_attempt(step_id)
 
 
 class TaskTests(unittest.IsolatedAsyncioTestCase):
@@ -133,9 +134,10 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_runner_error_keeps_prior_evidence(self) -> None:
         async def broken(context: TaskContext) -> None:
-            await context.admit()
-            record_fixture(context, 1)
-            await context.admit()
+            first, second = context.plan.preview.steps[:2]
+            await context.admit(first.id)
+            record_fixture(context, 1, first.id)
+            await context.admit(second.id)
             raise RuntimeError("fixture failure")
 
         result = await self.service.run(
@@ -153,9 +155,10 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_runner_cannot_exceed_immutable_total(self) -> None:
         async def excessive(context: TaskContext) -> None:
-            await context.admit()
-            record_fixture(context, 1)
-            await context.admit()
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
+            record_fixture(context, 1, step.id)
+            await context.admit(step.id)
 
         result = await self.service.run(
             synthetic_plan(1),
@@ -190,7 +193,8 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         plan = authorize_plan(preview)
 
         async def excessive_io(context: TaskContext) -> None:
-            await context.admit()
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
             context.account_io(datagrams=2, application_bytes=20)
 
         result = await self.service.run(
@@ -200,12 +204,13 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             task_id="io-excess",
         )
         self.assertEqual(result.state, TaskState.FAILED)
-        self.assertIn("datagram estimate", result.errors[0])
+        self.assertIn("service-controlled", result.errors[0])
 
     async def test_inflight_concurrency_is_enforced(self) -> None:
         async def no_completion(context: TaskContext) -> None:
-            await context.admit()
-            await context.admit()
+            first, second = context.plan.preview.steps
+            await context.admit(first.id)
+            await context.admit(second.id)
 
         preview = preview_plan(
             target_values=("127.0.0.1",),
@@ -222,6 +227,26 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.state, TaskState.FAILED)
         self.assertIn("concurrency ceiling", result.errors[0])
+
+    async def test_admission_consumes_only_known_step_ids_once(self) -> None:
+        async def aliases(context: TaskContext) -> None:
+            with self.assertRaisesRegex(TaskError, "unknown"):
+                await context.admit("127.0.0.1")
+            step = context.plan.preview.steps[0]
+            prepared = await context.admit(step.id)
+            self.assertEqual(prepared.step, step)
+            self.assertEqual(prepared.address, "127.0.0.1")
+            with self.assertRaisesRegex(TaskError, "twice"):
+                await context.admit(step.id)
+            context.complete_attempt(step.id)
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            aliases,
+            task_kind="synthetic",
+            task_id="step-ids",
+        )
+        self.assertEqual(result.state, TaskState.COMPLETED)
 
 
 if __name__ == "__main__":
