@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from mercury.codec import result_to_json
-from mercury.history import HistoryStore
+from mercury.history import HistoryError, HistoryStore
 from mercury.models import (
     Capability,
     CapabilityState,
@@ -321,6 +321,83 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
                 task_id="oversized-envelope",
             )
         self.assertIsNone(self.history.get_task("oversized-envelope"))
+
+    async def test_result_construction_failure_uses_valid_evidence_fallback(self) -> None:
+        async def corrupts_only_unvalidated_state(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
+            record_fixture(context, 1, step.id)
+            context._conclusions.append(object())  # type: ignore[arg-type]
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            corrupts_only_unvalidated_state,
+            task_kind="synthetic",
+            task_id="result-fallback",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        kinds = {item.evidence_kind for item in result.observations}
+        self.assertIn(EvidenceKind.LOCAL_FACT, kinds)
+        self.assertIn(EvidenceKind.EXECUTION_ERROR, kinds)
+        self.assertTrue(
+            any("finalization failed" in item for item in result.errors)
+        )
+        record = self.history.get_task("result-fallback")
+        assert record is not None
+        self.assertEqual(record.result, result)
+
+    async def test_transient_terminal_store_failure_persists_failed_fallback(
+        self,
+    ) -> None:
+        original = self.history.finish_task
+        attempts = 0
+
+        def fails_once(result, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise HistoryError("transient terminal write failure")
+            return original(result, **kwargs)
+
+        self.history.finish_task = fails_once  # type: ignore[method-assign]
+        result = await self.service.run(
+            synthetic_plan(1),
+            SyntheticRunner(),
+            task_kind="synthetic",
+            task_id="retry-terminal",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        self.assertEqual(attempts, 2)
+        self.assertIn(
+            EvidenceKind.LOCAL_FACT,
+            {item.evidence_kind for item in result.observations},
+        )
+        self.assertIn(
+            EvidenceKind.EXECUTION_ERROR,
+            {item.evidence_kind for item in result.observations},
+        )
+        record = self.history.get_task("retry-terminal")
+        assert record is not None
+        self.assertEqual(record.result, result)
+        self.assertNotIn("retry-terminal", self.service._tasks)
+        self.assertNotIn("retry-terminal", self.service._tokens)
+
+    async def test_service_cleanup_survives_persistent_terminal_store_failure(
+        self,
+    ) -> None:
+        def always_fails(result, **kwargs):
+            raise HistoryError("persistent terminal write failure")
+
+        self.history.finish_task = always_fails  # type: ignore[method-assign]
+        with self.assertRaisesRegex(HistoryError, "persistent terminal"):
+            await self.service.run(
+                synthetic_plan(1),
+                SyntheticRunner(),
+                task_kind="synthetic",
+                task_id="failed-terminal-write",
+            )
+        self.assertNotIn("failed-terminal-write", self.service._tasks)
+        self.assertNotIn("failed-terminal-write", self.service._tokens)
 
     async def test_unknown_or_finished_task_cannot_be_cancelled(self) -> None:
         self.assertFalse(self.service.cancel("missing"))

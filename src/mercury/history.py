@@ -11,7 +11,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Mapping
 
 from . import DB_SCHEMA_VERSION
 from .codec import dumps_document, loads_document, result_from_json, result_to_json
@@ -430,6 +430,7 @@ class HistoryStore:
         request: Mapping[str, Any],
         plan: Mapping[str, Any],
         created_at: datetime | None = None,
+        accepted_payload: Mapping[str, Any] | None = None,
     ) -> None:
         timestamp = created_at or self._clock()
         request_json = _json_for_store(
@@ -444,6 +445,21 @@ class HistoryStore:
             allowed_keys=_PLAN_KEYS,
             path="$.plan",
         )
+        accepted_json = (
+            None
+            if accepted_payload is None
+            else _json_for_store(
+                accepted_payload,
+                maximum=MAX_EVENT_BYTES,
+                allowed_keys=_EVENT_KEYS,
+                path="$.event",
+            )
+        )
+        if accepted_payload is not None and (
+            accepted_payload.get("state") != TaskState.PENDING.value
+            or accepted_payload.get("plan_digest") != plan.get("digest")
+        ):
+            raise HistoryError("accepted event does not match the pending task")
         try:
             with self._connection:
                 self._connection.execute(
@@ -463,76 +479,164 @@ class HistoryStore:
                         plan_json,
                     ),
                 )
+                if accepted_json is not None:
+                    self._insert_event(
+                        task_id=task_id,
+                        event_type="accepted",
+                        payload_json=accepted_json,
+                        occurred_at=timestamp,
+                    )
         except sqlite3.IntegrityError as exc:
             raise HistoryError(f"task {task_id!r} already exists") from exc
 
-    def mark_running(self, task_id: str, *, at: datetime | None = None) -> None:
-        self._transition(
-            task_id,
-            expected=(TaskState.PENDING,),
-            new_state=TaskState.RUNNING,
-            at=at,
+    def mark_running(
+        self,
+        task_id: str,
+        *,
+        at: datetime | None = None,
+        event_payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        timestamp = at or self._clock()
+        payload_json = (
+            None
+            if event_payload is None
+            else _json_for_store(
+                event_payload,
+                maximum=MAX_EVENT_BYTES,
+                allowed_keys=_EVENT_KEYS,
+                path="$.event",
+            )
         )
+        if (
+            event_payload is not None
+            and event_payload.get("state") != TaskState.RUNNING.value
+        ):
+            raise HistoryError("running event does not match the task transition")
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE tasks SET state = ?, updated_at = ?
+                WHERE task_id = ? AND state = ?
+                """,
+                (
+                    TaskState.RUNNING.value,
+                    _wire_time(timestamp),
+                    task_id,
+                    TaskState.PENDING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise HistoryError(
+                    f"task {task_id!r} is missing or cannot transition to running"
+                )
+            if payload_json is not None:
+                self._insert_event(
+                    task_id=task_id,
+                    event_type="running",
+                    payload_json=payload_json,
+                    occurred_at=timestamp,
+                )
 
-    def finish_task(self, result: TaskResult) -> None:
+    def finish_task(
+        self,
+        result: TaskResult,
+        *,
+        event_payload: Mapping[str, Any] | None = None,
+    ) -> None:
         _assert_secret_free(
             json.loads(result_to_json(result)),
             path="$.result",
         )
+        payload = event_payload or {
+            "state": result.state.value,
+            "completed": result.progress.completed,
+            "total": result.progress.total,
+        }
+        if (
+            payload.get("state") != result.state.value
+            or payload.get("completed") != result.progress.completed
+            or payload.get("total") != result.progress.total
+        ):
+            raise HistoryError("terminal event does not match the task result")
+        payload_json = _json_for_store(
+            payload,
+            maximum=MAX_EVENT_BYTES,
+            allowed_keys=_EVENT_KEYS,
+            path="$.event",
+        )
+        result_json = result_to_json(result)
         expected = (TaskState.RUNNING, TaskState.PENDING)
-        with self._connection:
-            row = self._connection.execute(
-                "SELECT state FROM tasks WHERE task_id = ?", (result.task_id,)
-            ).fetchone()
-            if row is None:
-                raise HistoryError(f"unknown task {result.task_id!r}")
-            if TaskState(row["state"]) not in expected:
-                raise HistoryError(
-                    f"cannot finish task from state {row['state']!r}"
+        try:
+            with self._connection:
+                row = self._connection.execute(
+                    "SELECT state FROM tasks WHERE task_id = ?", (result.task_id,)
+                ).fetchone()
+                if row is None:
+                    raise HistoryError(f"unknown task {result.task_id!r}")
+                if TaskState(row["state"]) not in expected:
+                    raise HistoryError(
+                        f"cannot finish task from state {row['state']!r}"
+                    )
+                self._connection.execute(
+                    """
+                    UPDATE tasks
+                    SET state = ?, updated_at = ?, result_json = ?
+                    WHERE task_id = ?
+                    """,
+                    (
+                        result.state.value,
+                        _wire_time(result.ended_at),
+                        result_json,
+                        result.task_id,
+                    ),
                 )
-            self._connection.execute(
-                """
-                UPDATE tasks
-                SET state = ?, updated_at = ?, result_json = ?
-                WHERE task_id = ?
-                """,
-                (
-                    result.state.value,
-                    _wire_time(result.ended_at),
-                    result_to_json(result),
-                    result.task_id,
-                ),
-            )
-        self.prune()
-
-    def _transition(
-        self,
-        task_id: str,
-        *,
-        expected: Iterable[TaskState],
-        new_state: TaskState,
-        at: datetime | None,
-    ) -> None:
-        expected_values = tuple(item.value for item in expected)
-        placeholders = ",".join("?" for _ in expected_values)
-        with self._connection:
-            cursor = self._connection.execute(
-                f"""
-                UPDATE tasks SET state = ?, updated_at = ?
-                WHERE task_id = ? AND state IN ({placeholders})
-                """,
-                (
-                    new_state.value,
-                    _wire_time(at or self._clock()),
-                    task_id,
-                    *expected_values,
-                ),
-            )
-        if cursor.rowcount != 1:
+                self._insert_event(
+                    task_id=result.task_id,
+                    event_type="terminal",
+                    payload_json=payload_json,
+                    occurred_at=result.ended_at,
+                )
+        except sqlite3.Error as exc:
             raise HistoryError(
-                f"task {task_id!r} is missing or cannot transition to "
-                f"{new_state.value}"
+                f"could not atomically finish task {result.task_id!r}"
+            ) from exc
+        try:
+            self.prune()
+        except sqlite3.Error as exc:
+            warnings.warn(
+                f"history retention maintenance failed: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
             )
+
+    def _insert_event(
+        self,
+        *,
+        task_id: str,
+        event_type: str,
+        payload_json: str,
+        occurred_at: datetime,
+    ) -> int:
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        sequence = int(row[0])
+        self._connection.execute(
+            """
+            INSERT INTO events(
+                task_id, sequence, occurred_at, event_type, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                sequence,
+                _wire_time(occurred_at),
+                event_type,
+                payload_json,
+            ),
+        )
+        return sequence
 
     def append_event(
         self,
@@ -549,25 +653,12 @@ class HistoryStore:
             path="$.event",
         )
         with self._connection:
-            row = self._connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE task_id = ?",
-                (task_id,),
-            ).fetchone()
-            sequence = int(row[0])
             try:
-                self._connection.execute(
-                    """
-                    INSERT INTO events(
-                        task_id, sequence, occurred_at, event_type, payload_json
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        task_id,
-                        sequence,
-                        _wire_time(occurred_at or self._clock()),
-                        event_type,
-                        payload_json,
-                    ),
+                sequence = self._insert_event(
+                    task_id=task_id,
+                    event_type=event_type,
+                    payload_json=payload_json,
+                    occurred_at=occurred_at or self._clock(),
                 )
             except sqlite3.IntegrityError as exc:
                 raise HistoryError(f"unknown task {task_id!r}") from exc

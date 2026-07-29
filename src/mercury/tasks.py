@@ -55,6 +55,7 @@ _RESERVED_TASK_OBSERVATION_IDS = frozenset(
     {
         "task-cancelled",
         "task-execution-error",
+        "task-finalization-error",
         "task-output-budget",
         "task-timeout",
     }
@@ -588,6 +589,161 @@ def _record_terminal_observation(
         )
 
 
+def _context_progress(context: TaskContext) -> Progress:
+    total = context.total
+    admitted = context.admitted if type(context.admitted) is int else 0
+    completed = context.completed if type(context.completed) is int else 0
+    admitted = min(total, max(0, admitted))
+    completed = min(admitted, max(0, completed))
+    return Progress(admitted=admitted, completed=completed, total=total)
+
+
+def _terminal_result(
+    context: TaskContext,
+    *,
+    state: TaskState,
+    ended_at: datetime,
+) -> TaskResult:
+    observations = tuple(context.observations)
+    conclusions = (
+        *context.conclusions,
+        *_derive_conclusion(
+            observations,
+            state=state,
+        ),
+    )
+    result = _make_result(
+        task_id=context.task_id,
+        task_kind=context.task_kind,
+        state=state,
+        started_at=context.started_at,
+        ended_at=ended_at,
+        requested_config=context.requested_config,
+        effective_config=context.effective_config,
+        progress=_context_progress(context),
+        observations=observations,
+        conclusions=conclusions,
+        capabilities=tuple(context.capabilities),
+        errors=tuple(context.errors),
+    )
+    if _result_bytes(result) <= context.plan.preview.limits.max_output_bytes:
+        return result
+    return _output_budget_result(
+        task_id=context.task_id,
+        task_kind=context.task_kind,
+        started_at=context.started_at,
+        ended_at=ended_at,
+        requested_config=context.requested_config,
+        effective_config=context.effective_config,
+        progress=_context_progress(context),
+    )
+
+
+def _finalization_failure_result(
+    context: TaskContext,
+    exc: BaseException,
+    *,
+    ended_at: datetime,
+) -> TaskResult:
+    """Build a valid failed result from only revalidated context evidence."""
+    sanitized = sanitize_exception(exc)
+    error_type = sanitized.partition(":")[0]
+    message = sanitize_persisted_text(
+        f"task finalization failed: {sanitized}",
+        maximum=1_024,
+    )
+    instant = max(context.started_at, ended_at)
+    terminal = Observation(
+        id="task-finalization-error",
+        probe="task_finalization",
+        disposition=Disposition.ERROR,
+        evidence_kind=EvidenceKind.EXECUTION_ERROR,
+        direction=Direction.LOCAL,
+        target="task",
+        started_at=instant,
+        ended_at=instant,
+        duration_ms=0.0,
+        source="mercury.tasks",
+        detail={
+            "error_type": error_type,
+            "message": message,
+        },
+    )
+    observations: list[Observation] = []
+    seen: set[str] = set()
+    for observation in context.observations:
+        if type(observation) is not Observation or observation.id in seen:
+            continue
+        try:
+            assert_persistence_safe(
+                observation_to_wire(observation),
+                path="$.result.observations[]",
+            )
+        except Exception:
+            continue
+        observations.append(observation)
+        seen.add(observation.id)
+    if terminal.id not in seen:
+        observations.append(terminal)
+    capabilities: list[Capability] = []
+    for capability in context.capabilities:
+        if type(capability) is not Capability:
+            continue
+        try:
+            assert_persistence_safe(
+                capability_to_wire(capability),
+                path="$.result.capabilities[]",
+            )
+        except Exception:
+            continue
+        capabilities.append(capability)
+    errors = tuple(
+        item
+        for item in context.errors
+        if type(item) is str and item
+    )
+    errors = (*errors[: MAX_CONTEXT_ERRORS - 1], message)
+    try:
+        result = _make_result(
+            task_id=context.task_id,
+            task_kind=context.task_kind,
+            state=TaskState.FAILED,
+            started_at=context.started_at,
+            ended_at=ended_at,
+            requested_config=context.requested_config,
+            effective_config=context.effective_config,
+            progress=_context_progress(context),
+            observations=tuple(observations),
+            conclusions=_derive_conclusion(
+                tuple(observations),
+                state=TaskState.FAILED,
+            ),
+            capabilities=tuple(capabilities),
+            errors=errors,
+        )
+    except Exception:
+        result = _output_budget_result(
+            task_id=context.task_id,
+            task_kind=context.task_kind,
+            started_at=context.started_at,
+            ended_at=ended_at,
+            requested_config=context.requested_config,
+            effective_config=context.effective_config,
+            progress=_context_progress(context),
+        )
+    if _result_bytes(result) <= context.plan.preview.limits.max_output_bytes:
+        return result
+    return _output_budget_result(
+        task_id=context.task_id,
+        task_kind=context.task_kind,
+        started_at=context.started_at,
+        ended_at=ended_at,
+        requested_config=context.requested_config,
+        effective_config=context.effective_config,
+        progress=_context_progress(context),
+    )
+
+
 class TaskService:
     def __init__(
         self,
@@ -649,15 +805,10 @@ class TaskService:
             request=request,
             plan=plan.to_wire(),
             created_at=validation_time,
-        )
-        self.history.append_event(
-            task_id=identifier,
-            event_type="accepted",
-            payload={
+            accepted_payload={
                 "state": TaskState.PENDING.value,
                 "plan_digest": plan.digest,
             },
-            occurred_at=self._wall_clock(),
         )
         token = CancellationToken.create()
         self._tokens[identifier] = token
@@ -727,6 +878,29 @@ class TaskService:
         requested_config: dict[str, object],
         token: CancellationToken,
     ) -> TaskResult:
+        try:
+            return await self._execute_inner(
+                task_id,
+                plan,
+                runner,
+                task_kind=task_kind,
+                requested_config=requested_config,
+                token=token,
+            )
+        finally:
+            self._tokens.pop(task_id, None)
+            self._tasks.pop(task_id, None)
+
+    async def _execute_inner(
+        self,
+        task_id: str,
+        plan: ProbePlan,
+        runner: Runner,
+        *,
+        task_kind: str,
+        requested_config: dict[str, object],
+        token: CancellationToken,
+    ) -> TaskResult:
         started_at = self._wall_clock()
         context = TaskContext(
             task_id=task_id,
@@ -740,164 +914,132 @@ class TaskService:
             monotonic=self._monotonic,
             resolver=self._resolver,
         )
-        failed = False
-        cancelled = False
-        self.history.mark_running(task_id, at=started_at)
-        self.history.append_event(
-            task_id=task_id,
-            event_type="running",
-            payload={"state": TaskState.RUNNING.value},
-            occurred_at=started_at,
-        )
         try:
-            async with asyncio.timeout(plan.preview.limits.max_duration_s):
-                await runner(context)
-        except CooperativeCancellation:
-            cancelled = True
-            instant = self._wall_clock()
-            _record_terminal_observation(
-                context,
-                Observation(
-                    id="task-cancelled",
-                    probe="task_cancellation",
-                    disposition=Disposition.CANCELLED,
-                    evidence_kind=EvidenceKind.CANCELLED,
-                    direction=Direction.LOCAL,
-                    target="task",
-                    started_at=instant,
-                    ended_at=instant,
-                    duration_ms=0.0,
-                    source="mercury.tasks",
-                    detail={"scope": "aggregate_task"},
-                ),
+            failed = False
+            cancelled = False
+            try:
+                self.history.mark_running(
+                    task_id,
+                    at=started_at,
+                    event_payload={"state": TaskState.RUNNING.value},
+                )
+                async with asyncio.timeout(plan.preview.limits.max_duration_s):
+                    await runner(context)
+            except CooperativeCancellation:
+                cancelled = True
+                instant = self._wall_clock()
+                _record_terminal_observation(
+                    context,
+                    Observation(
+                        id="task-cancelled",
+                        probe="task_cancellation",
+                        disposition=Disposition.CANCELLED,
+                        evidence_kind=EvidenceKind.CANCELLED,
+                        direction=Direction.LOCAL,
+                        target="task",
+                        started_at=instant,
+                        ended_at=instant,
+                        duration_ms=0.0,
+                        source="mercury.tasks",
+                        detail={"scope": "aggregate_task"},
+                    ),
+                )
+            except TimeoutError:
+                failed = True
+                context.add_error("task duration budget exhausted")
+                instant = self._wall_clock()
+                _record_terminal_observation(
+                    context,
+                    Observation(
+                        id="task-timeout",
+                        probe="task_deadline",
+                        disposition=Disposition.INCONCLUSIVE,
+                        evidence_kind=EvidenceKind.TIMEOUT,
+                        direction=Direction.LOCAL,
+                        target="task",
+                        started_at=instant,
+                        ended_at=instant,
+                        duration_ms=0.0,
+                        attempt=max(1, context.admitted),
+                        source="mercury.tasks",
+                        detail={"scope": "aggregate_task_deadline"},
+                    ),
+                )
+            except Exception as exc:  # converted at the core boundary, never hidden
+                failed = True
+                sanitized = sanitize_exception(exc)
+                error_type = sanitized.partition(":")[0]
+                context.add_error(sanitized)
+                instant = self._wall_clock()
+                _record_terminal_observation(
+                    context,
+                    Observation(
+                        id="task-execution-error",
+                        probe="task_runner",
+                        disposition=Disposition.ERROR,
+                        evidence_kind=EvidenceKind.EXECUTION_ERROR,
+                        direction=Direction.LOCAL,
+                        target="task",
+                        started_at=instant,
+                        ended_at=instant,
+                        duration_ms=0.0,
+                        attempt=max(1, context.admitted),
+                        source="mercury.tasks",
+                        detail={
+                            "error_type": error_type,
+                            "message": sanitized,
+                        },
+                    ),
+                )
+            if token.cancelled and not cancelled:
+                cancelled = True
+                instant = self._wall_clock()
+                _record_terminal_observation(
+                    context,
+                    Observation(
+                        id="task-cancelled",
+                        probe="task_cancellation",
+                        disposition=Disposition.CANCELLED,
+                        evidence_kind=EvidenceKind.CANCELLED,
+                        direction=Direction.LOCAL,
+                        target="task",
+                        started_at=instant,
+                        ended_at=instant,
+                        duration_ms=0.0,
+                        source="mercury.tasks",
+                        detail={"scope": "aggregate_task"},
+                    ),
+                )
+            ended_at = self._wall_clock()
+            state = (
+                TaskState.FAILED
+                if failed
+                else TaskState.CANCELLED
+                if cancelled
+                else TaskState.COMPLETED
             )
-        except TimeoutError:
-            failed = True
-            context.add_error("task duration budget exhausted")
-            instant = self._wall_clock()
-            _record_terminal_observation(
-                context,
-                Observation(
-                    id="task-timeout",
-                    probe="task_deadline",
-                    disposition=Disposition.INCONCLUSIVE,
-                    evidence_kind=EvidenceKind.TIMEOUT,
-                    direction=Direction.LOCAL,
-                    target="task",
-                    started_at=instant,
-                    ended_at=instant,
-                    duration_ms=0.0,
-                    attempt=max(1, context.admitted),
-                    source="mercury.tasks",
-                    detail={"scope": "aggregate_task_deadline"},
-                ),
-            )
-        except Exception as exc:  # converted at the core boundary, never hidden
-            failed = True
-            sanitized = sanitize_exception(exc)
-            context.add_error(sanitized)
-            instant = self._wall_clock()
-            _record_terminal_observation(
-                context,
-                Observation(
-                    id="task-execution-error",
-                    probe="task_runner",
-                    disposition=Disposition.ERROR,
-                    evidence_kind=EvidenceKind.EXECUTION_ERROR,
-                    direction=Direction.LOCAL,
-                    target="task",
-                    started_at=instant,
-                    ended_at=instant,
-                    duration_ms=0.0,
-                    attempt=max(1, context.admitted),
-                    source="mercury.tasks",
-                    detail={
-                        "error_type": type(exc).__name__,
-                        "message": sanitized,
-                    },
-                ),
-            )
-        if token.cancelled and not cancelled:
-            cancelled = True
-            instant = self._wall_clock()
-            _record_terminal_observation(
-                context,
-                Observation(
-                    id="task-cancelled",
-                    probe="task_cancellation",
-                    disposition=Disposition.CANCELLED,
-                    evidence_kind=EvidenceKind.CANCELLED,
-                    direction=Direction.LOCAL,
-                    target="task",
-                    started_at=instant,
-                    ended_at=instant,
-                    duration_ms=0.0,
-                    source="mercury.tasks",
-                    detail={"scope": "aggregate_task"},
-                ),
-            )
-        ended_at = self._wall_clock()
-        state = (
-            TaskState.FAILED
-            if failed
-            else TaskState.CANCELLED
-            if cancelled
-            else TaskState.COMPLETED
-        )
-        observations = tuple(context.observations)
-        conclusions = (
-            *context.conclusions,
-            *_derive_conclusion(
-                observations,
-                state=state,
-            ),
-        )
-        result = _make_result(
-            task_id=task_id,
-            task_kind=task_kind,
-            state=state,
-            started_at=started_at,
-            ended_at=ended_at,
-            requested_config=requested_config,
-            effective_config=context.effective_config,
-            progress=Progress(
-                admitted=context.admitted,
-                completed=context.completed,
-                total=context.total,
-            ),
-            observations=observations,
-            conclusions=conclusions,
-            capabilities=tuple(context.capabilities),
-            errors=tuple(context.errors),
-        )
-        if _result_bytes(result) > plan.preview.limits.max_output_bytes:
-            result = _output_budget_result(
-                task_id=task_id,
-                task_kind=task_kind,
-                started_at=started_at,
-                ended_at=ended_at,
-                requested_config=requested_config,
-                effective_config=context.effective_config,
-                progress=Progress(
-                    admitted=context.admitted,
-                    completed=context.completed,
-                    total=context.total,
-                ),
-            )
-        self.history.append_event(
-            task_id=task_id,
-            event_type="terminal",
-            payload={
-                "state": result.state.value,
-                "completed": context.completed,
-                "total": context.total,
-            },
-            occurred_at=ended_at,
-        )
-        self.history.finish_task(result)
-        self._results[task_id] = result
-        self._tokens.pop(task_id, None)
-        return result
+            try:
+                result = _terminal_result(context, state=state, ended_at=ended_at)
+            except Exception as exc:
+                result = _finalization_failure_result(
+                    context,
+                    exc,
+                    ended_at=ended_at,
+                )
+            try:
+                self.history.finish_task(result)
+            except Exception as exc:
+                result = _finalization_failure_result(
+                    context,
+                    exc,
+                    ended_at=self._wall_clock(),
+                )
+                self.history.finish_task(result)
+            self._results[task_id] = result
+            return result
+        finally:
+            self._tokens.pop(task_id, None)
+            self._tasks.pop(task_id, None)
 
 
 __all__ = [

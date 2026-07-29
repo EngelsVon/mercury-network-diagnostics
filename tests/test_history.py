@@ -222,6 +222,35 @@ class HistoryTests(unittest.TestCase):
         with self.assertRaises(HistoryError):
             self.store.mark_running("done")
 
+    def test_terminal_event_state_and_result_commit_atomically(self) -> None:
+        self.store.create_task(
+            task_id="atomic-terminal",
+            task_kind="synthetic",
+            request={"steps": 1},
+            plan={"digest": "sha256:test"},
+        )
+        self.store.mark_running("atomic-terminal")
+        self.store._connection.execute(
+            """
+            CREATE TRIGGER reject_terminal_event
+            BEFORE INSERT ON events
+            WHEN NEW.event_type = 'terminal'
+            BEGIN
+                SELECT RAISE(ABORT, 'terminal event rejected');
+            END
+            """
+        )
+        with self.assertRaisesRegex(HistoryError, "atomically finish"):
+            self.store.finish_task(sample_result(task_id="atomic-terminal"))
+        record = self.store.get_task("atomic-terminal")
+        assert record is not None
+        self.assertEqual(record.state, TaskState.RUNNING)
+        self.assertIsNone(record.result)
+        self.assertNotIn(
+            "terminal",
+            [event.event_type for event in self.store.list_events("atomic-terminal")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
