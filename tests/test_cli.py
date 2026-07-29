@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import json
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 
-from mercury.cli import EXIT_OK, EXIT_PARTIAL, EXIT_POLICY, EXIT_USAGE, main
+from mercury.cli import (
+    EXIT_OK,
+    EXIT_PARTIAL,
+    EXIT_POLICY,
+    EXIT_USAGE,
+    _run_synthetic,
+    main,
+)
+from mercury.history import HistoryStore
 
 
 def invoke(*arguments: str) -> tuple[int, str, str]:
@@ -121,6 +131,35 @@ class CliTests(unittest.TestCase):
         code, output, error = invoke("plan")
         self.assertEqual((code, output), (EXIT_USAGE, ""))
         self.assertTrue(error.startswith("mercury: input:"))
+
+
+class CliCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_operator_cancellation_returns_persisted_partial_result(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "history.sqlite3"
+            with HistoryStore(path) as history:
+                operation = asyncio.create_task(
+                    _run_synthetic(
+                        Namespace(
+                            steps=10,
+                            delay=0.05,
+                            cancel_after=None,
+                        ),
+                        history,
+                    )
+                )
+                while not history.list_tasks(limit=1):
+                    await asyncio.sleep(0)
+                operation.cancel()
+                payload, _, exit_code = await operation
+
+                self.assertEqual(exit_code, EXIT_PARTIAL)
+                self.assertEqual(payload["state"], "cancelled")
+                record = history.get_task(payload["task_id"])
+                assert record is not None and record.result is not None
+                self.assertEqual(record.result.state.value, "cancelled")
 
 
 if __name__ == "__main__":

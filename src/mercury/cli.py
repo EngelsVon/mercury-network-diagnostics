@@ -326,7 +326,11 @@ async def _run_synthetic(
             service.cancel(task_id)
 
         asyncio.create_task(cancel_later())
-    result = await service.wait(task_id)
+    try:
+        result = await service.wait(task_id)
+    except asyncio.CancelledError:
+        service.cancel(task_id)
+        result = await asyncio.shield(service.wait(task_id))
     exit_code = (
         EXIT_OK
         if result.state is TaskState.COMPLETED

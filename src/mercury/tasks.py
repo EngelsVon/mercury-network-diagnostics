@@ -863,7 +863,18 @@ class TaskService:
         task = self._tasks.get(task_id)
         if task is None:
             raise TaskError(f"unknown task {task_id!r}")
-        return await task
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError as cancellation:
+            self.cancel(task_id)
+            task.cancel()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            task.result()
+            raise cancellation
 
     def result(self, task_id: str) -> TaskResult | None:
         return self._results.get(task_id)
@@ -925,7 +936,8 @@ class TaskService:
                 )
                 async with asyncio.timeout(plan.preview.limits.max_duration_s):
                     await runner(context)
-            except CooperativeCancellation:
+            except (CooperativeCancellation, asyncio.CancelledError):
+                token.cancel()
                 cancelled = True
                 instant = self._wall_clock()
                 _record_terminal_observation(

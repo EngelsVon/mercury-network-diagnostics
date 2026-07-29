@@ -124,6 +124,37 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.state, TaskState.CANCELLED)
         self.assertEqual(record.result, result)
 
+    async def test_external_cancellation_persists_after_reopening(self) -> None:
+        runner_started = asyncio.Event()
+
+        async def non_cooperative_wait(context: TaskContext) -> None:
+            runner_started.set()
+            await asyncio.sleep(60)
+
+        operation = asyncio.create_task(
+            self.service.run(
+                synthetic_plan(3),
+                non_cooperative_wait,
+                task_kind="synthetic",
+                task_id="externally-cancelled",
+            )
+        )
+        await runner_started.wait()
+        operation.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await operation
+
+        self.history.close()
+        with HistoryStore(self.path) as reopened:
+            record = reopened.get_task("externally-cancelled")
+            assert record is not None and record.result is not None
+            self.assertEqual(record.state, TaskState.CANCELLED)
+            self.assertEqual(record.result.state, TaskState.CANCELLED)
+            self.assertEqual(
+                record.result.observations[-1].evidence_kind,
+                EvidenceKind.CANCELLED,
+            )
+
     async def test_cancel_prevents_new_admission(self) -> None:
         task_id = self.service.submit(
             synthetic_plan(20),
