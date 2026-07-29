@@ -36,8 +36,9 @@ or report export. Those remain in Phases 3 through 5.
   canonical probe identity included in its ID, digest, serialized preview, and
   service-bound observation metadata. DNS, native ping, and native path actions
   must not be disguised with dummy TCP ports or transports. When the wire
-  contract gains fields or evidence kinds, increment the compatible model
-  schema minor version and preserve major-version compatibility.
+  contract gains fields or evidence kinds, increment the model schema minor
+  version. Do not claim arbitrary forward compatibility: strict decoders must
+  accept only the exact schema versions and enum vocabulary they implement.
 - **D-04:** Add protocol-specific evidence kinds where the Phase 1 vocabulary
   is insufficient, including verified TLS failure, native ping reply/failure,
   and path-hop/path-completion evidence. Do not collapse them into generic
