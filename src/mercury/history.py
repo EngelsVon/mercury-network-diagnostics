@@ -371,6 +371,7 @@ class HistoryStore:
         if database != ":memory:":
             self._connection.execute("PRAGMA journal_mode = WAL")
         self._migrate()
+        self.prune()
         if database != ":memory:" and os.name != "nt":
             try:
                 Path(database).chmod(0o600)
@@ -845,6 +846,7 @@ class HistoryStore:
         return sequence
 
     def get_task(self, task_id: str) -> HistoryRecord | None:
+        self.prune()
         row = self._connection.execute(
             "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
         ).fetchone()
@@ -858,6 +860,7 @@ class HistoryStore:
     ) -> tuple[HistoryRecord, ...]:
         if not 1 <= limit <= 1000 or offset < 0:
             raise HistoryError("history pagination is out of range")
+        self.prune()
         rows = self._connection.execute(
             """
             SELECT * FROM tasks
@@ -877,6 +880,7 @@ class HistoryStore:
     ) -> tuple[HistoryEvent, ...]:
         if after < 0 or not 1 <= limit <= 10_000:
             raise HistoryError("event pagination is out of range")
+        self.prune()
         rows = self._connection.execute(
             """
             SELECT * FROM events

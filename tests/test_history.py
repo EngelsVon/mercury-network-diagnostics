@@ -239,6 +239,33 @@ class HistoryTests(unittest.TestCase):
         self.assertIsNone(self.store.get_task("old-terminal"))
         self.assertIsNotNone(self.store.get_task("active"))
 
+    def test_age_retention_is_enforced_when_database_reopens(self) -> None:
+        self._create_and_finish("expired-on-reopen")
+        self.store.close()
+        self.clock.value += timedelta(days=8)
+
+        self.store = HistoryStore(
+            self.path,
+            max_tasks=2,
+            max_age_days=7,
+            clock=self.clock,
+        )
+
+        self.assertIsNone(self.store.get_task("expired-on-reopen"))
+
+    def test_history_reads_apply_age_retention(self) -> None:
+        for operation in ("get", "list", "events"):
+            with self.subTest(operation=operation):
+                task_id = f"expired-on-{operation}"
+                self._create_and_finish(task_id)
+                self.clock.value += timedelta(days=8)
+                if operation == "get":
+                    self.assertIsNone(self.store.get_task(task_id))
+                elif operation == "list":
+                    self.assertEqual(self.store.list_tasks(), ())
+                else:
+                    self.assertEqual(self.store.list_events(task_id), ())
+
     @unittest.skipIf(os.name == "nt", "POSIX permission bits are not Windows ACLs")
     def test_database_mode_is_owner_only_on_posix(self) -> None:
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
