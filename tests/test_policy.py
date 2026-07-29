@@ -50,6 +50,36 @@ class TargetPolicyTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(PolicyError):
                 parse_target(value)
 
+    def test_fanout_and_unspecified_destinations_are_rejected_everywhere(self) -> None:
+        unsafe = (
+            "0.0.0.0",
+            "::",
+            "224.0.0.1",
+            "ff02::1",
+            "255.255.255.255",
+            "224.0.0.0/24",
+            "ff00::/8",
+            "0.0.0.0/0",
+            "::/0",
+        )
+        for value in unsafe:
+            with self.subTest(value=value), self.assertRaises(PolicyError):
+                parse_target(value)
+
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            hostnames=("unsafe.test",),
+            attested=True,
+        )
+        for answer in ("0.0.0.0", "224.0.0.1", "255.255.255.255", "ff02::1"):
+            with self.subTest(answer=answer), self.assertRaises(PolicyError):
+                resolve_for_plan(
+                    parse_target("unsafe.test"),
+                    grant,
+                    resolver=lambda _, answer=answer: (answer,),
+                    now=NOW,
+                )
+
     def test_ipv6_link_local_scope_is_preserved(self) -> None:
         target = parse_target("fe80::1%Ethernet_2")
         self.assertEqual(target.canonical, "fe80::1%Ethernet_2")
@@ -57,6 +87,21 @@ class TargetPolicyTests(unittest.TestCase):
         for value in ("2001:db8::1%eth0", "127.0.0.1%3", "fe80::1%bad scope"):
             with self.subTest(value=value), self.assertRaises(PolicyError):
                 parse_target(value)
+
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("fe80::/64"),),
+            hostnames=("link.test",),
+            attested=True,
+        )
+        snapshot = resolve_for_plan(
+            parse_target("link.test"),
+            grant,
+            resolver=lambda _: (
+                (10, 1, 6, "", ("fe80::1", 0, 0, 7)),
+            ),
+            now=NOW,
+        )
+        self.assertEqual(snapshot.addresses, ("fe80::1%7",))
 
     def test_nonloopback_requires_attestation_and_containment(self) -> None:
         target = parse_target("192.0.2.10")

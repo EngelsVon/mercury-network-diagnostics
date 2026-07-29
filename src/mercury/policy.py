@@ -24,6 +24,9 @@ class TargetKind(StrEnum):
 _SCOPE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _NUMERICISH_RE = re.compile(r"^[0-9A-Fa-f:.%]+$")
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_IPV4_MULTICAST = ipaddress.ip_network("224.0.0.0/4")
+_IPV6_MULTICAST = ipaddress.ip_network("ff00::/8")
+_LIMITED_BROADCAST = ipaddress.ip_address("255.255.255.255")
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +37,57 @@ class Target:
     network: ipaddress.IPv4Network | ipaddress.IPv6Network | None = None
     hostname: str | None = None
     scope_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not TargetKind:
+            raise PolicyError("target kind must be TargetKind")
+        if type(self.canonical) is not str or not self.canonical:
+            raise PolicyError("target canonical value must be non-empty text")
+        present = sum(
+            item is not None for item in (self.address, self.network, self.hostname)
+        )
+        if present != 1:
+            raise PolicyError("target must contain exactly one typed destination")
+        if self.kind is TargetKind.ADDRESS:
+            if type(self.address) not in (
+                ipaddress.IPv4Address,
+                ipaddress.IPv6Address,
+            ):
+                raise PolicyError("address target must contain an IP address")
+            _assert_destination_address(self.address)
+            if self.scope_id is not None:
+                if (
+                    type(self.scope_id) is not str
+                    or not _SCOPE_RE.fullmatch(self.scope_id)
+                    or type(self.address) is not ipaddress.IPv6Address
+                    or not self.address.is_link_local
+                ):
+                    raise PolicyError(
+                        "scope ID is allowed only on IPv6 link-local literals"
+                    )
+            expected = (
+                f"{self.address}%{self.scope_id}"
+                if self.scope_id is not None
+                else str(self.address)
+            )
+            if self.canonical != expected:
+                raise PolicyError("address target is not canonical")
+        elif self.kind is TargetKind.NETWORK:
+            if type(self.network) not in (
+                ipaddress.IPv4Network,
+                ipaddress.IPv6Network,
+            ):
+                raise PolicyError("network target must contain an IP network")
+            if self.scope_id is not None:
+                raise PolicyError("network target cannot contain a scope ID")
+            _assert_destination_network(self.network)
+            if self.canonical != str(self.network):
+                raise PolicyError("network target is not canonical")
+        else:
+            if type(self.hostname) is not str or self.scope_id is not None:
+                raise PolicyError("hostname target fields are invalid")
+            if self.canonical != _canonical_hostname(self.hostname):
+                raise PolicyError("hostname target is not canonical")
 
     @property
     def is_loopback(self) -> bool:
@@ -65,10 +119,24 @@ class ResolutionSnapshot:
     resolved_at: datetime
 
     def __post_init__(self) -> None:
-        if not self.addresses:
+        hostname = _canonical_hostname(self.hostname)
+        if not isinstance(self.addresses, (list, tuple)):
+            raise PolicyError("resolution addresses must be a sequence")
+        addresses = tuple(self.addresses)
+        if not addresses:
             raise PolicyError("resolution snapshot cannot be empty")
-        if self.resolved_at.tzinfo is None:
+        for value in addresses:
+            target = parse_target(value)
+            if target.kind is not TargetKind.ADDRESS:
+                raise PolicyError("resolution snapshot must contain addresses")
+        if (
+            type(self.resolved_at) is not datetime
+            or self.resolved_at.tzinfo is None
+            or self.resolved_at.utcoffset() is None
+        ):
             raise PolicyError("resolution timestamp must be timezone-aware")
+        object.__setattr__(self, "hostname", hostname)
+        object.__setattr__(self, "addresses", addresses)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +204,35 @@ class ScopeGrant:
 Resolver = Callable[[str], Sequence[object]]
 
 
+def _assert_destination_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> None:
+    if address.is_unspecified:
+        raise PolicyError("unspecified destinations are not allowed")
+    if address.is_multicast:
+        raise PolicyError("multicast destinations are not allowed")
+    if address == _LIMITED_BROADCAST:
+        raise PolicyError("limited-broadcast destinations are not allowed")
+
+
+def _assert_destination_network(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> None:
+    multicast = _IPV4_MULTICAST if network.version == 4 else _IPV6_MULTICAST
+    unspecified = ipaddress.ip_address("0.0.0.0" if network.version == 4 else "::")
+    if network.overlaps(multicast):
+        raise PolicyError("multicast destination networks are not allowed")
+    if unspecified in network:
+        raise PolicyError("networks containing an unspecified destination are not allowed")
+    if network.version == 4 and _LIMITED_BROADCAST in network:
+        raise PolicyError(
+            "networks containing the limited-broadcast destination are not allowed"
+        )
+
+
 def _canonical_hostname(value: str) -> str:
+    if type(value) is not str:
+        raise PolicyError("hostname must be text")
     candidate = value.strip().rstrip(".")
     if not candidate or len(candidate) > 253:
         raise PolicyError("hostname length is invalid")
@@ -168,6 +264,7 @@ def parse_target(value: str) -> Target:
             network = ipaddress.ip_network(candidate, strict=False)
         except ValueError as exc:
             raise PolicyError(f"invalid CIDR target: {candidate!r}") from exc
+        _assert_destination_network(network)
         return Target(
             kind=TargetKind.NETWORK,
             canonical=str(network),
@@ -198,6 +295,7 @@ def parse_target(value: str) -> Target:
     if scope_id is not None:
         if not isinstance(address, ipaddress.IPv6Address) or not address.is_link_local:
             raise PolicyError("scope ID is allowed only on IPv6 link-local literals")
+    _assert_destination_address(address)
     canonical = f"{address}%{scope_id}" if scope_id else str(address)
     return Target(
         kind=TargetKind.ADDRESS,
@@ -253,6 +351,7 @@ def _addresses_from_resolution(values: Sequence[object]) -> tuple[str, ...]:
     addresses: set[str] = set()
     for value in values:
         raw: object
+        sockaddr: tuple[object, ...] | None = None
         if isinstance(value, str):
             raw = value
         elif (
@@ -261,22 +360,35 @@ def _addresses_from_resolution(values: Sequence[object]) -> tuple[str, ...]:
             and isinstance(value[4], tuple)
             and value[4]
         ):
-            raw = value[4][0]
+            sockaddr = value[4]
+            raw = sockaddr[0]
         else:
             raise PolicyError("resolver returned an unsupported address shape")
+        candidate = str(raw)
+        if (
+            sockaddr is not None
+            and len(sockaddr) >= 4
+            and "%" not in candidate
+            and type(sockaddr[3]) is int
+            and sockaddr[3] > 0
+        ):
+            candidate = f"{candidate}%{sockaddr[3]}"
         try:
-            address = ipaddress.ip_address(str(raw).split("%", 1)[0])
-        except ValueError as exc:
+            target = parse_target(candidate)
+        except PolicyError as exc:
             raise PolicyError(f"resolver returned invalid address {raw!r}") from exc
-        addresses.add(str(address))
+        if target.kind is not TargetKind.ADDRESS or target.address is None:
+            raise PolicyError(f"resolver returned non-address {raw!r}")
+        addresses.add(target.canonical)
     if not addresses:
         raise PolicyError("hostname resolved to no addresses")
     return tuple(
         sorted(
             addresses,
             key=lambda item: (
-                ipaddress.ip_address(item).version,
-                int(ipaddress.ip_address(item)),
+                ipaddress.ip_address(item.split("%", 1)[0]).version,
+                int(ipaddress.ip_address(item.split("%", 1)[0])),
+                item.partition("%")[2],
             ),
         )
     )
@@ -294,7 +406,7 @@ def resolve_for_plan(
     authorize_targets((target,), grant, now=now)
     addresses = _addresses_from_resolution(resolver(target.hostname))
     for value in addresses:
-        address = ipaddress.ip_address(value)
+        address = ipaddress.ip_address(value.split("%", 1)[0])
         if not (target.is_loopback and address.is_loopback) and not grant.permits_address(address):
             raise PolicyError(
                 f"resolved address {value} for {target.hostname!r} is outside scope"
@@ -323,7 +435,7 @@ def recheck_resolution(
             f"DNS answers for {snapshot.hostname!r} changed after authorization"
         )
     for value in addresses:
-        address = ipaddress.ip_address(value)
+        address = ipaddress.ip_address(value.split("%", 1)[0])
         if not (loopback_name and address.is_loopback) and not grant.permits_address(address):
             raise PolicyError(
                 f"resolved address {value} for {snapshot.hostname!r} escaped scope"
