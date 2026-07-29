@@ -161,6 +161,24 @@ class HistoryTests(unittest.TestCase):
     def test_database_mode_is_owner_only_on_posix(self) -> None:
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits are not Windows ACLs")
+    def test_explicit_history_path_does_not_chmod_existing_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            parent.chmod(0o755)
+            with self.assertWarns(RuntimeWarning):
+                with HistoryStore(parent / "explicit.sqlite3"):
+                    pass
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o755)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits are not Windows ACLs")
+    def test_new_history_directory_is_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "mercury-private"
+            with HistoryStore(parent / "history.sqlite3"):
+                pass
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
+
     def test_invalid_state_transition_is_rejected(self) -> None:
         self._create_and_finish("done")
         with self.assertRaises(HistoryError):

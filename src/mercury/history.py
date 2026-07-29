@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -172,12 +173,28 @@ class HistoryStore:
         database = ":memory:" if path == ":memory:" else str(self.path)
         if database != ":memory:":
             database_path = Path(database)
+            parent_existed = database_path.parent.exists()
             database_path.parent.mkdir(parents=True, exist_ok=True)
             if os.name != "nt":
-                try:
-                    database_path.parent.chmod(0o700)
-                except OSError:
-                    pass
+                if not parent_existed:
+                    try:
+                        database_path.parent.chmod(0o700)
+                    except OSError:
+                        pass
+                elif path is not None:
+                    try:
+                        parent_mode = database_path.parent.stat().st_mode & 0o077
+                    except OSError:
+                        parent_mode = 0
+                    if parent_mode:
+                        warnings.warn(
+                            "explicit history parent is accessible by other users; "
+                            "the existing directory was not modified",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                descriptor = os.open(database_path, os.O_CREAT | os.O_RDWR, 0o600)
+                os.close(descriptor)
         self._connection = sqlite3.connect(database)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
