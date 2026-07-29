@@ -139,7 +139,7 @@ class TargetPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "expired"):
             authorize_targets((parse_target("192.0.2.1"),), grant, now=NOW)
 
-    def test_dns_answer_must_be_in_scope_and_stable(self) -> None:
+    def test_dns_answer_must_remain_in_scope(self) -> None:
         grant = ScopeGrant(
             networks=(ipaddress.ip_network("192.0.2.10/32"),),
             hostnames=("example.test",),
@@ -162,7 +162,7 @@ class TargetPolicyTests(unittest.TestCase):
             ),
             ("192.0.2.10",),
         )
-        with self.assertRaisesRegex(PolicyError, "changed"):
+        with self.assertRaisesRegex(PolicyError, "escaped scope"):
             recheck_resolution(
                 snapshot,
                 grant,
@@ -194,12 +194,34 @@ class TargetPolicyTests(unittest.TestCase):
             ),
             ("192.0.2.10",),
         )
-        with self.assertRaisesRegex(PolicyError, "changed"):
+        with self.assertRaisesRegex(PolicyError, "escaped scope"):
             plan.preflight_addresses(
                 target,
                 resolver=lambda _: ("192.0.2.11",),
                 now=NOW,
             )
+
+    def test_dns_rotation_is_allowed_inside_the_granted_network(self) -> None:
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            hostnames=("rotate.test",),
+            attested=True,
+        )
+        snapshot = resolve_for_plan(
+            parse_target("rotate.test"),
+            grant,
+            resolver=lambda _: ("192.0.2.10",),
+            now=NOW,
+        )
+        self.assertEqual(
+            recheck_resolution(
+                snapshot,
+                grant,
+                resolver=lambda _: ("192.0.2.11",),
+                now=NOW,
+            ),
+            ("192.0.2.11",),
+        )
 
     def test_dns_out_of_scope_is_rejected_before_plan(self) -> None:
         grant = ScopeGrant(

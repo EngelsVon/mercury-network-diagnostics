@@ -430,10 +430,6 @@ def recheck_resolution(
     if not loopback_name and not grant.permits_name(snapshot.hostname):
         raise PolicyError(f"hostname {snapshot.hostname!r} is no longer in scope")
     addresses = _addresses_from_resolution(resolver(snapshot.hostname))
-    if addresses != snapshot.addresses:
-        raise PolicyError(
-            f"DNS answers for {snapshot.hostname!r} changed after authorization"
-        )
     for value in addresses:
         address = ipaddress.ip_address(value.split("%", 1)[0])
         if not (loopback_name and address.is_loopback) and not grant.permits_address(address):
