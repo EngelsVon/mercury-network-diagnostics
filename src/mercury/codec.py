@@ -27,6 +27,7 @@ from .models import (
 )
 
 MAX_DOCUMENT_BYTES = 64 * 1024 * 1024
+MAX_JSON_INTEGER_DIGITS = 1_000
 
 
 class CodecError(ValueError):
@@ -436,6 +437,18 @@ def _reject_constant(value: str) -> None:
     raise CodecError(f"non-finite JSON number is not allowed: {value}")
 
 
+def _parse_integer(value: str) -> int:
+    digits = value[1:] if value.startswith("-") else value
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise CodecError(
+            f"JSON integer exceeds {MAX_JSON_INTEGER_DIGITS} decimal digits"
+        )
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise CodecError("JSON integer is outside the supported range") from exc
+
+
 def loads_document(
     value: str | bytes,
     *,
@@ -459,10 +472,11 @@ def loads_document(
             text,
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_constant,
+            parse_int=_parse_integer,
         )
     except CodecError:
         raise
-    except (json.JSONDecodeError, RecursionError) as exc:
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise CodecError(f"invalid JSON: {exc}") from exc
 
 
@@ -492,6 +506,7 @@ def result_from_json(value: str | bytes) -> TaskResult:
 __all__ = [
     "CodecError",
     "MAX_DOCUMENT_BYTES",
+    "MAX_JSON_INTEGER_DIGITS",
     "dumps_document",
     "loads_document",
     "result_from_json",

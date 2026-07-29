@@ -6,6 +6,7 @@ from datetime import datetime
 
 from mercury.codec import (
     CodecError,
+    loads_document,
     result_from_json,
     result_from_wire,
     result_to_json,
@@ -273,6 +274,10 @@ class CodecTests(unittest.TestCase):
         wire["observations"][0]["duration_ms"] = 10**1000
         with self.assertRaisesRegex(CodecError, "numeric range"):
             result_from_wire(wire)
+
+    def test_oversized_json_integer_is_rejected_as_codec_error(self) -> None:
+        with self.assertRaisesRegex(CodecError, "decimal digits"):
+            loads_document('{"value":' + ("9" * 1_001) + "}")
 
     def test_unsupported_schema_is_rejected(self) -> None:
         encoded = result_to_json(sample_result()).replace(
