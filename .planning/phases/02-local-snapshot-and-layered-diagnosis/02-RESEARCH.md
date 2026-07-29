@@ -686,12 +686,12 @@ silently mutates historical `*-v1`. [VERIFIED: D-11]
 | `basic-v1` | `1.1.1.1:53` | `www.cloudflare.com:443`, `www.microsoft.com:443`, `www.apple.com:443` | one native ping and one max-8-hop path action to `1.1.1.1` |
 | `china-v1` | `223.5.5.5:53` | `www.baidu.com:443`, `www.qq.com:443`, `www.aliyun.com:443` | one native ping and one max-8-hop path action to `223.5.5.5` |
 
-Cloudflare documents `1.1.1.1` as its public resolver; Alibaba Cloud documents
+Cloudflare documents `1.1.1.1` as its public resolver; Alibaba DNS documents
 `223.5.5.5` for Public DNS. The HTTPS names are operator-owned public sites
 from three independent operators in each row. This selection is a versioned
 diagnostic recommendation, not a guarantee of present or future reachability.
 [CITED: https://developers.cloudflare.com/1.1.1.1/ip-addresses/;
-https://www.alibabacloud.com/help/en/dns/public-dns-free-edition/access-configuration;
+https://www.alidns.com/;
 https://www.cloudflare.com/; https://www.microsoft.com/; https://www.apple.com/;
 https://www.baidu.com/; https://www.tencent.com/; https://www.alibabagroup.com/]
 
@@ -1395,8 +1395,8 @@ required fallback. [VERIFIED: local Context7 CLI response]
   https://github.com/apple-oss-distributions/configd/blob/main/scutil.tproj/scutil.8
 - Cloudflare resolver addresses:
   https://developers.cloudflare.com/1.1.1.1/ip-addresses/
-- Alibaba Cloud Public DNS configuration:
-  https://www.alibabacloud.com/help/en/dns/public-dns-free-edition/access-configuration
+- Alibaba Public DNS addresses:
+  https://www.alidns.com/
 - OWASP ASVS:
   https://owasp.org/www-project-application-security-verification-standard/
 
