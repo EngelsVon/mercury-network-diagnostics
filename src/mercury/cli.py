@@ -142,6 +142,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_parser.add_argument("--repeat", type=int, default=1)
     plan_parser.add_argument("--payload-bytes", type=int, default=0)
+    plan_parser.add_argument(
+        "--payload-sha256",
+        help="approved custom UDP payload SHA-256 (raw payload is never persisted)",
+    )
+    plan_parser.add_argument(
+        "--payload-profile",
+        help="fixed built-in payload profile identifier",
+    )
     plan_parser.add_argument("--datagrams", type=int, default=1)
     plan_parser.add_argument(
         "--authorized",
@@ -362,6 +370,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             datagrams_per_udp_attempt=args.datagrams,
             limits=ABSOLUTE_CEILINGS if args.absolute_limits else DEFAULT_LIMITS,
             custom_udp_payload=args.custom_udp,
+            payload_sha256=args.payload_sha256,
+            payload_profile=args.payload_profile,
         )
         payload = preview.to_wire()
         payload["confirmation_examples"] = [

@@ -172,6 +172,23 @@ class PayloadMetadata:
             "sha256": self.sha256,
         }
 
+    def verify(self, payload: bytes | None) -> None:
+        if self.sha256 is None:
+            if payload is not None:
+                raise ConfirmationError(
+                    "execution bytes are not allowed for a built-in payload profile"
+                )
+            return
+        if type(payload) is not bytes:
+            raise ConfirmationError(
+                "custom UDP execution requires the approved payload bytes"
+            )
+        if len(payload) != self.length:
+            raise ConfirmationError("custom UDP payload length does not match the plan")
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != self.sha256:
+            raise ConfirmationError("custom UDP payload hash does not match the plan")
+
 
 @dataclass(frozen=True, slots=True)
 class StepCost:
@@ -448,9 +465,11 @@ class ProbePlan:
         *,
         resolver: Resolver | None = None,
         now: datetime | None = None,
+        payload: bytes | None = None,
     ) -> PreparedStep:
         """Return service-validated socket parameters for one finite step."""
         step = self.step(step_id)
+        step.payload.verify(payload)
         self.preview.scope.assert_current(now)
         target = normalize_targets((step.target,))[0]
         authorize_targets((target,), self.preview.scope, now=now)
@@ -682,6 +701,9 @@ def preview_plan(
     resolver: Resolver | None = None,
     now: datetime | None = None,
     custom_udp_payload: bool = False,
+    udp_payload: bytes | None = None,
+    payload_sha256: str | None = None,
+    payload_profile: str | None = None,
 ) -> PlanPreview:
     instant = now or datetime.now(timezone.utc)
     if (
@@ -713,6 +735,35 @@ def preview_plan(
         raise BudgetError("datagrams per UDP attempt must be within 1..100")
     if type(custom_udp_payload) is not bool:
         raise BudgetError("custom_udp_payload must be a boolean")
+    if udp_payload is not None and type(udp_payload) is not bytes:
+        raise BudgetError("udp_payload must be bytes")
+    if udp_payload is not None:
+        if (
+            payload_bytes_per_attempt not in (0, len(udp_payload))
+            or len(udp_payload) > 1_400
+        ):
+            raise BudgetError("udp_payload length conflicts with the payload budget")
+        payload_bytes_per_attempt = len(udp_payload)
+        computed_sha256 = hashlib.sha256(udp_payload).hexdigest()
+        if payload_sha256 is not None and payload_sha256 != computed_sha256:
+            raise BudgetError("payload_sha256 does not match udp_payload")
+        payload_sha256 = computed_sha256
+        custom_udp_payload = True
+    if payload_sha256 is not None:
+        if type(payload_sha256) is not str or not re.fullmatch(
+            r"[0-9a-f]{64}", payload_sha256
+        ):
+            raise BudgetError("payload_sha256 must be lowercase SHA-256")
+        custom_udp_payload = True
+    if custom_udp_payload and payload_sha256 is None:
+        raise BudgetError("custom UDP payload requires bytes or a SHA-256 digest")
+    if payload_profile is not None and (
+        type(payload_profile) is not str
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", payload_profile)
+    ):
+        raise BudgetError("payload_profile is invalid")
+    if payload_profile is not None and custom_udp_payload:
+        raise BudgetError("custom UDP payload cannot use a built-in profile")
 
     canonical_ports: set[int] = set()
     for port in ports:
@@ -768,15 +819,18 @@ def preview_plan(
         ceiling=ABSOLUTE_CEILINGS.max_attempts,
         name="logical_attempts",
     )
+    if custom_udp_payload:
+        effective_payload_profile = "custom-sha256-v1"
+    elif payload_profile is not None:
+        effective_payload_profile = payload_profile
+    elif payload_bytes_per_attempt:
+        effective_payload_profile = "zero-bytes-v1"
+    else:
+        effective_payload_profile = "none-v1"
     payload = PayloadMetadata(
-        profile=(
-            "custom-unbound-v1"
-            if custom_udp_payload
-            else "zero-bytes-v1"
-            if payload_bytes_per_attempt
-            else "none-v1"
-        ),
+        profile=effective_payload_profile,
         length=payload_bytes_per_attempt,
+        sha256=payload_sha256,
     )
     steps = _compile_steps(
         targets=targets,
@@ -906,6 +960,10 @@ def validate_preview(
     }
     if set(snapshots) != hostname_targets:
         raise ConfirmationError("plan resolution snapshots do not match targets")
+    payloads = {step.payload for step in preview.steps}
+    if len(payloads) != 1:
+        raise ConfirmationError("plan steps disagree about payload metadata")
+    payload = next(iter(payloads))
 
     def snapshot_resolver(hostname: str) -> tuple[str, ...]:
         return snapshots[hostname].addresses
@@ -923,7 +981,9 @@ def validate_preview(
             limits=preview.limits,
             resolver=snapshot_resolver,
             now=preview.created_at,
-            custom_udp_payload="custom_udp" in preview.required_confirmations,
+            custom_udp_payload=payload.custom,
+            payload_sha256=payload.sha256,
+            payload_profile=None if payload.custom else payload.profile,
         )
     except (BudgetError, ConfirmationError, KeyError, ValueError) as exc:
         raise ConfirmationError("plan preview failed canonical recompilation") from exc

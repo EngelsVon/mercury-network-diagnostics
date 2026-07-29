@@ -377,18 +377,68 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(plan.digest, preview.digest)
 
     def test_custom_udp_requires_separate_confirmation(self) -> None:
+        payload = b"A" * 32
         preview = preview_plan(
             target_values=("127.0.0.1",),
             ports=(9,),
             transports=("udp",),
             grant=ScopeGrant(networks=()),
-            payload_bytes_per_attempt=32,
-            custom_udp_payload=True,
+            udp_payload=payload,
             now=NOW,
         )
         self.assertEqual(preview.required_confirmations, ("custom_udp",))
+        self.assertEqual(preview.steps[0].payload.length, len(payload))
+        self.assertEqual(
+            preview.steps[0].payload.sha256,
+            "22a48051594c1949deed7040850c1f0f8764537f5191be56732d16a54c1d8153",
+        )
+        self.assertNotIn("AAAAAAAA", repr(preview.to_wire()))
         phrase = confirmation_phrase("custom_udp", preview.digest)
-        authorize_plan(preview, confirmations=(phrase,), now=NOW)
+        plan = authorize_plan(preview, confirmations=(phrase,), now=NOW)
+        with self.assertRaisesRegex(ConfirmationError, "hash"):
+            plan.preflight_step(
+                preview.steps[0].id,
+                payload=b"B" * 32,
+                now=NOW,
+            )
+        prepared = plan.preflight_step(
+            preview.steps[0].id,
+            payload=payload,
+            now=NOW,
+        )
+        self.assertEqual(prepared.step.payload.length, 32)
+
+        other = preview_plan(
+            target_values=("127.0.0.1",),
+            ports=(9,),
+            transports=("udp",),
+            grant=ScopeGrant(networks=()),
+            udp_payload=b"B" * 32,
+            now=NOW,
+        )
+        self.assertNotEqual(preview.digest, other.digest)
+
+    def test_custom_udp_metadata_is_required_and_never_raw(self) -> None:
+        with self.assertRaisesRegex(BudgetError, "bytes or a SHA-256"):
+            preview_plan(
+                target_values=("127.0.0.1",),
+                ports=(9,),
+                transports=("udp",),
+                grant=ScopeGrant(networks=()),
+                payload_bytes_per_attempt=16,
+                custom_udp_payload=True,
+                now=NOW,
+            )
+        preview = preview_plan(
+            target_values=("127.0.0.1",),
+            ports=(9,),
+            transports=("udp",),
+            grant=ScopeGrant(networks=()),
+            payload_bytes_per_attempt=16,
+            payload_sha256="ab" * 32,
+            now=NOW,
+        )
+        self.assertEqual(preview.steps[0].payload.sha256, "ab" * 32)
 
     def test_defaults_are_strictly_below_absolutes(self) -> None:
         DEFAULT_LIMITS.assert_within(ABSOLUTE_CEILINGS)

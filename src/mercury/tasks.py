@@ -113,13 +113,20 @@ class TaskContext:
     def total(self) -> int:
         return self.plan.preview.estimate.logical_attempts
 
-    async def admit(self, step_id: str) -> PreparedStep:
+    async def admit(
+        self,
+        step_id: str,
+        *,
+        payload: bytes | None = None,
+    ) -> PreparedStep:
         if type(step_id) is not str or step_id not in self._steps:
             raise TaskError("runner requested an unknown plan step ID")
         await self.cancellation.checkpoint()
         preflight_kwargs: dict[str, object] = {"now": self.wall_clock()}
         if self.resolver is not None:
             preflight_kwargs["resolver"] = self.resolver
+        if payload is not None:
+            preflight_kwargs["payload"] = payload
         prepared = self.plan.preflight_step(step_id, **preflight_kwargs)
         async with self._admission_lock:
             await self.cancellation.checkpoint()
