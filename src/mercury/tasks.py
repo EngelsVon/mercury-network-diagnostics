@@ -51,6 +51,14 @@ MAX_CONTEXT_ERRORS = 256
 _OUTPUT_BUDGET_ERROR = (
     "task result exceeded the output budget; detailed evidence was omitted"
 )
+_RESERVED_TASK_OBSERVATION_IDS = frozenset(
+    {
+        "task-cancelled",
+        "task-execution-error",
+        "task-output-budget",
+        "task-timeout",
+    }
+)
 
 
 def _effective_config(plan: ProbePlan) -> EffectiveConfig:
@@ -400,6 +408,17 @@ class TaskContext:
             raise TaskError("runner produced evidence before admitting work")
         if step_id is not None and step_id not in self._admitted_steps:
             raise TaskError("runner attached evidence to an unadmitted plan step")
+        if observation.id in _RESERVED_TASK_OBSERVATION_IDS:
+            raise TaskError("runner cannot use a reserved task observation ID")
+        self._append_observation(observation)
+
+    def _record_task_observation(self, observation: Observation) -> None:
+        """Record aggregate terminal evidence without changing probe progress."""
+        self._append_observation(observation)
+
+    def _append_observation(self, observation: Observation) -> None:
+        if type(observation) is not Observation:
+            raise TaskError("runner evidence must be an Observation")
         wire = observation_to_wire(observation)
         assert_persistence_safe(wire, path="$.result.observations[]")
         if self._event_count + 2 > self.plan.preview.limits.max_events:
@@ -424,6 +443,8 @@ class TaskContext:
     def add_conclusion(self, conclusion: Conclusion) -> None:
         if type(conclusion) is not Conclusion:
             raise TaskError("runner conclusion must be a Conclusion")
+        if conclusion.id == "task-summary":
+            raise TaskError("runner cannot use the reserved task-summary ID")
         if len(self._conclusions) >= MAX_CONTEXT_CONCLUSIONS:
             raise TaskError("too many task conclusions")
         assert_persistence_safe(
@@ -499,18 +520,18 @@ class SyntheticRunner:
 def _derive_conclusion(
     observations: tuple[Observation, ...],
     *,
-    cancelled: bool,
-    failed: bool,
+    state: TaskState,
 ) -> tuple[Conclusion, ...]:
     if not observations:
         return ()
-    ids = tuple(item.id for item in observations)
+    cited = observations[-256:]
+    ids = tuple(item.id for item in cited)
     dispositions = {item.disposition for item in observations}
-    if failed or Disposition.ERROR in dispositions:
+    if state is TaskState.FAILED:
         health = Health.FAILED
         confidence = Confidence.HIGH
         summary = "Task recorded an execution error; prior evidence is retained."
-    elif cancelled:
+    elif state is TaskState.CANCELLED:
         health = Health.PARTIAL
         confidence = Confidence.HIGH
         summary = "Task was cancelled; this conclusion covers partial evidence only."
@@ -530,6 +551,13 @@ def _derive_conclusion(
         health = Health.PARTIAL
         confidence = Confidence.UNKNOWN
         summary = "The available evidence is incomplete."
+    limitations = [
+        "This conclusion does not infer facts not present in observations."
+    ]
+    if len(cited) != len(observations):
+        limitations.append(
+            "The task summary cites only the latest 256 observations."
+        )
     return (
         Conclusion(
             id="task-summary",
@@ -541,9 +569,7 @@ def _derive_conclusion(
             alternatives=(
                 "Review each protocol-specific observation before attributing root cause.",
             ),
-            limitations=(
-                "This conclusion does not infer facts not present in observations.",
-            ),
+            limitations=tuple(limitations),
         ),
     )
 
@@ -554,7 +580,7 @@ def _record_terminal_observation(
 ) -> None:
     """Best-effort terminal evidence without risking loss of finalization."""
     try:
-        context.record(observation)
+        context._record_task_observation(observation)
     except Exception as exc:
         context.add_error(
             "terminal evidence could not be recorded: "
@@ -728,6 +754,23 @@ class TaskService:
                 await runner(context)
         except CooperativeCancellation:
             cancelled = True
+            instant = self._wall_clock()
+            _record_terminal_observation(
+                context,
+                Observation(
+                    id="task-cancelled",
+                    probe="task_cancellation",
+                    disposition=Disposition.CANCELLED,
+                    evidence_kind=EvidenceKind.CANCELLED,
+                    direction=Direction.LOCAL,
+                    target="task",
+                    started_at=instant,
+                    ended_at=instant,
+                    duration_ms=0.0,
+                    source="mercury.tasks",
+                    detail={"scope": "aggregate_task"},
+                ),
+            )
         except TimeoutError:
             failed = True
             context.add_error("task duration budget exhausted")
@@ -735,7 +778,7 @@ class TaskService:
             _record_terminal_observation(
                 context,
                 Observation(
-                    id=f"{task_id}:timeout",
+                    id="task-timeout",
                     probe="task_deadline",
                     disposition=Disposition.INCONCLUSIVE,
                     evidence_kind=EvidenceKind.TIMEOUT,
@@ -751,12 +794,13 @@ class TaskService:
             )
         except Exception as exc:  # converted at the core boundary, never hidden
             failed = True
-            context.add_error(sanitize_exception(exc))
+            sanitized = sanitize_exception(exc)
+            context.add_error(sanitized)
             instant = self._wall_clock()
             _record_terminal_observation(
                 context,
                 Observation(
-                    id=f"{task_id}:error",
+                    id="task-execution-error",
                     probe="task_runner",
                     disposition=Disposition.ERROR,
                     evidence_kind=EvidenceKind.EXECUTION_ERROR,
@@ -769,23 +813,44 @@ class TaskService:
                     source="mercury.tasks",
                     detail={
                         "error_type": type(exc).__name__,
-                        "message": sanitize_persisted_text(exc, maximum=1_024),
+                        "message": sanitized,
                     },
                 ),
             )
-        if token.cancelled:
+        if token.cancelled and not cancelled:
             cancelled = True
+            instant = self._wall_clock()
+            _record_terminal_observation(
+                context,
+                Observation(
+                    id="task-cancelled",
+                    probe="task_cancellation",
+                    disposition=Disposition.CANCELLED,
+                    evidence_kind=EvidenceKind.CANCELLED,
+                    direction=Direction.LOCAL,
+                    target="task",
+                    started_at=instant,
+                    ended_at=instant,
+                    duration_ms=0.0,
+                    source="mercury.tasks",
+                    detail={"scope": "aggregate_task"},
+                ),
+            )
         ended_at = self._wall_clock()
         state = (
-            TaskState.CANCELLED
-            if cancelled
-            else TaskState.FAILED
+            TaskState.FAILED
             if failed
+            else TaskState.CANCELLED
+            if cancelled
             else TaskState.COMPLETED
         )
         observations = tuple(context.observations)
-        conclusions = tuple(context.conclusions) or _derive_conclusion(
-            observations, cancelled=cancelled, failed=failed
+        conclusions = (
+            *context.conclusions,
+            *_derive_conclusion(
+                observations,
+                state=state,
+            ),
         )
         result = _make_result(
             task_id=task_id,
@@ -823,7 +888,7 @@ class TaskService:
             task_id=task_id,
             event_type="terminal",
             payload={
-                "state": state.value,
+                "state": result.state.value,
                 "completed": context.completed,
                 "total": context.total,
             },

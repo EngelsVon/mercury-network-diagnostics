@@ -857,8 +857,8 @@ def preview_plan(
             "application_bytes exceeds the absolute ceiling "
             f"{ABSOLUTE_CEILINGS.max_application_bytes}"
         )
-    # accepted + running + a reserved cancellation event + terminal
-    events = logical_attempts + 4
+    # accepted + running + cancellation request + terminal evidence + terminal
+    events = logical_attempts + 5
     output_bytes = logical_attempts * 512 + 4_096
     estimate = WorkEstimate(
         hosts=host_count,

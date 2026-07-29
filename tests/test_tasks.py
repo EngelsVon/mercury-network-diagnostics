@@ -11,9 +11,12 @@ from mercury.history import HistoryStore
 from mercury.models import (
     Capability,
     CapabilityState,
+    Conclusion,
+    Confidence,
     Direction,
     Disposition,
     EvidenceKind,
+    Health,
     Observation,
     TaskState,
 )
@@ -157,6 +160,80 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("RuntimeError", result.errors[0])
 
+    async def test_failure_before_admission_preserves_zero_progress(self) -> None:
+        async def fails_immediately(context: TaskContext) -> None:
+            raise RuntimeError("failed before work")
+
+        result = await self.service.run(
+            synthetic_plan(3),
+            fails_immediately,
+            task_kind="synthetic",
+            task_id="pre-admission-failure",
+        )
+        self.assertEqual(
+            (result.progress.admitted, result.progress.completed, result.progress.total),
+            (0, 0, 3),
+        )
+        self.assertEqual(
+            result.observations[-1].evidence_kind,
+            EvidenceKind.EXECUTION_ERROR,
+        )
+        summary = next(item for item in result.conclusions if item.id == "task-summary")
+        self.assertEqual(summary.health, Health.FAILED)
+
+    async def test_runner_conclusion_cannot_override_failed_summary(self) -> None:
+        async def misleading(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            await context.admit(step.id)
+            record_fixture(context, 1, step.id)
+            context.add_conclusion(
+                Conclusion(
+                    id="runner-finding",
+                    title="Scoped runner finding",
+                    summary="The completed probe produced positive evidence.",
+                    health=Health.HEALTHY,
+                    confidence=Confidence.HIGH,
+                    observation_ids=(f"{context.task_id}:custom:1",),
+                )
+            )
+            raise RuntimeError("later task failure")
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            misleading,
+            task_kind="synthetic",
+            task_id="truthful-terminal-summary",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        conclusions = {item.id: item for item in result.conclusions}
+        self.assertEqual(conclusions["runner-finding"].health, Health.HEALTHY)
+        self.assertEqual(conclusions["task-summary"].health, Health.FAILED)
+
+    async def test_cancellation_before_admission_records_task_evidence(self) -> None:
+        running = asyncio.Event()
+
+        async def waits_for_cancellation(context: TaskContext) -> None:
+            running.set()
+            await context.cancellation.wait_or_timeout(60)
+
+        task_id = self.service.submit(
+            synthetic_plan(3),
+            waits_for_cancellation,
+            task_kind="synthetic",
+            task_id="cancel-before-admission",
+        )
+        await running.wait()
+        self.assertTrue(self.service.cancel(task_id))
+        result = await self.service.wait(task_id)
+        self.assertEqual(result.state, TaskState.CANCELLED)
+        self.assertEqual(
+            (result.progress.admitted, result.progress.completed, result.progress.total),
+            (0, 0, 3),
+        )
+        self.assertEqual(result.observations[-1].evidence_kind, EvidenceKind.CANCELLED)
+        summary = next(item for item in result.conclusions if item.id == "task-summary")
+        self.assertEqual(summary.health, Health.PARTIAL)
+
     async def test_exception_credentials_are_sanitized_before_persistence(self) -> None:
         async def leaks_secret(context: TaskContext) -> None:
             raise RuntimeError("Authorization: Bearer top-secret")
@@ -173,6 +250,12 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         serialized = result_to_json(record.result)
         self.assertNotIn("top-secret", serialized)
         self.assertIn("redacted", serialized)
+        observation = next(
+            item
+            for item in record.result.observations
+            if item.evidence_kind is EvidenceKind.EXECUTION_ERROR
+        )
+        self.assertIn("redacted", observation.detail["message"])
 
     async def test_runner_cannot_exceed_immutable_total(self) -> None:
         async def excessive(context: TaskContext) -> None:
