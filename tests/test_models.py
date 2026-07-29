@@ -12,12 +12,18 @@ from mercury.codec import (
     result_to_wire,
 )
 from mercury.models import (
+    Capability,
     Conclusion,
     Confidence,
+    Direction,
     Disposition,
+    EffectiveConfig,
     EvidenceKind,
     ModelError,
+    Observation,
     Progress,
+    TaskResult,
+    TaskState,
 )
 
 from tests.helpers import sample_observation, sample_result
@@ -33,7 +39,37 @@ class ModelTests(unittest.TestCase):
         self.assertIn('"schema_version":"1.0"', encoded)
 
     def test_models_are_deeply_immutable(self) -> None:
-        result = sample_result()
+        source_observations = [sample_observation()]
+        source_targets = ["offline"]
+        source_errors = ["fixture"]
+        baseline = sample_result()
+        result = TaskResult(
+            task_id=baseline.task_id,
+            task_kind=baseline.task_kind,
+            direction=baseline.direction,
+            target=baseline.target,
+            state=baseline.state,
+            started_at=baseline.started_at,
+            ended_at=baseline.ended_at,
+            requested_config=baseline.requested_config,
+            effective_config=EffectiveConfig(
+                profile="synthetic-v1",
+                targets=source_targets,
+                authorized=False,
+                policy_digest="sha256:test",
+                budget={"max_attempts": 1},
+            ),
+            progress=baseline.progress,
+            observations=source_observations,
+            conclusions=baseline.conclusions,
+            errors=source_errors,
+        )
+        source_observations.clear()
+        source_targets.clear()
+        source_errors.clear()
+        self.assertEqual(len(result.observations), 1)
+        self.assertEqual(result.effective_config.targets, ("offline",))
+        self.assertEqual(result.errors, ("fixture",))
         with self.assertRaises(FrozenInstanceError):
             result.task_id = "changed"  # type: ignore[misc]
         with self.assertRaises(TypeError):
@@ -92,9 +128,92 @@ class ModelTests(unittest.TestCase):
             )
 
     def test_progress_invariants(self) -> None:
-        for values in ((2, 1, 1), (1, 2, 2), (-1, 0, 0)):
+        for values in (
+            (2, 1, 1),
+            (1, 2, 2),
+            (-1, 0, 0),
+            (True, 1, 1),
+            (1.0, 1, 1),
+        ):
             with self.subTest(values=values), self.assertRaises(ModelError):
                 Progress(admitted=values[0], completed=values[1], total=values[2])
+
+    def test_direct_constructors_reject_string_enums_and_wrong_nested_types(self) -> None:
+        observation = sample_observation()
+        invalid_observation_fields = {
+            "disposition": "positive",
+            "evidence_kind": "local_fact",
+            "direction": "local",
+        }
+        for field, invalid in invalid_observation_fields.items():
+            values = {
+                "id": observation.id,
+                "probe": observation.probe,
+                "disposition": observation.disposition,
+                "evidence_kind": observation.evidence_kind,
+                "direction": observation.direction,
+                "target": observation.target,
+                "started_at": observation.started_at,
+                "ended_at": observation.ended_at,
+                "duration_ms": observation.duration_ms,
+            }
+            values[field] = invalid
+            with self.subTest(field=field), self.assertRaises(ModelError):
+                Observation(**values)
+
+        with self.assertRaises(ModelError):
+            Capability(
+                name="fixture",
+                state="available",  # type: ignore[arg-type]
+                source="tests",
+            )
+        with self.assertRaises(ModelError):
+            EffectiveConfig(
+                profile="fixture",
+                targets=("offline",),
+                authorized=1,  # type: ignore[arg-type]
+                policy_digest="digest",
+                budget={},
+            )
+        with self.assertRaises(ModelError):
+            Conclusion(
+                id="fixture",
+                title="Fixture",
+                summary="Fixture",
+                health="healthy",  # type: ignore[arg-type]
+                confidence=Confidence.HIGH,
+                observation_ids=("obs",),
+            )
+
+    def test_direct_result_constructor_rejects_mutable_or_wrong_members(self) -> None:
+        result = sample_result()
+        with self.assertRaises(ModelError):
+            TaskResult(
+                task_id=result.task_id,
+                task_kind=result.task_kind,
+                direction="local",  # type: ignore[arg-type]
+                target=result.target,
+                state=TaskState.COMPLETED,
+                started_at=result.started_at,
+                ended_at=result.ended_at,
+                requested_config=result.requested_config,
+                effective_config=result.effective_config,
+                progress=result.progress,
+            )
+        with self.assertRaises(ModelError):
+            TaskResult(
+                task_id=result.task_id,
+                task_kind=result.task_kind,
+                direction=Direction.LOCAL,
+                target=result.target,
+                state=TaskState.COMPLETED,
+                started_at=result.started_at,
+                ended_at=result.ended_at,
+                requested_config=result.requested_config,
+                effective_config=result.effective_config,
+                progress=result.progress,
+                observations=("not-an-observation",),  # type: ignore[arg-type]
+            )
 
     def test_naive_timestamp_is_rejected(self) -> None:
         observation = sample_observation()

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
+import math
 from types import MappingProxyType
 from typing import Any, Mapping, TypeAlias
 
@@ -122,14 +123,14 @@ def utc_now() -> datetime:
 
 
 def _validate_datetime(value: datetime, name: str) -> None:
-    if not isinstance(value, datetime) or value.tzinfo is None:
+    if type(value) is not datetime or value.tzinfo is None:
         raise ModelError(f"{name} must be timezone-aware")
     if value.utcoffset() is None:
         raise ModelError(f"{name} must have a UTC offset")
 
 
 def _validate_text(value: str, name: str, *, maximum: int = 4096) -> None:
-    if not isinstance(value, str) or not value.strip():
+    if type(value) is not str or not value.strip():
         raise ModelError(f"{name} must be a non-empty string")
     if len(value) > maximum:
         raise ModelError(f"{name} exceeds {maximum} characters")
@@ -141,10 +142,10 @@ def freeze_json(value: Any, *, _depth: int = 0) -> FrozenJson:
     """Validate and deeply freeze JSON-compatible data."""
     if _depth > 32:
         raise ModelError("JSON value is nested too deeply")
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or type(value) in (str, bool, int):
         return value
-    if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+    if type(value) is float:
+        if not math.isfinite(value):
             raise ModelError("non-finite numbers are not valid")
         return value
     if isinstance(value, Mapping):
@@ -170,9 +171,15 @@ class Capability:
 
     def __post_init__(self) -> None:
         _validate_text(self.name, "capability name", maximum=128)
+        if type(self.state) is not CapabilityState:
+            raise ModelError("capability state must be CapabilityState")
         _validate_text(self.source, "capability source", maximum=256)
+        if type(self.detail) is not str:
+            raise ModelError("capability detail must be text")
         if len(self.detail) > 4096:
             raise ModelError("capability detail exceeds 4096 characters")
+        if "\x00" in self.detail:
+            raise ModelError("capability detail contains NUL")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,14 +205,24 @@ class Observation:
             (self.source, "source", 256),
         ):
             _validate_text(value, name, maximum=maximum)
+        for value, expected, name in (
+            (self.disposition, Disposition, "observation disposition"),
+            (self.evidence_kind, EvidenceKind, "observation evidence_kind"),
+            (self.direction, Direction, "observation direction"),
+        ):
+            if type(value) is not expected:
+                raise ModelError(f"{name} must be {expected.__name__}")
         _validate_datetime(self.started_at, "observation started_at")
         _validate_datetime(self.ended_at, "observation ended_at")
         if self.ended_at < self.started_at:
             raise ModelError("observation ended_at precedes started_at")
-        if not 0 <= self.duration_ms <= 86_400_000:
+        if type(self.duration_ms) not in (int, float):
+            raise ModelError("observation duration_ms must be a number")
+        duration = float(self.duration_ms)
+        if not math.isfinite(duration) or not 0 <= duration <= 86_400_000:
             raise ModelError("observation duration_ms is out of range")
-        object.__setattr__(self, "duration_ms", float(self.duration_ms))
-        if not 1 <= self.attempt <= 100_000:
+        object.__setattr__(self, "duration_ms", duration)
+        if type(self.attempt) is not int or not 1 <= self.attempt <= 100_000:
             raise ModelError("observation attempt is out of range")
         allowed = _KIND_DISPOSITIONS[self.evidence_kind]
         if self.disposition not in allowed:
@@ -234,6 +251,19 @@ class Conclusion:
         _validate_text(self.id, "conclusion id", maximum=128)
         _validate_text(self.title, "conclusion title", maximum=512)
         _validate_text(self.summary, "conclusion summary", maximum=8192)
+        if type(self.health) is not Health:
+            raise ModelError("conclusion health must be Health")
+        if type(self.confidence) is not Confidence:
+            raise ModelError("conclusion confidence must be Confidence")
+        for attribute, name in (
+            ("observation_ids", "observation reference"),
+            ("alternatives", "alternative"),
+            ("limitations", "limitation"),
+        ):
+            value = getattr(self, attribute)
+            if not isinstance(value, (list, tuple)):
+                raise ModelError(f"{name} values must be a sequence")
+            object.__setattr__(self, attribute, tuple(value))
         if not self.observation_ids:
             raise ModelError("conclusion must cite at least one observation")
         if len(set(self.observation_ids)) != len(self.observation_ids):
@@ -256,6 +286,11 @@ class Progress:
     total: int
 
     def __post_init__(self) -> None:
+        if any(
+            type(value) is not int
+            for value in (self.admitted, self.completed, self.total)
+        ):
+            raise ModelError("progress counters must be integers")
         if min(self.admitted, self.completed, self.total) < 0:
             raise ModelError("progress counters cannot be negative")
         if self.completed > self.admitted or self.admitted > self.total:
@@ -278,6 +313,14 @@ class EffectiveConfig:
     def __post_init__(self) -> None:
         _validate_text(self.profile, "profile", maximum=128)
         _validate_text(self.policy_digest, "policy_digest", maximum=256)
+        if type(self.authorized) is not bool:
+            raise ModelError("effective authorized must be a boolean")
+        if not isinstance(self.targets, (list, tuple)):
+            raise ModelError("effective targets must be a sequence")
+        if not isinstance(self.warnings, (list, tuple)):
+            raise ModelError("effective warnings must be a sequence")
+        object.__setattr__(self, "targets", tuple(self.targets))
+        object.__setattr__(self, "warnings", tuple(self.warnings))
         if len(self.targets) > 4096:
             raise ModelError("too many effective targets")
         for target in self.targets:
@@ -316,6 +359,33 @@ class TaskResult:
             (self.schema_version, "schema_version", 32),
         ):
             _validate_text(value, name, maximum=maximum)
+        if type(self.direction) is not Direction:
+            raise ModelError("task direction must be Direction")
+        if type(self.state) is not TaskState:
+            raise ModelError("task state must be TaskState")
+        if type(self.effective_config) is not EffectiveConfig:
+            raise ModelError("effective_config must be EffectiveConfig")
+        if type(self.progress) is not Progress:
+            raise ModelError("progress must be Progress")
+        for attribute, item_type, maximum in (
+            ("observations", Observation, 100_000),
+            ("conclusions", Conclusion, 100_000),
+            ("capabilities", Capability, 4096),
+        ):
+            value = getattr(self, attribute)
+            if not isinstance(value, (list, tuple)):
+                raise ModelError(f"{attribute} must be a sequence")
+            canonical = tuple(value)
+            if len(canonical) > maximum:
+                raise ModelError(f"too many {attribute}")
+            if any(type(item) is not item_type for item in canonical):
+                raise ModelError(
+                    f"{attribute} must contain only {item_type.__name__} values"
+                )
+            object.__setattr__(self, attribute, canonical)
+        if not isinstance(self.errors, (list, tuple)):
+            raise ModelError("errors must be a sequence")
+        object.__setattr__(self, "errors", tuple(self.errors))
         if self.schema_version != MODEL_SCHEMA_VERSION:
             raise ModelError(
                 f"unsupported schema version {self.schema_version!r}; "
