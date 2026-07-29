@@ -137,6 +137,44 @@ class HistoryTests(unittest.TestCase):
         )
         self.assertIsNotNone(self.store.get_task("payload-metadata"))
 
+    def test_compound_credentials_headers_bodies_and_values_are_rejected(self) -> None:
+        cases = (
+            {"refresh_token": "secret"},
+            {"client_private_key": "secret"},
+            {"headers": {"X-API-Key": "secret"}},
+            {"body": "raw response"},
+            {"payload_metadata": "raw response"},
+            {
+                "targets": [
+                    {
+                        "raw_payload_metadata": {
+                            "profile": "custom",
+                            "length": 12,
+                            "sha256": "0" * 64,
+                        }
+                    }
+                ]
+            },
+            {"purpose": "Authorization: Bearer top-secret"},
+        )
+        for index, request in enumerate(cases, 1):
+            with self.subTest(request=request), self.assertRaises(HistoryError):
+                self.store.create_task(
+                    task_id=f"bypass-{index}",
+                    task_kind="fixture",
+                    request=request,
+                    plan={"digest": f"bypass-{index}"},
+                )
+
+    def test_history_request_projection_rejects_unknown_safe_fields(self) -> None:
+        with self.assertRaisesRegex(HistoryError, "unsupported fields"):
+            self.store.create_task(
+                task_id="unknown-request-field",
+                task_kind="fixture",
+                request={"surprise": "not part of the typed projection"},
+                plan={"digest": "unknown"},
+            )
+
     def test_count_retention_prunes_oldest_terminal_tasks(self) -> None:
         for index in range(3):
             self.clock.value += timedelta(minutes=1)

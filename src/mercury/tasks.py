@@ -9,8 +9,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Protocol
 
-from .codec import dumps_document, observation_to_wire
-from .history import HistoryStore
+from .codec import (
+    capability_to_wire,
+    conclusion_to_wire,
+    dumps_document,
+    observation_to_wire,
+)
+from .history import (
+    HistoryStore,
+    assert_persistence_safe,
+    project_history_request,
+    sanitize_exception,
+    sanitize_persisted_text,
+)
 from .models import (
     Capability,
     Conclusion,
@@ -91,10 +102,10 @@ class TaskContext:
         self.wall_clock = wall_clock
         self.monotonic = monotonic
         self.resolver = resolver
-        self.observations: list[Observation] = []
-        self.conclusions: list[Conclusion] = []
-        self.capabilities: list[Capability] = []
-        self.errors: list[str] = []
+        self._observations: list[Observation] = []
+        self._conclusions: list[Conclusion] = []
+        self._capabilities: list[Capability] = []
+        self._errors: list[str] = []
         self.admitted = 0
         self.completed = 0
         self.generated_datagrams = 0
@@ -112,6 +123,22 @@ class TaskContext:
     @property
     def total(self) -> int:
         return self.plan.preview.estimate.logical_attempts
+
+    @property
+    def observations(self) -> tuple[Observation, ...]:
+        return tuple(self._observations)
+
+    @property
+    def conclusions(self) -> tuple[Conclusion, ...]:
+        return tuple(self._conclusions)
+
+    @property
+    def capabilities(self) -> tuple[Capability, ...]:
+        return tuple(self._capabilities)
+
+    @property
+    def errors(self) -> tuple[str, ...]:
+        return tuple(self._errors)
 
     async def admit(
         self,
@@ -186,12 +213,16 @@ class TaskContext:
         )
 
     def record(self, observation: Observation, *, step_id: str | None = None) -> None:
+        if type(observation) is not Observation:
+            raise TaskError("runner evidence must be an Observation")
         if self.admitted == 0:
             raise TaskError("runner produced evidence before admitting work")
         if step_id is not None and step_id not in self._admitted_steps:
             raise TaskError("runner attached evidence to an unadmitted plan step")
+        wire = observation_to_wire(observation)
+        assert_persistence_safe(wire, path="$.result.observations[]")
         encoded_bytes = len(
-            dumps_document(observation_to_wire(observation)).encode("utf-8")
+            dumps_document(wire).encode("utf-8")
         )
         if (
             self._output_bytes + encoded_bytes
@@ -201,7 +232,7 @@ class TaskContext:
         if self._event_count + 2 > self.plan.preview.limits.max_events:
             raise TaskError("task event budget exhausted")
         self._output_bytes += encoded_bytes
-        self.observations.append(observation)
+        self._observations.append(observation)
         self._event_count += 1
         self.history.append_event(
             task_id=self.task_id,
@@ -210,17 +241,35 @@ class TaskContext:
                 "observation_id": observation.id,
                 "disposition": observation.disposition.value,
                 "evidence_kind": observation.evidence_kind.value,
-                "observation_count": len(self.observations),
+                "observation_count": len(self._observations),
                 "total": self.total,
             },
             occurred_at=observation.ended_at,
         )
 
     def add_conclusion(self, conclusion: Conclusion) -> None:
-        self.conclusions.append(conclusion)
+        if type(conclusion) is not Conclusion:
+            raise TaskError("runner conclusion must be a Conclusion")
+        assert_persistence_safe(
+            conclusion_to_wire(conclusion),
+            path="$.result.conclusions[]",
+        )
+        self._conclusions.append(conclusion)
 
     def add_capability(self, capability: Capability) -> None:
-        self.capabilities.append(capability)
+        if type(capability) is not Capability:
+            raise TaskError("runner capability must be a Capability")
+        assert_persistence_safe(
+            capability_to_wire(capability),
+            path="$.result.capabilities[]",
+        )
+        self._capabilities.append(capability)
+
+    def add_error(self, value: object) -> None:
+        if len(self._errors) >= 256:
+            raise TaskError("too many task errors")
+        message = sanitize_persisted_text(value, maximum=1_024)
+        self._errors.append(message or "unspecified task error")
 
 
 class SyntheticRunner:
@@ -319,8 +368,9 @@ def _record_terminal_observation(
     try:
         context.record(observation)
     except Exception as exc:
-        context.errors.append(
-            f"terminal evidence could not be recorded: {type(exc).__name__}: {exc}"
+        context.add_error(
+            "terminal evidence could not be recorded: "
+            + sanitize_exception(exc)
         )
 
 
@@ -355,7 +405,7 @@ class TaskService:
         identifier = task_id or str(uuid.uuid4())
         if identifier in self._tasks or identifier in self._results:
             raise TaskError(f"duplicate task ID {identifier!r}")
-        request = dict(requested_config or {})
+        request = project_history_request(dict(requested_config or {}))
         self.history.create_task(
             task_id=identifier,
             task_kind=task_kind,
@@ -466,7 +516,7 @@ class TaskService:
             cancelled = True
         except TimeoutError:
             failed = True
-            context.errors.append("task duration budget exhausted")
+            context.add_error("task duration budget exhausted")
             instant = self._wall_clock()
             _record_terminal_observation(
                 context,
@@ -487,7 +537,7 @@ class TaskService:
             )
         except Exception as exc:  # converted at the core boundary, never hidden
             failed = True
-            context.errors.append(f"{type(exc).__name__}: {exc}")
+            context.add_error(sanitize_exception(exc))
             instant = self._wall_clock()
             _record_terminal_observation(
                 context,
@@ -505,7 +555,7 @@ class TaskService:
                     source="mercury.tasks",
                     detail={
                         "error_type": type(exc).__name__,
-                        "message": str(exc)[:2048],
+                        "message": sanitize_persisted_text(exc, maximum=1_024),
                     },
                 ),
             )

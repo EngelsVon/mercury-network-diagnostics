@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import warnings
@@ -21,40 +22,82 @@ MAX_AGE_DAYS_ABSOLUTE = 365
 MAX_EVENT_BYTES = 64 * 1024
 MAX_AUX_JSON_BYTES = 8 * 1024 * 1024
 
-_SECRET_KEYS = frozenset(
-    {
-        "token",
-        "accesstoken",
-        "bearertoken",
-        "authorization",
-        "proxyauthorization",
-        "apikey",
-        "password",
-        "secret",
-        "clientsecret",
-        "privatekey",
-        "privatekeydata",
-        "invitation",
-        "invitationsecret",
-        "pairingsecret",
-        "credential",
-        "credentials",
-        "cookie",
-        "setcookie",
-        "sessioncookie",
-        "csrftoken",
-    }
+_SECRET_KEY_PARTS = (
+    "token",
+    "authorization",
+    "apikey",
+    "password",
+    "secret",
+    "privatekey",
+    "credential",
+    "cookie",
+    "pairingkey",
+    "invitationkey",
+)
+_SENSITIVE_VALUE_PATTERNS = (
+    re.compile(
+        r"(?i)\b(?:authorization|proxy-authorization|x-api-key)\s*:\s*\S+"
+    ),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{4,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
 
-_RAW_CONTENT_KEYS = frozenset(
+_REQUEST_KEYS = frozenset(
     {
-        "payload",
-        "rawpayload",
-        "custompayload",
-        "payloadhex",
-        "payloadbase64",
-        "requestbody",
-        "responsebody",
+        "profile",
+        "targets",
+        "ports",
+        "transports",
+        "repeats",
+        "steps",
+        "delay_s",
+        "network_io",
+        "payload_bytes",
+        "payload_length",
+        "payload_sha256",
+        "payload_profile",
+        "datagrams",
+        "timeout_s",
+        "purpose",
+    }
+)
+_PLAN_KEYS = frozenset(
+    {
+        "schema_version",
+        "profile",
+        "targets",
+        "ports",
+        "transports",
+        "repeats",
+        "payload_bytes_per_attempt",
+        "datagrams_per_udp_attempt",
+        "steps",
+        "scope",
+        "resolutions",
+        "limits",
+        "estimate",
+        "required_confirmations",
+        "created_at",
+        "digest",
+        "confirmations",
+        "authorized_at",
+    }
+)
+_EVENT_KEYS = frozenset(
+    {
+        "state",
+        "plan_digest",
+        "observation_id",
+        "disposition",
+        "evidence_kind",
+        "observation_count",
+        "total",
+        "completed",
+        "recovered",
+        "error_type",
+        "dns_changed",
+        "hostname",
+        "addresses",
     }
 )
 
@@ -98,6 +141,58 @@ def _normalize_key(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
 
 
+def _is_secret_key(normalized: str) -> bool:
+    return any(part in normalized for part in _SECRET_KEY_PARTS)
+
+
+def _assert_payload_metadata(value: Any, *, key: str, path: str) -> None:
+    normalized = _normalize_key(key)
+    if normalized in {
+        "payloadbytes",
+        "payloadbytesperattempt",
+        "payloadlength",
+        "maxapplicationbytes",
+    }:
+        if type(value) is not int or value < 0:
+            raise HistoryError(f"{path}.{key} must be a non-negative integer")
+        return
+    if normalized == "payloadsha256":
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise HistoryError(f"{path}.{key} must be a lowercase SHA-256 digest")
+        return
+    if normalized == "payloadprofile":
+        if not isinstance(value, str) or not value or len(value) > 128:
+            raise HistoryError(f"{path}.{key} must be a bounded profile name")
+        return
+    if normalized == "payloadmetadata":
+        if not isinstance(value, Mapping) or set(value) != {
+            "profile",
+            "length",
+            "sha256",
+        }:
+            raise HistoryError(
+                f"{path}.{key} must contain only profile, length, and sha256"
+            )
+        profile = value["profile"]
+        length = value["length"]
+        sha256 = value["sha256"]
+        if not isinstance(profile, str) or not profile or len(profile) > 128:
+            raise HistoryError(f"{path}.{key}.profile is invalid")
+        if type(length) is not int or not 0 <= length <= 1_400:
+            raise HistoryError(f"{path}.{key}.length is invalid")
+        if sha256 is not None and (
+            not isinstance(sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+        ):
+            raise HistoryError(f"{path}.{key}.sha256 is invalid")
+        return
+    raise HistoryError(f"refusing to persist unredacted content field {path}.{key}")
+
+
+def _contains_sensitive_value(value: str) -> bool:
+    return any(pattern.search(value) for pattern in _SENSITIVE_VALUE_PATTERNS)
+
+
 def _assert_secret_free(value: Any, *, path: str = "$", depth: int = 0) -> None:
     if depth > 32:
         raise HistoryError("history value is nested too deeply")
@@ -106,20 +201,77 @@ def _assert_secret_free(value: Any, *, path: str = "$", depth: int = 0) -> None:
             if not isinstance(key, str):
                 raise HistoryError(f"{path} contains a non-string key")
             normalized = _normalize_key(key)
-            if normalized in _SECRET_KEYS:
+            if _is_secret_key(normalized):
                 raise HistoryError(f"refusing to persist credential field {path}.{key}")
-            if normalized in _RAW_CONTENT_KEYS:
+            if normalized == "body" or normalized.endswith("body"):
                 raise HistoryError(
                     f"refusing to persist unredacted content field {path}.{key}"
                 )
+            if "payload" in normalized:
+                _assert_payload_metadata(item, key=key, path=path)
             _assert_secret_free(item, path=f"{path}.{key}", depth=depth + 1)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _assert_secret_free(item, path=f"{path}[{index}]", depth=depth + 1)
+    elif isinstance(value, str) and _contains_sensitive_value(value):
+        raise HistoryError(f"refusing to persist credential text at {path}")
 
 
-def _json_for_store(value: Mapping[str, Any], *, maximum: int) -> str:
-    _assert_secret_free(value)
+def assert_persistence_safe(value: Any, *, path: str = "$") -> None:
+    """Reject credentials and raw content before they reach SQLite."""
+    _assert_secret_free(value, path=path)
+
+
+def sanitize_persisted_text(value: object, *, maximum: int = 1_024) -> str:
+    """Return bounded exception text that cannot retain recognized credentials."""
+    try:
+        text = str(value)
+    except Exception:
+        text = "<unprintable>"
+    text = "".join(
+        character if character >= " " and character != "\x7f" else " "
+        for character in text
+    )
+    if _contains_sensitive_value(text):
+        return "[sensitive detail redacted]"
+    return text[:maximum]
+
+
+def sanitize_exception(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name):
+        name = "Exception"
+    return f"{name}: {sanitize_persisted_text(exc)}"
+
+
+def project_history_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise HistoryError("history request must be an object")
+    _assert_secret_free(value, path="$.request")
+    unknown = set(value) - _REQUEST_KEYS
+    if unknown:
+        raise HistoryError(
+            "history request contains unsupported fields: "
+            + ", ".join(sorted(str(item) for item in unknown))
+        )
+    return json.loads(dumps_document(value))
+
+
+def _json_for_store(
+    value: Mapping[str, Any],
+    *,
+    maximum: int,
+    allowed_keys: frozenset[str] | None = None,
+    path: str = "$",
+) -> str:
+    _assert_secret_free(value, path=path)
+    if allowed_keys is not None:
+        unknown = set(value) - allowed_keys
+        if unknown:
+            raise HistoryError(
+                f"{path} contains unsupported fields: "
+                + ", ".join(sorted(str(item) for item in unknown))
+            )
     text = dumps_document(value)
     if len(text.encode("utf-8")) > maximum:
         raise HistoryError(f"history JSON exceeds {maximum} bytes")
@@ -280,8 +432,18 @@ class HistoryStore:
         created_at: datetime | None = None,
     ) -> None:
         timestamp = created_at or self._clock()
-        request_json = _json_for_store(request, maximum=MAX_AUX_JSON_BYTES)
-        plan_json = _json_for_store(plan, maximum=MAX_AUX_JSON_BYTES)
+        request_json = _json_for_store(
+            request,
+            maximum=MAX_AUX_JSON_BYTES,
+            allowed_keys=_REQUEST_KEYS,
+            path="$.request",
+        )
+        plan_json = _json_for_store(
+            plan,
+            maximum=MAX_AUX_JSON_BYTES,
+            allowed_keys=_PLAN_KEYS,
+            path="$.plan",
+        )
         try:
             with self._connection:
                 self._connection.execute(
@@ -380,7 +542,12 @@ class HistoryStore:
         payload: Mapping[str, Any],
         occurred_at: datetime | None = None,
     ) -> int:
-        payload_json = _json_for_store(payload, maximum=MAX_EVENT_BYTES)
+        payload_json = _json_for_store(
+            payload,
+            maximum=MAX_EVENT_BYTES,
+            allowed_keys=_EVENT_KEYS,
+            path="$.event",
+        )
         with self._connection:
             row = self._connection.execute(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE task_id = ?",
@@ -510,5 +677,9 @@ __all__ = [
     "HistoryEvent",
     "HistoryRecord",
     "HistoryStore",
+    "assert_persistence_safe",
     "default_history_path",
+    "project_history_request",
+    "sanitize_exception",
+    "sanitize_persisted_text",
 ]

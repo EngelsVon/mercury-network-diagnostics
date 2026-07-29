@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from mercury.codec import result_to_json
 from mercury.history import HistoryStore
 from mercury.models import (
     Direction,
@@ -152,6 +153,23 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             result.observations[-1].evidence_kind, EvidenceKind.EXECUTION_ERROR
         )
         self.assertIn("RuntimeError", result.errors[0])
+
+    async def test_exception_credentials_are_sanitized_before_persistence(self) -> None:
+        async def leaks_secret(context: TaskContext) -> None:
+            raise RuntimeError("Authorization: Bearer top-secret")
+
+        result = await self.service.run(
+            synthetic_plan(1),
+            leaks_secret,
+            task_kind="synthetic",
+            task_id="sanitize-exception",
+        )
+        self.assertEqual(result.state, TaskState.FAILED)
+        record = self.history.get_task("sanitize-exception")
+        assert record is not None and record.result is not None
+        serialized = result_to_json(record.result)
+        self.assertNotIn("top-secret", serialized)
+        self.assertIn("redacted", serialized)
 
     async def test_runner_cannot_exceed_immutable_total(self) -> None:
         async def excessive(context: TaskContext) -> None:
