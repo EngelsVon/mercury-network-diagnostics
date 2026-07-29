@@ -12,7 +12,7 @@ See: `.planning/PROJECT.md` (updated 2026-07-30)
 Phase: 1 of 5 (Evidence and Safety Foundation)  
 Plan: 0 of 3 in current phase  
 Status: Ready to plan  
-Last activity: 2026-07-30 — Research completed; 40 requirements mapped to five phases
+Last activity: 2026-07-30 — Research completed; 42 requirements mapped to five phases
 
 Progress: [----------] 0%
 

@@ -45,7 +45,7 @@ Mercury 的重点不是“某个 IP 能不能 ping 通”这一位结果，而�
 - 用户希望解决校园网断网、DNS/特定端口仍放行、同一网络不同设备结果不一致等“表面断网、实际部分可达”的隐蔽问题。
 - 参考项目为 [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)；需先验证其架构、交互和代码模式是否适合复用，而不是机械复制。
 - 同类问题已有 ping、traceroute、mtr、nmap、arp/neighbor、LLDP 客户端、NetBird/Tailscale diagnostics、OpenSpeedTest 等碎片化工具；Mercury 的候选价值在于跨平台整合、双端协作、方向性测试和可解释结果。
-- 项目是 greenfield；技术栈、协议和打包方式将在研究阶段根据跨平台权限、UDP 语义、WebUI 供应链和单文件分发约束确定。
+- 项目是 greenfield；已选 CPython 3.11+、标准库加 psutil 的模块化单体，peer 使用固定证书指纹的 mTLS 加独立 token，WebUI 使用同一内核与原生静态资源。
 - “尽可能多地扫出来”解释为在显式授权范围和资源预算内采用多来源被动发现加渐进式主动探测，而不是无边界扫描。
 
 ## Constraints
@@ -88,4 +88,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-07-30 after initialization*
+*Last updated: 2026-07-30 after research and roadmap reconciliation*

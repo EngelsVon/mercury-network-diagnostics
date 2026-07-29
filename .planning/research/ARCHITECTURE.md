@@ -5,7 +5,7 @@ paired endpoints
 **Project:** Mercury  
 **Researched:** 2026-07-30  
 **Recommended style:** Python modular monolith with one shared asynchronous
-engine and thin CLI, loopback HTTP/SSE, peer, storage, and platform adapters  
+engine and thin CLI, loopback HTTP/polling, peer, storage, and platform adapters
 **Overall confidence:** MEDIUM-HIGH
 
 ## Accepted v1 Planning Baseline

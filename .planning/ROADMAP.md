@@ -65,13 +65,15 @@ reachability from CLI/JSON without false topology or protocol certainty.
    observations for multiple default/configured targets with timing and errors.
 4. Human output and JSON project the same result and exit healthy/partial/failed
    consistently.
+5. A minimal native path adapter yields bounded hop evidence for reuse by the
+   paired plan; Phase 4 adds repeated-route UX and topology enrichment.
 
 **Plans**: 3 plans
 
 Plans:
 
 - [ ] 02-01: Implement psutil inventory and minimal Windows/Linux/macOS route and DNS adapters.
-- [ ] 02-02: Implement bounded DNS/TCP/TLS/HTTP/native-ping probes, basic/China profiles and confidence-aware diagnosis.
+- [ ] 02-02: Implement bounded DNS/TCP/TLS/HTTP/native-ping probes, a minimal native path adapter, basic/China profiles and confidence-aware diagnosis.
 - [ ] 02-03: Add `status`/`diagnose` CLI projections, adapter fixtures and live smoke verification.
 
 ### Phase 3: Authenticated Paired Differential Diagnostics
@@ -96,6 +98,13 @@ protocol differences without exposing a generic scan oracle.
    inconclusive.
 4. CLI/JSON presents an A→B/B→A layer matrix with evidence-linked explanations
    and source-bound reverse checks rather than a list of disconnected probes.
+
+**Technical continuation gate:** Phase 3 verification must demonstrate
+controlled DNS difference, TCP refusal, TCP timeout/drop, UDP reply, UDP
+silence, and asymmetric direction without false certainty or scope escape.
+Failure stops autonomous execution before Phase 4. The five-operator product
+preference gate remains external field validation and blocks scope expansion
+beyond this bounded v1, not completion of the requested implementation.
 
 **Plans**: 3 plans
 
@@ -131,7 +140,7 @@ misleading silence/path claims.
 
 Plans:
 
-- [ ] 04-01: Implement passive candidates, ARP/NDP and optional LLDP evidence plus authorized bounded TCP discovery and full-port safety gate.
+- [ ] 04-01: Implement passive candidates, ARP/NDP, Wi-Fi AP and optional LLDP evidence plus authorized bounded TCP discovery and full-port safety gate.
 - [ ] 04-02: Implement native repeated route tracing, normalized hop evidence, CLI projections and discovery/trace/topology tests.
 
 ### Phase 5: WebUI, Reports, and Release Hardening

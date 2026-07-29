@@ -59,7 +59,9 @@ trigger.
   infrastructure only from direct evidence such as LLDP; otherwise report that
   it is not observable.
 - All active work passes through canonical scope policy and immutable aggregate
-  host/port/attempt/concurrency/duration/event ceilings.
+  host/port/attempt, logical packet/application-byte, attempt-start rate,
+  concurrency, duration, event and output ceilings. Do not claim to count
+  kernel retransmissions or exact on-wire bytes.
 - Non-loopback Web listeners require TLS and a token. Peer agents additionally
   require a trusted client certificate (mTLS); only an explicit, audited
   unsafe-development override may relax these defaults.
