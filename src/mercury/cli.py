@@ -45,6 +45,13 @@ class CliError(ValueError):
     pass
 
 
+class MercuryArgumentParser(argparse.ArgumentParser):
+    """Keep parser failures inside the stable CLI error boundary."""
+
+    def error(self, message: str) -> None:
+        raise CliError(message)
+
+
 def _version_payload() -> dict[str, object]:
     try:
         psutil_version = importlib.metadata.version("psutil")
@@ -95,7 +102,7 @@ def _add_json_option(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = MercuryArgumentParser(
         prog="mercury",
         description="Evidence-first, authorized network diagnostics.",
     )
@@ -388,22 +395,33 @@ def _error_payload(category: str, message: str) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    as_json = "--json" in arguments
     try:
+        parser = build_parser()
+        args = parser.parse_args(arguments)
         return _dispatch(args)
     except (PolicyError, BudgetError, ConfirmationError) as exc:
-        print(_error_payload("policy", str(exc)), file=sys.stderr)
+        message = _error_payload("policy", str(exc))
+        print(message if as_json else f"mercury: policy: {exc}", file=sys.stderr)
         return EXIT_POLICY
     except (CliError, HistoryError, ValueError) as exc:
-        print(_error_payload("input", str(exc)), file=sys.stderr)
+        message = _error_payload("input", str(exc))
+        print(message if as_json else f"mercury: input: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except KeyboardInterrupt:
-        print(_error_payload("cancelled", "interrupted by operator"), file=sys.stderr)
+        message = _error_payload("cancelled", "interrupted by operator")
+        print(
+            message if as_json else "mercury: cancelled: interrupted by operator",
+            file=sys.stderr,
+        )
         return EXIT_PARTIAL
     except Exception as exc:  # CLI trust boundary; --debug can be added if needed
+        message = f"{type(exc).__name__}: {exc}"
         print(
-            _error_payload("internal", f"{type(exc).__name__}: {exc}"),
+            _error_payload("internal", message)
+            if as_json
+            else f"mercury: internal: {message}",
             file=sys.stderr,
         )
         return EXIT_INTERNAL
@@ -416,6 +434,7 @@ __all__ = [
     "EXIT_PARTIAL",
     "EXIT_POLICY",
     "EXIT_USAGE",
+    "MercuryArgumentParser",
     "build_parser",
     "main",
 ]

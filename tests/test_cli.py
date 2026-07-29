@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mercury.cli import EXIT_OK, EXIT_PARTIAL, EXIT_POLICY, main
+from mercury.cli import EXIT_OK, EXIT_PARTIAL, EXIT_POLICY, EXIT_USAGE, main
 
 
 def invoke(*arguments: str) -> tuple[int, str, str]:
@@ -110,6 +110,17 @@ class CliTests(unittest.TestCase):
         code, output, _ = invoke("model")
         self.assertEqual(code, EXIT_OK)
         self.assertIn("Silence remains inconclusive", output)
+
+    def test_argparse_error_returns_structured_json_without_system_exit(self) -> None:
+        code, output, error = invoke("--json", "plan")
+        self.assertEqual((code, output), (EXIT_USAGE, ""))
+        payload = json.loads(error)
+        self.assertEqual(payload["error"]["category"], "input")
+        self.assertIn("required", payload["error"]["message"])
+
+        code, output, error = invoke("plan")
+        self.assertEqual((code, output), (EXIT_USAGE, ""))
+        self.assertTrue(error.startswith("mercury: input:"))
 
 
 if __name__ == "__main__":
