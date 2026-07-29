@@ -225,7 +225,12 @@ def _parse_ports(value: str) -> tuple[int, ...]:
     return tuple(sorted(ports))
 
 
-def _scope_from_args(args: argparse.Namespace) -> ScopeGrant:
+def _scope_from_args(
+    args: argparse.Namespace,
+    *,
+    ports: tuple[int, ...],
+    transports: tuple[str, ...],
+) -> ScopeGrant:
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     for value in args.scope:
         try:
@@ -253,6 +258,8 @@ def _scope_from_args(args: argparse.Namespace) -> ScopeGrant:
     return ScopeGrant(
         networks=tuple(networks),
         hostnames=tuple(names),
+        ports=ports,
+        transports=transports,
         attested=bool(args.authorized),
         purpose=args.purpose,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
@@ -342,11 +349,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
     if args.command == "plan":
-        grant = _scope_from_args(args)
+        ports = _parse_ports(args.ports)
+        transports = tuple(args.transports or ("tcp",))
+        grant = _scope_from_args(args, ports=ports, transports=transports)
         preview = preview_plan(
             target_values=args.targets,
-            ports=_parse_ports(args.ports),
-            transports=args.transports or ("tcp",),
+            ports=ports,
+            transports=transports,
             grant=grant,
             repeats=args.repeat,
             payload_bytes_per_attempt=args.payload_bytes,

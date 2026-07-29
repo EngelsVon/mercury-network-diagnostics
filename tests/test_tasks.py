@@ -14,7 +14,12 @@ from mercury.models import (
     Observation,
     TaskState,
 )
-from mercury.planner import DEFAULT_LIMITS, authorize_plan, preview_plan
+from mercury.planner import (
+    DEFAULT_LIMITS,
+    ConfirmationError,
+    authorize_plan,
+    preview_plan,
+)
 from mercury.policy import ScopeGrant
 from mercury.tasks import SyntheticRunner, TaskContext, TaskService
 
@@ -78,6 +83,18 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         assert record is not None
         self.assertEqual(record.result, result)
         self.assertEqual(self.history.list_events("complete")[-1].event_type, "terminal")
+
+    async def test_submit_revalidates_the_authorized_plan(self) -> None:
+        plan = synthetic_plan(1)
+        forged = replace(plan, preview=replace(plan.preview, digest="0" * 64))
+        with self.assertRaises(ConfirmationError):
+            self.service.submit(
+                forged,
+                SyntheticRunner(),
+                task_kind="synthetic",
+                task_id="forged",
+            )
+        self.assertIsNone(self.history.get_task("forged"))
 
     async def test_cancellation_persists_valid_partial_result(self) -> None:
         task_id = self.service.submit(

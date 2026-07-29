@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from typing import Iterable
@@ -110,6 +111,25 @@ class WorkEstimate:
     global_attempt_start_rate: int
     target_attempt_start_rate: int
 
+    def __post_init__(self) -> None:
+        for item in fields(self):
+            value = getattr(self, item.name)
+            if type(value) is not int or value < 0:
+                raise BudgetError(f"{item.name} must be a non-negative integer")
+        for name in (
+            "hosts",
+            "ports",
+            "logical_attempts",
+            "concurrency",
+            "worst_case_duration_s",
+            "events",
+            "output_bytes",
+            "global_attempt_start_rate",
+            "target_attempt_start_rate",
+        ):
+            if getattr(self, name) < 1:
+                raise BudgetError(f"{name} must be positive")
+
     def to_wire(self) -> dict[str, int]:
         return {item.name: getattr(self, item.name) for item in fields(self)}
 
@@ -130,6 +150,70 @@ class PlanPreview:
     required_confirmations: tuple[str, ...]
     created_at: datetime
     digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.profile) is not str or not self.profile or len(self.profile) > 128:
+            raise BudgetError("profile name is invalid")
+        for attribute, item_type, name in (
+            ("targets", Target, "targets"),
+            ("resolutions", ResolutionSnapshot, "resolutions"),
+        ):
+            value = getattr(self, attribute)
+            if not isinstance(value, (list, tuple)):
+                raise BudgetError(f"{name} must be a sequence")
+            canonical = tuple(value)
+            if any(type(item) is not item_type for item in canonical):
+                raise BudgetError(f"{name} contains an invalid value")
+            object.__setattr__(self, attribute, canonical)
+        for attribute in ("ports", "transports", "required_confirmations"):
+            value = getattr(self, attribute)
+            if not isinstance(value, (list, tuple)):
+                raise BudgetError(f"{attribute} must be a sequence")
+            object.__setattr__(self, attribute, tuple(value))
+        if not self.targets:
+            raise BudgetError("plan must contain at least one target")
+        if any(type(port) is not int or not 1 <= port <= 65_535 for port in self.ports):
+            raise BudgetError("plan contains an invalid port")
+        if any(
+            type(transport) is not str or transport not in {"tcp", "udp"}
+            for transport in self.transports
+        ):
+            raise BudgetError("plan contains an invalid transport")
+        if (
+            type(self.repeats) is not int
+            or not 1 <= self.repeats <= 100
+            or type(self.payload_bytes_per_attempt) is not int
+            or not 0 <= self.payload_bytes_per_attempt <= 1_400
+            or type(self.datagrams_per_udp_attempt) is not int
+            or not 1 <= self.datagrams_per_udp_attempt <= 100
+        ):
+            raise BudgetError("plan contains invalid repeat or payload values")
+        if type(self.scope) is not ScopeGrant:
+            raise BudgetError("plan scope must be ScopeGrant")
+        if type(self.limits) is not BudgetLimits:
+            raise BudgetError("plan limits must be BudgetLimits")
+        if type(self.estimate) is not WorkEstimate:
+            raise BudgetError("plan estimate must be WorkEstimate")
+        if any(
+            type(item) is not str
+            or item not in {"full_tcp", "full_udp", "custom_udp"}
+            for item in self.required_confirmations
+        ):
+            raise BudgetError("plan contains an invalid confirmation kind")
+        if len(set(self.required_confirmations)) != len(
+            self.required_confirmations
+        ):
+            raise BudgetError("plan contains duplicate confirmation kinds")
+        if (
+            type(self.created_at) is not datetime
+            or self.created_at.tzinfo is None
+            or self.created_at.utcoffset() is None
+        ):
+            raise BudgetError("plan created_at must be timezone-aware")
+        if type(self.digest) is not str or not re.fullmatch(
+            r"[0-9a-f]{64}", self.digest
+        ):
+            raise BudgetError("plan digest must be lowercase SHA-256")
 
     def to_wire(self) -> dict[str, object]:
         return {
@@ -167,6 +251,24 @@ class ProbePlan:
     preview: PlanPreview
     confirmations: tuple[str, ...]
     authorized_at: datetime
+
+    def __post_init__(self) -> None:
+        if type(self.preview) is not PlanPreview:
+            raise ConfirmationError("probe plan preview must be PlanPreview")
+        if not isinstance(self.confirmations, (list, tuple)):
+            raise ConfirmationError("confirmations must be a sequence")
+        confirmations = tuple(self.confirmations)
+        if any(type(item) is not str for item in confirmations):
+            raise ConfirmationError("confirmations must contain text")
+        if len(confirmations) != len(set(confirmations)):
+            raise ConfirmationError("duplicate confirmations are not allowed")
+        object.__setattr__(self, "confirmations", confirmations)
+        if (
+            type(self.authorized_at) is not datetime
+            or self.authorized_at.tzinfo is None
+            or self.authorized_at.utcoffset() is None
+        ):
+            raise ConfirmationError("authorized_at must be timezone-aware")
 
     @property
     def digest(self) -> str:
@@ -279,17 +381,35 @@ def preview_plan(
     custom_udp_payload: bool = False,
 ) -> PlanPreview:
     instant = now or datetime.now(timezone.utc)
+    if (
+        type(instant) is not datetime
+        or instant.tzinfo is None
+        or instant.utcoffset() is None
+    ):
+        raise BudgetError("plan time must be a timezone-aware datetime")
+    if type(grant) is not ScopeGrant:
+        raise BudgetError("grant must be ScopeGrant")
+    if type(limits) is not BudgetLimits:
+        raise BudgetError("limits must be BudgetLimits")
     targets = normalize_targets(target_values)
     authorize_targets(targets, grant, now=instant)
     limits.assert_within(ABSOLUTE_CEILINGS)
-    if not profile or len(profile) > 128:
+    if type(profile) is not str or not profile or len(profile) > 128:
         raise BudgetError("profile name is invalid")
-    if not 1 <= repeats <= 100:
+    if type(repeats) is not int or not 1 <= repeats <= 100:
         raise BudgetError("repeats must be within 1..100")
-    if not 0 <= payload_bytes_per_attempt <= 1_400:
+    if (
+        type(payload_bytes_per_attempt) is not int
+        or not 0 <= payload_bytes_per_attempt <= 1_400
+    ):
         raise BudgetError("payload bytes per attempt must be within 0..1400")
-    if not 1 <= datagrams_per_udp_attempt <= 100:
+    if (
+        type(datagrams_per_udp_attempt) is not int
+        or not 1 <= datagrams_per_udp_attempt <= 100
+    ):
         raise BudgetError("datagrams per UDP attempt must be within 1..100")
+    if type(custom_udp_payload) is not bool:
+        raise BudgetError("custom_udp_payload must be a boolean")
 
     canonical_ports: set[int] = set()
     for port in ports:
@@ -300,11 +420,25 @@ def preview_plan(
         raise BudgetError("at least one port is required")
     port_tuple = tuple(sorted(canonical_ports))
 
-    transport_tuple = tuple(sorted({value.lower() for value in transports}))
+    canonical_transports: set[str] = set()
+    for value in transports:
+        if type(value) is not str or value.casefold() not in {"tcp", "udp"}:
+            raise BudgetError("transports must contain only tcp and/or udp")
+        canonical_transports.add(value.casefold())
+    transport_tuple = tuple(sorted(canonical_transports))
     if not transport_tuple or any(
         value not in {"tcp", "udp"} for value in transport_tuple
     ):
         raise BudgetError("transports must contain only tcp and/or udp")
+    for target in targets:
+        if target.is_loopback:
+            continue
+        for port in port_tuple:
+            for transport in transport_tuple:
+                if not grant.permits_step(port, transport):
+                    raise ConfirmationError(
+                        f"{transport}/{port} is outside the authorized scope"
+                    )
 
     resolutions: list[ResolutionSnapshot] = []
     for target in targets:
@@ -437,17 +571,78 @@ def confirmation_phrase(kind: str, digest: str) -> str:
     raise ConfirmationError(f"unknown confirmation kind {kind!r}")
 
 
+def validate_preview(
+    preview: PlanPreview,
+    *,
+    now: datetime | None = None,
+) -> PlanPreview:
+    """Recompile a public preview and require exact canonical equality."""
+    if type(preview) is not PlanPreview:
+        raise ConfirmationError("preview must be PlanPreview")
+    instant = now or datetime.now(timezone.utc)
+    if (
+        type(instant) is not datetime
+        or instant.tzinfo is None
+        or instant.utcoffset() is None
+    ):
+        raise ConfirmationError("validation time must be timezone-aware")
+    if preview.created_at > instant:
+        raise ConfirmationError("plan preview was created in the future")
+    preview.scope.assert_current(instant)
+    snapshots = {item.hostname: item for item in preview.resolutions}
+    hostname_targets = {
+        target.hostname for target in preview.targets if target.hostname is not None
+    }
+    if set(snapshots) != hostname_targets:
+        raise ConfirmationError("plan resolution snapshots do not match targets")
+
+    def snapshot_resolver(hostname: str) -> tuple[str, ...]:
+        return snapshots[hostname].addresses
+
+    try:
+        rebuilt = preview_plan(
+            target_values=tuple(target.canonical for target in preview.targets),
+            ports=preview.ports,
+            transports=preview.transports,
+            grant=preview.scope,
+            profile=preview.profile,
+            repeats=preview.repeats,
+            payload_bytes_per_attempt=preview.payload_bytes_per_attempt,
+            datagrams_per_udp_attempt=preview.datagrams_per_udp_attempt,
+            limits=preview.limits,
+            resolver=snapshot_resolver,
+            now=preview.created_at,
+            custom_udp_payload="custom_udp" in preview.required_confirmations,
+        )
+    except (BudgetError, ConfirmationError, KeyError, ValueError) as exc:
+        raise ConfirmationError("plan preview failed canonical recompilation") from exc
+    if rebuilt != preview:
+        raise ConfirmationError(
+            "plan preview does not match its canonical targets, cost, or digest"
+        )
+    return rebuilt
+
+
+def _expected_confirmation_phrases(preview: PlanPreview) -> tuple[str, ...]:
+    return tuple(
+        confirmation_phrase(kind, preview.digest)
+        for kind in preview.required_confirmations
+    )
+
+
 def authorize_plan(
     preview: PlanPreview,
     *,
     confirmations: Iterable[str] = (),
     now: datetime | None = None,
 ) -> ProbePlan:
+    validate_preview(preview, now=now)
+    if not isinstance(confirmations, (list, tuple)):
+        confirmations = tuple(confirmations)
     supplied = tuple(confirmations)
-    expected = tuple(
-        confirmation_phrase(kind, preview.digest)
-        for kind in preview.required_confirmations
-    )
+    if any(type(item) is not str for item in supplied):
+        raise ConfirmationError("confirmations must contain text")
+    expected = _expected_confirmation_phrases(preview)
     if len(supplied) != len(set(supplied)):
         raise ConfirmationError("duplicate confirmations are not allowed")
     missing = set(expected) - set(supplied)
@@ -469,6 +664,28 @@ def authorize_plan(
     )
 
 
+def validate_plan(
+    plan: ProbePlan,
+    *,
+    now: datetime | None = None,
+) -> ProbePlan:
+    """Revalidate an authorized plan at every service trust boundary."""
+    if type(plan) is not ProbePlan:
+        raise ConfirmationError("plan must be ProbePlan")
+    instant = now or datetime.now(timezone.utc)
+    validate_preview(plan.preview, now=instant)
+    if plan.authorized_at < plan.preview.created_at:
+        raise ConfirmationError("plan was authorized before it was created")
+    if plan.authorized_at > instant:
+        raise ConfirmationError("plan authorization is in the future")
+    expected = _expected_confirmation_phrases(plan.preview)
+    if set(plan.confirmations) != set(expected) or len(plan.confirmations) != len(
+        expected
+    ):
+        raise ConfirmationError("plan confirmations do not match the digest")
+    return plan
+
+
 __all__ = [
     "ABSOLUTE_CEILINGS",
     "DEFAULT_LIMITS",
@@ -481,4 +698,6 @@ __all__ = [
     "authorize_plan",
     "confirmation_phrase",
     "preview_plan",
+    "validate_plan",
+    "validate_preview",
 ]

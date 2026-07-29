@@ -145,27 +145,69 @@ class ScopeGrant:
 
     networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]
     hostnames: tuple[str, ...] = ()
+    ports: tuple[int, ...] = ()
+    transports: tuple[str, ...] = ()
     attested: bool = False
     purpose: str = ""
     expires_at: datetime | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.networks, (list, tuple)):
+            raise PolicyError("scope networks must be a sequence")
+        if not isinstance(self.hostnames, (list, tuple)):
+            raise PolicyError("scope hostnames must be a sequence")
+        if not isinstance(self.ports, (list, tuple)):
+            raise PolicyError("scope ports must be a sequence")
+        if not isinstance(self.transports, (list, tuple)):
+            raise PolicyError("scope transports must be a sequence")
+        network_set: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
+        for value in self.networks:
+            if type(value) not in (
+                ipaddress.IPv4Network,
+                ipaddress.IPv6Network,
+            ):
+                raise PolicyError("scope networks must contain IP network objects")
+            _assert_destination_network(value)
+            network_set.add(value)
         canonical_networks = tuple(
             sorted(
-                {
-                    ipaddress.ip_network(value, strict=False)
-                    for value in self.networks
-                },
-                key=lambda item: (item.version, int(item.network_address), item.prefixlen),
+                network_set,
+                key=lambda item: (
+                    item.version,
+                    int(item.network_address),
+                    item.prefixlen,
+                ),
             )
         )
         canonical_names = tuple(
             sorted({_canonical_hostname(value) for value in self.hostnames})
         )
+        canonical_ports: set[int] = set()
+        for value in self.ports:
+            if type(value) is not int or not 1 <= value <= 65_535:
+                raise PolicyError(f"invalid scope port {value!r}")
+            canonical_ports.add(value)
+        canonical_transports: set[str] = set()
+        for value in self.transports:
+            if type(value) is not str or value.casefold() not in {"tcp", "udp"}:
+                raise PolicyError(f"invalid scope transport {value!r}")
+            canonical_transports.add(value.casefold())
+        if type(self.attested) is not bool:
+            raise PolicyError("scope attested must be a boolean")
+        if type(self.purpose) is not str or "\x00" in self.purpose:
+            raise PolicyError("scope purpose must be text without NUL")
         object.__setattr__(self, "networks", canonical_networks)
         object.__setattr__(self, "hostnames", canonical_names)
-        if self.expires_at is not None and self.expires_at.tzinfo is None:
-            raise PolicyError("scope expiry must be timezone-aware")
+        object.__setattr__(self, "ports", tuple(sorted(canonical_ports)))
+        object.__setattr__(
+            self, "transports", tuple(sorted(canonical_transports))
+        )
+        if self.expires_at is not None and (
+            type(self.expires_at) is not datetime
+            or self.expires_at.tzinfo is None
+            or self.expires_at.utcoffset() is None
+        ):
+            raise PolicyError("scope expiry must be a timezone-aware datetime")
         if len(self.purpose) > 1024:
             raise PolicyError("scope purpose is too long")
 
@@ -185,10 +227,15 @@ class ScopeGrant:
     def permits_name(self, hostname: str) -> bool:
         return _canonical_hostname(hostname) in self.hostnames
 
+    def permits_step(self, port: int, transport: str) -> bool:
+        return port in self.ports and transport.casefold() in self.transports
+
     def to_wire(self) -> dict[str, object]:
         return {
             "networks": [str(item) for item in self.networks],
             "hostnames": list(self.hostnames),
+            "ports": list(self.ports),
+            "transports": list(self.transports),
             "attested": self.attested,
             "purpose": self.purpose,
             "expires_at": (
@@ -321,8 +368,12 @@ def authorize_targets(
     *,
     now: datetime | None = None,
 ) -> None:
+    if type(grant) is not ScopeGrant:
+        raise PolicyError("grant must be ScopeGrant")
     grant.assert_current(now)
     for target in targets:
+        if type(target) is not Target:
+            raise PolicyError("targets must contain Target values")
         if target.is_loopback:
             continue
         if not grant.attested:

@@ -26,7 +26,7 @@ from .models import (
     TaskState,
     utc_now,
 )
-from .planner import ProbePlan
+from .planner import ProbePlan, validate_plan
 
 
 class TaskError(RuntimeError):
@@ -321,6 +321,8 @@ class TaskService:
         requested_config: dict[str, object] | None = None,
         task_id: str | None = None,
     ) -> str:
+        validation_time = self._wall_clock()
+        validate_plan(plan, now=validation_time)
         identifier = task_id or str(uuid.uuid4())
         if identifier in self._tasks or identifier in self._results:
             raise TaskError(f"duplicate task ID {identifier!r}")
@@ -330,7 +332,7 @@ class TaskService:
             task_kind=task_kind,
             request=request,
             plan=plan.to_wire(),
-            created_at=self._wall_clock(),
+            created_at=validation_time,
         )
         self.history.append_event(
             task_id=identifier,

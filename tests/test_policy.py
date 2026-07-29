@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from mercury.planner import (
@@ -13,6 +14,7 @@ from mercury.planner import (
     authorize_plan,
     confirmation_phrase,
     preview_plan,
+    validate_plan,
 )
 from mercury.policy import (
     PolicyError,
@@ -143,6 +145,8 @@ class TargetPolicyTests(unittest.TestCase):
         grant = ScopeGrant(
             networks=(ipaddress.ip_network("192.0.2.10/32"),),
             hostnames=("example.test",),
+            ports=(443,),
+            transports=("tcp",),
             attested=True,
         )
         target = parse_target("example.test")
@@ -174,6 +178,8 @@ class TargetPolicyTests(unittest.TestCase):
         grant = ScopeGrant(
             networks=(ipaddress.ip_network("192.0.2.10/32"),),
             hostnames=("example.test",),
+            ports=(443,),
+            transports=("tcp",),
             attested=True,
         )
         preview = preview_plan(
@@ -271,6 +277,8 @@ class BudgetTests(unittest.TestCase):
     def test_cross_product_is_rejected_cheaply(self) -> None:
         grant = ScopeGrant(
             networks=(ipaddress.ip_network("10.0.0.0/8"),),
+            ports=tuple(range(1, 65_536)),
+            transports=("tcp",),
             attested=True,
         )
         with self.assertRaises(BudgetError):
@@ -322,6 +330,64 @@ class BudgetTests(unittest.TestCase):
         DEFAULT_LIMITS.assert_within(ABSOLUTE_CEILINGS)
         for name, maximum in ABSOLUTE_CEILINGS.to_wire().items():
             self.assertLessEqual(DEFAULT_LIMITS.to_wire()[name], maximum)
+
+    def test_scope_grant_has_exact_types_and_port_transport_envelope(self) -> None:
+        with self.assertRaises(PolicyError):
+            ScopeGrant(networks=(), attested="false")  # type: ignore[arg-type]
+        with self.assertRaises(PolicyError):
+            ScopeGrant(networks=("192.0.2.0/24",))  # type: ignore[arg-type]
+        with self.assertRaises(PolicyError):
+            ScopeGrant(networks=(ipaddress.ip_network("0.0.0.0/0"),))
+
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("192.0.2.10/32"),),
+            ports=(443,),
+            transports=("tcp",),
+            attested=True,
+        )
+        preview_plan(
+            target_values=("192.0.2.10",),
+            ports=(443,),
+            transports=("tcp",),
+            grant=grant,
+            now=NOW,
+        )
+        for port, transport in ((80, "tcp"), (443, "udp")):
+            with self.subTest(port=port, transport=transport), self.assertRaises(
+                ConfirmationError
+            ):
+                preview_plan(
+                    target_values=("192.0.2.10",),
+                    ports=(port,),
+                    transports=(transport,),
+                    grant=grant,
+                    now=NOW,
+                )
+
+    def test_authorization_recompiles_public_plan_objects(self) -> None:
+        preview = preview_plan(
+            target_values=("127.0.0.1",),
+            ports=(443,),
+            transports=("tcp",),
+            grant=ScopeGrant(networks=()),
+            now=NOW,
+        )
+        with self.assertRaisesRegex(ConfirmationError, "canonical"):
+            authorize_plan(replace(preview, digest="0" * 64), now=NOW)
+        forged_estimate = replace(
+            preview.estimate,
+            logical_attempts=preview.estimate.logical_attempts + 1,
+        )
+        with self.assertRaisesRegex(ConfirmationError, "canonical"):
+            authorize_plan(replace(preview, estimate=forged_estimate), now=NOW)
+
+        plan = authorize_plan(preview, now=NOW)
+        self.assertIs(validate_plan(plan, now=NOW), plan)
+        with self.assertRaises(ConfirmationError):
+            validate_plan(
+                replace(plan, confirmations=("AUTHORIZE FULL TCP 000000000000",)),
+                now=NOW,
+            )
 
 
 if __name__ == "__main__":
