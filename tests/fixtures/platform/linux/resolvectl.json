@@ -1,0 +1,6 @@
+{
+  "interfaces": [
+    {"ifindex": 2, "name": "eth0", "dns_servers": ["192.0.2.53", "2001:db8::53"]},
+    {"ifindex": 7, "name": "tun0", "dns_servers": ["198.51.100.53"]}
+  ]
+}

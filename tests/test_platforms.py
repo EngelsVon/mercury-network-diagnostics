@@ -4,6 +4,7 @@ import asyncio
 import math
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from mercury.models import CapabilityState
@@ -18,6 +19,75 @@ from mercury.platform.common import (
     run_command,
     run_passive_command,
 )
+from mercury.platform.linux import (
+    LINUX_IPV4_ROUTES_ARGV,
+    LINUX_IPV6_ROUTES_ARGV,
+    LINUX_RESOLVECTL_ARGV,
+    collect_platform as collect_linux,
+    parse_resolv_conf,
+    parse_routes as parse_linux_routes,
+)
+from mercury.platform.macos import (
+    MACOS_NETSTAT_V4_ARGV,
+    MACOS_NETSTAT_V6_ARGV,
+    MACOS_ROUTE_V4_ARGV,
+    MACOS_ROUTE_V6_ARGV,
+    MACOS_SCUTIL_DNS_ARGV,
+    collect_platform as collect_macos,
+    parse_netstat,
+    parse_route_get,
+    parse_scutil_dns,
+)
+from mercury.platform.windows import (
+    WINDOWS_DNS_ARGV,
+    WINDOWS_ROUTES_ARGV,
+    collect_platform as collect_windows,
+    parse_dns as parse_windows_dns,
+    parse_routes as parse_windows_routes,
+)
+
+
+FIXTURES = Path(__file__).with_name("fixtures") / "platform"
+
+
+def fixture(platform: str, name: str) -> str:
+    return (FIXTURES / platform / name).read_text(encoding="utf-8")
+
+
+def command_result(
+    argv: tuple[str, ...],
+    *,
+    stdout: str = "",
+    outcome: CommandOutcome = CommandOutcome.SUCCESS,
+    returncode: int | None = None,
+) -> CommandResult:
+    if outcome is CommandOutcome.SUCCESS:
+        returncode = 0
+    elif outcome is CommandOutcome.NONZERO:
+        returncode = 1
+    return CommandResult(
+        argv=argv,
+        returncode=returncode,
+        stdout=stdout,
+        stderr="",
+        outcome=outcome,
+        stdout_bytes=len(stdout.encode("utf-8")),
+    )
+
+
+class FixtureRunner:
+    def __init__(self, results: dict[tuple[str, ...], CommandResult]) -> None:
+        self.results = results
+        self.calls: list[tuple[tuple[str, ...], float, int]] = []
+
+    async def __call__(
+        self,
+        argv: tuple[str, ...],
+        timeout_s: float,
+        max_output_bytes: int,
+    ) -> CommandResult:
+        self.calls.append((argv, timeout_s, max_output_bytes))
+        return self.results[argv]
 
 
 class RecordTests(unittest.TestCase):
@@ -282,6 +352,178 @@ class CommandBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(process.stdout.transport.closed)
                 self.assertTrue(process.stderr.transport.closed)
                 self.assertTrue(all(reader.cancelled for reader in process.streams))
+
+
+class WindowsAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_windows_fixtures_preserve_defaults_unicode_and_metrics(self) -> None:
+        routes = parse_windows_routes(fixture("windows", "routes.json"))
+        defaults = [route for route in routes if route.is_default]
+        self.assertEqual(len(defaults), 3)
+        self.assertEqual(defaults[0].interface_name, "以太网")
+        self.assertEqual(defaults[0].route_metric, 15)
+        self.assertEqual(defaults[0].interface_metric, 25)
+        self.assertEqual(defaults[0].effective_metric, 40)
+        self.assertTrue(routes[-1].on_link)
+
+        dns = parse_windows_dns(fixture("windows", "dns.json"))
+        self.assertEqual(len(dns), 3)
+        self.assertEqual(dns[1].address, "fe80::53")
+        self.assertEqual(dns[1].scope_id, "12")
+
+        runner = FixtureRunner(
+            {
+                WINDOWS_ROUTES_ARGV: command_result(
+                    WINDOWS_ROUTES_ARGV,
+                    stdout=fixture("windows", "routes.json"),
+                ),
+                WINDOWS_DNS_ARGV: command_result(
+                    WINDOWS_DNS_ARGV,
+                    stdout=fixture("windows", "dns.json"),
+                ),
+            }
+        )
+        result = await collect_windows(runner=runner)
+        self.assertEqual(result.routes, routes)
+        self.assertEqual(result.dns_servers, dns)
+        self.assertTrue(all(cap.state is CapabilityState.AVAILABLE for cap in result.capabilities))
+        self.assertTrue(all(call[1] == 5.0 for call in runner.calls))
+
+    async def test_windows_command_failures_keep_dns_source(self) -> None:
+        dns = command_result(WINDOWS_DNS_ARGV, stdout=fixture("windows", "dns.json"))
+        outcomes = (
+            CommandOutcome.MISSING_TOOL,
+            CommandOutcome.PERMISSION_DENIED,
+            CommandOutcome.NONZERO,
+            CommandOutcome.TIMEOUT,
+            CommandOutcome.OUTPUT_OVERFLOW,
+        )
+        for outcome in outcomes:
+            with self.subTest(outcome=outcome):
+                runner = FixtureRunner(
+                    {
+                        WINDOWS_ROUTES_ARGV: command_result(
+                            WINDOWS_ROUTES_ARGV,
+                            outcome=outcome,
+                        ),
+                        WINDOWS_DNS_ARGV: dns,
+                    }
+                )
+                result = await collect_windows(runner=runner)
+                self.assertEqual(len(result.routes), 0)
+                self.assertEqual(len(result.dns_servers), 3)
+                self.assertEqual(result.capabilities[0].detail, outcome.value)
+
+    async def test_windows_parse_failure_keeps_successful_dns(self) -> None:
+        runner = FixtureRunner(
+            {
+                WINDOWS_ROUTES_ARGV: command_result(
+                    WINDOWS_ROUTES_ARGV,
+                    stdout="{truncated",
+                ),
+                WINDOWS_DNS_ARGV: command_result(
+                    WINDOWS_DNS_ARGV,
+                    stdout=fixture("windows", "dns.json"),
+                ),
+            }
+        )
+        result = await collect_windows(runner=runner)
+        self.assertEqual(result.capabilities[0].detail, "parse_error")
+        self.assertEqual(len(result.dns_servers), 3)
+
+
+class LinuxAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_linux_fixture_routes_and_stub_dns_are_explicit(self) -> None:
+        v4 = parse_linux_routes(fixture("linux", "routes-v4.json"), 4)
+        v6 = parse_linux_routes(fixture("linux", "routes-v6.json"), 6)
+        self.assertTrue(v4[0].is_default)
+        self.assertTrue(v4[1].on_link)
+        self.assertEqual(v6[0].gateway, "fe80::1")
+        baseline = parse_resolv_conf(fixture("linux", "resolv.conf"))
+        self.assertEqual(baseline[0].address, "127.0.0.53")
+        self.assertEqual(baseline[0].configuration_state, "local_stub")
+
+        runner = FixtureRunner(
+            {
+                LINUX_IPV4_ROUTES_ARGV: command_result(
+                    LINUX_IPV4_ROUTES_ARGV,
+                    stdout=fixture("linux", "routes-v4.json"),
+                ),
+                LINUX_IPV6_ROUTES_ARGV: command_result(
+                    LINUX_IPV6_ROUTES_ARGV,
+                    stdout=fixture("linux", "routes-v6.json"),
+                ),
+                LINUX_RESOLVECTL_ARGV: command_result(
+                    LINUX_RESOLVECTL_ARGV,
+                    outcome=CommandOutcome.MISSING_TOOL,
+                ),
+            }
+        )
+        result = await collect_linux(
+            runner=runner,
+            resolv_conf_reader=lambda: fixture("linux", "resolv.conf"),
+        )
+        self.assertEqual(result.routes, v4 + v6)
+        self.assertEqual(result.dns_servers, baseline)
+        self.assertEqual(result.capabilities[2].detail, "local_stub_upstream_not_observable")
+        self.assertEqual(result.capabilities[3].state, CapabilityState.MISSING_TOOL)
+
+    async def test_linux_malformed_enrichment_keeps_resolv_conf(self) -> None:
+        runner = FixtureRunner(
+            {
+                LINUX_IPV4_ROUTES_ARGV: command_result(LINUX_IPV4_ROUTES_ARGV, stdout="[]"),
+                LINUX_IPV6_ROUTES_ARGV: command_result(LINUX_IPV6_ROUTES_ARGV, stdout="[]"),
+                LINUX_RESOLVECTL_ARGV: command_result(LINUX_RESOLVECTL_ARGV, stdout="{bad"),
+            }
+        )
+        result = await collect_linux(
+            runner=runner,
+            resolv_conf_reader=lambda: "nameserver 192.0.2.53\n",
+        )
+        self.assertEqual(result.dns_servers[0].address, "192.0.2.53")
+        self.assertEqual(result.capabilities[-1].detail, "parse_error")
+
+
+class MacosAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_macos_fixtures_cover_defaults_and_scoped_supplemental_dns(self) -> None:
+        default = parse_route_get(fixture("macos", "route-v4.txt"), 4)
+        routes_v4 = parse_netstat(fixture("macos", "netstat-v4.txt"), 4)
+        routes_v6 = parse_netstat(fixture("macos", "netstat-v6.txt"), 6)
+        dns = parse_scutil_dns(fixture("macos", "scutil-dns.txt"))
+        self.assertTrue(default.is_default)
+        self.assertEqual(len(routes_v4), 2)
+        self.assertEqual(len(routes_v6), 2)
+        self.assertEqual(dns[1].scope_id, "en0")
+        self.assertEqual(dns[1].scoped_domain, "corp.example.test")
+        self.assertEqual(dns[1].configuration_state, "supplemental")
+
+        runner = FixtureRunner(
+            {
+                MACOS_ROUTE_V4_ARGV: command_result(MACOS_ROUTE_V4_ARGV, stdout=fixture("macos", "route-v4.txt")),
+                MACOS_ROUTE_V6_ARGV: command_result(MACOS_ROUTE_V6_ARGV, outcome=CommandOutcome.NONZERO),
+                MACOS_NETSTAT_V4_ARGV: command_result(MACOS_NETSTAT_V4_ARGV, stdout=fixture("macos", "netstat-v4.txt")),
+                MACOS_NETSTAT_V6_ARGV: command_result(MACOS_NETSTAT_V6_ARGV, stdout=fixture("macos", "netstat-v6.txt")),
+                MACOS_SCUTIL_DNS_ARGV: command_result(MACOS_SCUTIL_DNS_ARGV, stdout=fixture("macos", "scutil-dns.txt")),
+            }
+        )
+        result = await collect_macos(runner=runner)
+        self.assertIn(default, result.routes)
+        self.assertNotEqual(result.capabilities[1].state, CapabilityState.AVAILABLE)
+        self.assertEqual(result.dns_servers, dns)
+
+    async def test_macos_malformed_dns_does_not_erase_routes(self) -> None:
+        runner = FixtureRunner(
+            {
+                MACOS_ROUTE_V4_ARGV: command_result(MACOS_ROUTE_V4_ARGV, stdout=fixture("macos", "route-v4.txt")),
+                MACOS_ROUTE_V6_ARGV: command_result(MACOS_ROUTE_V6_ARGV, outcome=CommandOutcome.MISSING_TOOL),
+                MACOS_NETSTAT_V4_ARGV: command_result(MACOS_NETSTAT_V4_ARGV, stdout=fixture("macos", "netstat-v4.txt")),
+                MACOS_NETSTAT_V6_ARGV: command_result(MACOS_NETSTAT_V6_ARGV, stdout=fixture("macos", "netstat-v6.txt")),
+                MACOS_SCUTIL_DNS_ARGV: command_result(MACOS_SCUTIL_DNS_ARGV, stdout="resolver #1\n  if_index : 1 (lo0)\n"),
+            }
+        )
+        result = await collect_macos(runner=runner)
+        self.assertGreater(len(result.routes), 0)
+        self.assertEqual(result.dns_servers, ())
+        self.assertEqual(result.capabilities[-1].detail, "parse_error")
 
 
 class DispatchTests(unittest.IsolatedAsyncioTestCase):

@@ -15,7 +15,7 @@ import re
 from typing import Awaitable, Callable
 
 from mercury.history import sanitize_persisted_text
-from mercury.models import Capability
+from mercury.models import Capability, CapabilityState
 
 MAX_COMMAND_OUTPUT_BYTES = 262_144
 MAX_DIAGNOSTIC_CHARACTERS = 1_024
@@ -334,6 +334,28 @@ class PlatformRecords:
             object.__setattr__(self, attribute, items)
 
 
+def capability_for_command(
+    name: str,
+    source: str,
+    result: CommandResult,
+) -> Capability:
+    """Project a command outcome to one capability without parsing its text."""
+
+    states = {
+        CommandOutcome.SUCCESS: CapabilityState.AVAILABLE,
+        CommandOutcome.MISSING_TOOL: CapabilityState.MISSING_TOOL,
+        CommandOutcome.PERMISSION_DENIED: CapabilityState.PERMISSION_DENIED,
+        CommandOutcome.NONZERO: CapabilityState.ERROR,
+        CommandOutcome.TIMEOUT: CapabilityState.ERROR,
+        CommandOutcome.OUTPUT_OVERFLOW: CapabilityState.ERROR,
+        CommandOutcome.ERROR: CapabilityState.ERROR,
+    }
+    detail = result.outcome.value
+    if result.error_type is not None:
+        detail = f"{detail}:{result.error_type}"
+    return Capability(name=name, state=states[result.outcome], source=source, detail=detail)
+
+
 class _OutputOverflow(Exception):
     pass
 
@@ -533,6 +555,7 @@ __all__ = [
     "CommandOutcome",
     "CommandResult",
     "CommandRunner",
+    "capability_for_command",
     "DnsServerRecord",
     "MAX_COMMAND_OUTPUT_BYTES",
     "MAX_COMMAND_TIMEOUT_S",

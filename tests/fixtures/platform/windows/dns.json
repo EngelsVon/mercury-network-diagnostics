@@ -1,0 +1,5 @@
+[
+  {"AddressFamily": "IPv4", "InterfaceAlias": "以太网", "InterfaceIndex": 12, "ServerAddresses": ["192.0.2.53", "0.0.0.0"]},
+  {"AddressFamily": "IPv6", "InterfaceAlias": "以太网", "InterfaceIndex": 12, "ServerAddresses": ["fe80::53%12"]},
+  {"AddressFamily": "IPv4", "InterfaceAlias": "VPN Tunnel", "InterfaceIndex": 44, "ServerAddresses": ["198.51.100.53"]}
+]

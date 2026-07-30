@@ -1,0 +1,4 @@
+[
+  {"dst": "default", "gateway": "192.0.2.1", "dev": "eth0", "metric": 100, "protocol": "dhcp", "scope": "global", "type": "unicast"},
+  {"dst": "192.0.2.0/24", "dev": "eth0", "protocol": "kernel", "scope": "link", "prefsrc": "192.0.2.10", "flags": ["linkdown"]}
+]

@@ -1,0 +1,13 @@
+{
+  "interfaces": [
+    {"AddressFamily": "IPv4", "InterfaceIndex": 12, "InterfaceAlias": "以太网", "InterfaceMetric": 25, "ConnectionState": "Connected"},
+    {"AddressFamily": "IPv6", "InterfaceIndex": 12, "InterfaceAlias": "以太网", "InterfaceMetric": 25, "ConnectionState": "Connected"},
+    {"AddressFamily": "IPv4", "InterfaceIndex": 44, "InterfaceAlias": "VPN Tunnel", "InterfaceMetric": 5, "ConnectionState": "Disconnected"}
+  ],
+  "routes": [
+    {"AddressFamily": "IPv4", "DestinationPrefix": "0.0.0.0/0", "NextHop": "192.0.2.1", "InterfaceIndex": 12, "RouteMetric": 15, "Protocol": "NetMgmt", "State": "Alive"},
+    {"AddressFamily": "IPv4", "DestinationPrefix": "0.0.0.0/0", "NextHop": "198.51.100.1", "InterfaceIndex": 44, "RouteMetric": 50, "Protocol": "NetMgmt", "State": "Alive"},
+    {"AddressFamily": "IPv6", "DestinationPrefix": "::/0", "NextHop": "fe80::1", "InterfaceIndex": 12, "RouteMetric": 10, "Protocol": "NetMgmt", "State": "Alive"},
+    {"AddressFamily": "IPv4", "DestinationPrefix": "192.0.2.0/24", "NextHop": "0.0.0.0", "InterfaceIndex": 12, "RouteMetric": 0, "Protocol": "Local", "State": "Alive"}
+  ]
+}
