@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import ssl
 import unittest
 
 from mercury.models import Disposition, EvidenceKind, ProbeKind
@@ -160,6 +161,27 @@ class ConnectorBindingTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(calls[0][0][0], "example.test")
 
 
+class TlsLoopbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_tls_context_keeps_hostname_and_certificate_checks(self) -> None:
+        prepared = next(step for step in await _compiled_steps() if step.step.probe_kind is ProbeKind.TLS_HANDSHAKE)
+        seen = []
+        async def connector(*args, **kwargs):
+            seen.append(kwargs["ssl"])
+            return _Reader(b""), _Writer()
+        observation = await tls_probe(prepared, connector=connector)
+        self.assertEqual(observation.evidence_kind, EvidenceKind.TLS_HANDSHAKE)
+        self.assertTrue(seen[0].check_hostname)
+        self.assertEqual(seen[0].verify_mode, ssl.CERT_REQUIRED)
+
+    async def test_certificate_verification_failure_is_specific_negative_evidence(self) -> None:
+        prepared = next(step for step in await _compiled_steps() if step.step.probe_kind is ProbeKind.TLS_HANDSHAKE)
+        async def rejected(*args, **kwargs):
+            raise ssl.SSLCertVerificationError(1, "test certificate rejected")
+        observation = await tls_probe(prepared, connector=rejected)
+        self.assertEqual(observation.evidence_kind, EvidenceKind.TLS_VERIFICATION_FAILED)
+        self.assertEqual(observation.disposition, Disposition.NEGATIVE)
+
+
 class HttpLoopbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_valid_statuses_are_positive_without_following_redirects(self) -> None:
         prepared = next(step for step in await _compiled_steps() if step.step.probe_kind is ProbeKind.HTTP_EXCHANGE)
@@ -174,6 +196,17 @@ class HttpLoopbackTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(observation.evidence_kind, EvidenceKind.HTTP_RESPONSE)
                 self.assertEqual(observation.disposition, Disposition.POSITIVE)
                 self.assertEqual(observation.detail["status"], status)
+
+
+class CleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_malformed_http_still_closes_its_writer(self) -> None:
+        prepared = next(step for step in await _compiled_steps() if step.step.probe_kind is ProbeKind.HTTP_EXCHANGE)
+        writer = _Writer()
+        async def connector(*args, **kwargs):
+            return _Reader(b"not-http\r\n\r\n"), writer
+        observation = await http_probe(prepared, connector=connector)
+        self.assertEqual(observation.evidence_kind, EvidenceKind.EXECUTION_ERROR)
+        self.assertTrue(writer.closed)
 
 
 if __name__ == "__main__":
