@@ -86,13 +86,16 @@ _RESERVED_STEP_DETAIL_KEYS = frozenset(
         "dns_changed",
         "preflight_rejected",
         "rejection_code",
+        "paired_endpoint",
+        "paired_correlation",
+        "paired_phase",
     }
 )
 _ALLOWED_EVIDENCE = {
     ProbeKind.LOCAL_SNAPSHOT: frozenset({EvidenceKind.LOCAL_FACT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
     ProbeKind.SYSTEM_DNS: frozenset({EvidenceKind.DNS_ANSWER, EvidenceKind.DNS_FAILURE, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
-    ProbeKind.TCP_CONNECT: frozenset({EvidenceKind.TCP_CONNECTED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
-    ProbeKind.UDP_EXCHANGE: frozenset({EvidenceKind.UDP_APPLICATION_REPLY, EvidenceKind.ICMP_UNREACHABLE, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.TCP_CONNECT: frozenset({EvidenceKind.TCP_CONNECTED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.PEER_OBSERVED_ARRIVAL, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.UDP_EXCHANGE: frozenset({EvidenceKind.UDP_APPLICATION_REPLY, EvidenceKind.PEER_OBSERVED_ARRIVAL, EvidenceKind.ICMP_UNREACHABLE, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.EXECUTION_ERROR}),
     ProbeKind.TLS_HANDSHAKE: frozenset({EvidenceKind.TLS_HANDSHAKE, EvidenceKind.TLS_VERIFICATION_FAILED, EvidenceKind.TLS_HANDSHAKE_FAILED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
     ProbeKind.HTTP_EXCHANGE: frozenset({EvidenceKind.HTTP_RESPONSE, EvidenceKind.TLS_VERIFICATION_FAILED, EvidenceKind.TLS_HANDSHAKE_FAILED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
     ProbeKind.NATIVE_PING: frozenset({EvidenceKind.NATIVE_PING_REPLY, EvidenceKind.NATIVE_PING_FAILURE, EvidenceKind.ICMP_UNREACHABLE, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
@@ -569,6 +572,57 @@ class TaskContext:
         )
 
     def record(self, observation: Observation, *, step_id: str | None = None) -> None:
+        """Bind ordinary local/outbound evidence to an admitted plan step."""
+        self._record_bound(observation, step_id=step_id, paired=None)
+
+    def record_paired(
+        self,
+        observation: Observation,
+        *,
+        step_id: str | None = None,
+        endpoint: str,
+        correlation_id: str,
+        phase: str,
+    ) -> None:
+        """Bind finite paired listener evidence without opening a second path.
+
+        The caller cannot choose an arbitrary direction: each fixed phase has a
+        single direction.  Endpoint and correlation are labels for evidence,
+        not network selectors; the admitted immutable step remains the sole
+        authority for target, port, I/O reservation, and persistence.
+        """
+        if type(endpoint) is not str or not endpoint or len(endpoint) > 64:
+            raise TaskError("paired endpoint label is invalid")
+        if type(correlation_id) is not str or not correlation_id or len(correlation_id) > 64:
+            raise TaskError("paired correlation is invalid")
+        expected_directions = {
+            "sent": Direction.REVERSE,
+            "arrived": Direction.INBOUND,
+            "replied": Direction.REVERSE,
+            "received": Direction.OUTBOUND,
+        }
+        expected = expected_directions.get(phase)
+        if expected is None:
+            raise TaskError("paired evidence phase is invalid")
+        if type(observation) is not Observation or observation.direction is not expected:
+            raise TaskError("paired evidence direction does not match its phase")
+        self._record_bound(
+            observation,
+            step_id=step_id,
+            paired={
+                "paired_endpoint": endpoint,
+                "paired_correlation": correlation_id,
+                "paired_phase": phase,
+            },
+        )
+
+    def _record_bound(
+        self,
+        observation: Observation,
+        *,
+        step_id: str | None,
+        paired: dict[str, str] | None,
+    ) -> None:
         if type(observation) is not Observation:
             raise TaskError("runner evidence must be an Observation")
         if self.admitted == 0:
@@ -587,13 +641,11 @@ class TaskContext:
             raise TaskError("runner evidence attempt does not match its admitted step")
         if observation.probe != prepared.step.probe_kind.value:
             raise TaskError("runner evidence probe does not match its admitted step")
-        expected_direction = (
-            Direction.LOCAL
-            if prepared.step.probe_kind is ProbeKind.LOCAL_SNAPSHOT
-            else Direction.OUTBOUND
-        )
-        if observation.direction is not expected_direction:
+        expected_direction = Direction.LOCAL if prepared.step.probe_kind is ProbeKind.LOCAL_SNAPSHOT else Direction.OUTBOUND
+        if paired is None and observation.direction is not expected_direction:
             raise TaskError("runner evidence direction does not match its admitted step")
+        if paired is not None and prepared.step.probe_kind not in {ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE}:
+            raise TaskError("paired evidence requires an admitted TCP or UDP step")
         if observation.evidence_kind not in _ALLOWED_EVIDENCE[prepared.step.probe_kind]:
             raise TaskError("runner evidence kind does not match its admitted probe")
         conflicting = _RESERVED_STEP_DETAIL_KEYS.intersection(observation.detail)
@@ -626,6 +678,8 @@ class TaskContext:
                 "dns_changed": prepared.dns_changed,
             }
         )
+        if paired is not None:
+            detail.update(paired)
         bound_observation = replace(observation, detail=detail)
         counts = self._step_counts[step_id]
         contribution = len(dumps_document(observation_to_wire(bound_observation)).encode("utf-8"))

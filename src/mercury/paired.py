@@ -1,7 +1,8 @@
-"""Finite, source-bound paired listener lease contracts.
+"""Finite, source-bound paired listener leases.
 
-The data plane is deliberately not a remote probe API: a lease may name only
-the numeric endpoint already approved by the locally revalidated plan.
+This module deliberately implements one small data-plane profile.  A lease is
+not a remote probe API: its address, ports, correlation, and opaque payload are
+all fixed by a locally validated plan and the authenticated peer source.
 """
 
 from __future__ import annotations
@@ -9,10 +10,16 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from .planner import ProbePlan
+from .models import Direction, Disposition, EvidenceKind, Observation, utc_now
+from .planner import ProbePlan, ProbeStep, Transport, validate_plan
+from .tasks import TaskContext
+
+_TCP_REPLY = b"MRP1A"
+_MAX_PAYLOAD = 1_400
 
 
 class PairedError(RuntimeError):
@@ -64,7 +71,16 @@ class PairedLease:
     def __post_init__(self) -> None:
         if type(self.plan) is not ProbePlan:
             raise PairedError("paired lease requires an authorized immutable plan")
-        if not isinstance(self.correlation_id, str) or not self.correlation_id or len(self.correlation_id) > 64:
+        try:
+            validate_plan(self.plan, now=self.plan.authorized_at)
+        except Exception as exc:
+            raise PairedError("paired lease plan is not currently valid") from exc
+        if (
+            not isinstance(self.correlation_id, str)
+            or not self.correlation_id
+            or len(self.correlation_id) > 64
+            or not self.correlation_id.isascii()
+        ):
             raise PairedError("paired correlation is invalid")
         source = _address(self.authenticated_source, "authenticated peer source")
         if source != self.endpoint.address:
@@ -72,51 +88,130 @@ class PairedLease:
         object.__setattr__(self, "authenticated_source", source)
         if not isinstance(self.expires_at, datetime) or self.expires_at.tzinfo is None:
             raise PairedError("paired lease expiry must be timezone-aware")
-        if not isinstance(self.udp_nonce, str) or not 8 <= len(self.udp_nonce) <= 128:
+        if (
+            self.expires_at <= self.plan.authorized_at
+            or self.expires_at > self.plan.authorized_at + timedelta(minutes=30)
+        ):
+            raise PairedError("paired lease expiry is outside the finite lease window")
+        if not isinstance(self.udp_nonce, str) or not 8 <= len(self.udp_nonce) <= 128 or not self.udp_nonce.isascii():
             raise PairedError("paired UDP nonce is invalid")
         if type(self.udp_tag) is not bytes or not 1 <= len(self.udp_tag) <= 64:
             raise PairedError("paired UDP tag is invalid")
-        selected = {(step.port, step.transport.value if step.transport else None) for step in self.plan.preview.steps}
-        if (self.endpoint.tcp_port, "tcp") not in selected or (self.endpoint.udp_port, "udp") not in selected:
-            raise PairedError("paired listener port is outside immutable plan")
+        selected = {
+            (step.address, step.port, step.transport): step
+            for step in self.plan.preview.steps
+        }
+        tcp = selected.get((self.endpoint.address, self.endpoint.tcp_port, Transport.TCP))
+        udp = selected.get((self.endpoint.address, self.endpoint.udp_port, Transport.UDP))
+        if tcp is None or udp is None:
+            raise PairedError("paired listener endpoint is outside immutable plan")
+        # The immutable plan reserves the tiny fixed admission/reply bytes.  It
+        # deliberately does not claim to count TCP retransmissions or framing.
+        if (
+            tcp.cost.application_bytes < len(encode_tcp_tag(self)) + len(_TCP_REPLY)
+            or udp.cost.generated_datagrams < 1
+            or udp.cost.application_bytes < len(encode_udp_tag(self))
+        ):
+            raise PairedError("paired listener bytes are not reserved by immutable plan")
 
     def assert_current(self, now: datetime) -> None:
-        if now.tzinfo is None or now >= self.expires_at:
+        if not isinstance(now, datetime) or now.tzinfo is None or now >= self.expires_at:
             raise PairedError("paired lease has expired")
 
 
-class PairedListenerService:
-    """Owns the two finite listeners for one accepted lease.
+def encode_udp_tag(lease: PairedLease) -> bytes:
+    """Return the sole built-in UDP validation payload (never user supplied)."""
+    plan = lease.plan.digest[:16].encode("ascii")
+    nonce = lease.udp_nonce.encode("ascii")
+    payload = b"MRP1" + plan + struct.pack("!B", len(nonce)) + nonce + lease.udp_tag
+    if len(payload) > _MAX_PAYLOAD:
+        raise PairedError("paired UDP payload exceeds 1400 bytes")
+    return payload
 
-    This is intentionally a lifecycle primitive: later task integration records
-    admitted evidence, while this class never accepts a caller-selected target
-    or port.
+
+def encode_tcp_tag(lease: PairedLease) -> bytes:
+    """Return the fixed TCP admission preface for this lease."""
+    correlation = lease.correlation_id.encode("ascii")
+    if not correlation.isascii() or len(correlation) > 64:
+        raise PairedError("paired correlation is invalid")
+    return b"MRP1T" + lease.plan.digest[:16].encode("ascii") + struct.pack("!B", len(correlation)) + correlation
+
+
+def is_valid_udp_tag(lease: PairedLease, payload: bytes) -> bool:
+    """Check the fixed profile without exposing a permissive UDP parser."""
+    if type(payload) is not bytes or len(payload) > _MAX_PAYLOAD:
+        return False
+    try:
+        return payload == encode_udp_tag(lease)
+    except PairedError:
+        return False
+
+
+class PairedListenerService:
+    """Own the two finite listeners for one admitted paired task.
+
+    Listener start admits the exact TCP and UDP steps.  A matching packet then
+    records no more than the two observations reserved by each compiled step.
+    Invalid traffic is ignored before evidence, persistence, or a reply.
     """
 
-    def __init__(self, lease: PairedLease, *, now: callable) -> None:
-        self.lease = lease
-        self._now = now
+    def __init__(
+        self,
+        lease: PairedLease,
+        *,
+        context: TaskContext,
+        now: Callable[[], datetime] = utc_now,
+    ) -> None:
+        if type(context) is not TaskContext or context.plan != lease.plan:
+            raise PairedError("paired listener requires its lease task context")
+        self.lease, self.context, self._now = lease, context, now
         self._tcp: asyncio.AbstractServer | None = None
         self._udp: asyncio.DatagramTransport | None = None
+        self._tcp_step: ProbeStep | None = None
+        self._udp_step: ProbeStep | None = None
+        self._expiry: asyncio.Task[None] | None = None
+        self._datagram_tasks: set[asyncio.Task[None]] = set()
+        self._lock = asyncio.Lock()
+        self._claimed_steps: set[str] = set()
+        self.outcome = "pending"
 
     async def start(self) -> None:
         self.lease.assert_current(self._now())
+        self._tcp_step = self._step(Transport.TCP, self.lease.endpoint.tcp_port)
+        self._udp_step = self._step(Transport.UDP, self.lease.endpoint.udp_port)
+        await self.context.admit(self._tcp_step.id)
+        await self.context.admit(self._udp_step.id)
         try:
             self._tcp = await asyncio.start_server(
-                self._reject_tcp,
+                self._handle_tcp,
                 host=self.lease.endpoint.address,
                 port=self.lease.endpoint.tcp_port,
             )
             transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-                lambda: _LeaseDatagram(self.lease, self._now),
+                lambda: _LeaseDatagram(self),
                 local_addr=(self.lease.endpoint.address, self.lease.endpoint.udp_port),
             )
             self._udp = transport
-        except (OSError, asyncio.CancelledError):
-            await self.stop()
+        except PermissionError:
+            self.outcome = "permission_denied"
+            await self.stop(mark_silence=True)
             raise
+        except OSError:
+            self.outcome = "busy"
+            await self.stop(mark_silence=True)
+            raise
+        except asyncio.CancelledError:
+            await self.stop(mark_silence=False)
+            raise
+        self.outcome = "active"
+        self._expiry = asyncio.create_task(self._expire())
 
-    async def stop(self) -> None:
+    async def stop(self, *, mark_silence: bool = True) -> None:
+        if self._expiry is not None and self._expiry is not asyncio.current_task():
+            self._expiry.cancel()
+            self._expiry = None
+        for task in tuple(self._datagram_tasks):
+            task.cancel()
         if self._udp is not None:
             self._udp.close()
             self._udp = None
@@ -124,38 +219,159 @@ class PairedListenerService:
             server, self._tcp = self._tcp, None
             server.close()
             await server.wait_closed()
+        if mark_silence:
+            await self._complete_missing()
+        if self.outcome == "active":
+            self.outcome = "stopped"
 
-    async def _reject_tcp(self, _reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        # No unauthenticated/application-selected TCP exchange is admitted here.
-        writer.close()
-        await writer.wait_closed()
+    async def _expire(self) -> None:
+        delay = max(0.0, (self.lease.expires_at - self._now()).total_seconds())
+        await asyncio.sleep(delay)
+        if self._now() >= self.lease.expires_at:
+            self.outcome = "expired"
+            await self.stop(mark_silence=True)
+
+    def _step(self, transport: Transport, port: int) -> ProbeStep:
+        matching = [
+            step for step in self.lease.plan.preview.steps
+            if step.address == self.lease.endpoint.address
+            and step.port == port
+            and step.transport is transport
+        ]
+        if len(matching) != 1:
+            raise PairedError("paired listener requires one exact immutable plan step")
+        return matching[0]
+
+    async def _handle_tcp(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            peer = writer.get_extra_info("peername")
+            if not self._source_matches(peer):
+                return
+            self.lease.assert_current(self._now())
+            assert self._tcp_step is not None
+            async with asyncio.timeout(self._tcp_step.timeout_s):
+                preface = await reader.readexactly(len(encode_tcp_tag(self.lease)))
+            if preface != encode_tcp_tag(self.lease):
+                return
+            await self.context.cancellation.checkpoint()
+            if not await self._claim_step(self._tcp_step.id):
+                return
+            await self._record_pair(
+                self._tcp_step, EvidenceKind.PEER_OBSERVED_ARRIVAL,
+                Disposition.POSITIVE, Direction.INBOUND, "arrived",
+            )
+            writer.write(_TCP_REPLY)
+            await writer.drain()
+            await self._record_pair(
+                self._tcp_step, EvidenceKind.TCP_CONNECTED,
+                Disposition.POSITIVE, Direction.REVERSE, "replied",
+            )
+            self.context.complete_attempt(self._tcp_step.id)
+        except (PairedError, asyncio.IncompleteReadError, TimeoutError, OSError):
+            return
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (OSError, RuntimeError):
+                pass
+
+    def _receive_datagram(self, data: bytes, address: tuple[str, int]) -> None:
+        task = asyncio.create_task(self._handle_datagram(data, address))
+        self._datagram_tasks.add(task)
+        task.add_done_callback(self._datagram_tasks.discard)
+
+    async def _handle_datagram(self, data: bytes, address: tuple[str, int]) -> None:
+        try:
+            if not self._source_matches(address) or not is_valid_udp_tag(self.lease, data):
+                return
+            self.lease.assert_current(self._now())
+            await self.context.cancellation.checkpoint()
+            assert self._udp_step is not None and self._udp is not None
+            if not await self._claim_step(self._udp_step.id):
+                return
+            await self._record_pair(
+                self._udp_step, EvidenceKind.PEER_OBSERVED_ARRIVAL,
+                Disposition.POSITIVE, Direction.INBOUND, "arrived",
+            )
+            self._udp.sendto(data, address)
+            await self._record_pair(
+                self._udp_step, EvidenceKind.UDP_APPLICATION_REPLY,
+                Disposition.POSITIVE, Direction.REVERSE, "replied",
+            )
+            self.context.complete_attempt(self._udp_step.id)
+        except (PairedError, asyncio.CancelledError):
+            return
+
+    async def _record_pair(
+        self,
+        step: ProbeStep,
+        kind: EvidenceKind,
+        disposition: Disposition,
+        direction: Direction,
+        phase: str,
+    ) -> None:
+        instant = self._now()
+        self.context.record_paired(
+            Observation(
+                id=f"paired-{self.lease.correlation_id}-{step.id[-8:]}-{phase}",
+                probe=step.probe_kind.value,
+                disposition=disposition,
+                evidence_kind=kind,
+                direction=direction,
+                target=step.address or step.target,
+                started_at=instant,
+                ended_at=instant,
+                duration_ms=0.0,
+                attempt=step.attempt,
+                source="mercury.paired",
+            ),
+            step_id=step.id,
+            endpoint=self.lease.endpoint.identity,
+            correlation_id=self.lease.correlation_id,
+            phase=phase,
+        )
+
+    async def _complete_missing(self) -> None:
+        for step, kind in (
+            (self._tcp_step, EvidenceKind.TIMEOUT),
+            (self._udp_step, EvidenceKind.SILENT),
+        ):
+            if step is None or not await self._claim_step(step.id):
+                continue
+            await self._record_pair(
+                step, kind, Disposition.INCONCLUSIVE,
+                Direction.OUTBOUND, "received",
+            )
+            self.context.complete_attempt(step.id)
+
+    async def _claim_step(self, step_id: str) -> bool:
+        async with self._lock:
+            if step_id in self._claimed_steps:
+                return False
+            self._claimed_steps.add(step_id)
+            return True
+
+    def _source_matches(self, peer: object) -> bool:
+        if not isinstance(peer, tuple) or not peer or not isinstance(peer[0], str):
+            return False
+        try:
+            return _address(peer[0], "packet source") == self.lease.authenticated_source
+        except PairedError:
+            return False
 
 
 class _LeaseDatagram(asyncio.DatagramProtocol):
-    def __init__(self, lease: PairedLease, now: callable) -> None:
-        self.lease, self._now = lease, now
+    def __init__(self, service: PairedListenerService) -> None:
+        self._service = service
 
-    def datagram_received(self, _data: bytes, address: tuple[str, int]) -> None:
-        # The future evidence layer will validate fixed plan/nonce/tag bytes.
-        # Even before then, never answer a source other than the paired address.
-        try:
-            self.lease.assert_current(self._now())
-        except PairedError:
-            return
-        if address[0] != self.lease.authenticated_source:
-            return
+    def datagram_received(self, data: bytes, address: tuple[str, int]) -> None:
+        self._service._receive_datagram(data, address)
 
 
-def encode_udp_tag(lease: PairedLease) -> bytes:
-    """Return the sole built-in UDP validation payload (never user supplied)."""
-    plan = lease.plan.digest[:16].encode("ascii")
-    nonce = lease.udp_nonce.encode("ascii")
-    if len(nonce) > 128:
-        raise PairedError("paired UDP nonce is invalid")
-    payload = b"MRP1" + plan + struct.pack("!B", len(nonce)) + nonce + lease.udp_tag
-    if len(payload) > 1_400:
-        raise PairedError("paired UDP payload exceeds 1400 bytes")
-    return payload
-
-
-__all__ = ["PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService", "encode_udp_tag"]
+__all__ = [
+    "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
+    "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
+]

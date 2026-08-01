@@ -1248,7 +1248,13 @@ def validate_preview(
     }
     if set(snapshots) != hostname_targets:
         raise ConfirmationError("plan resolution snapshots do not match targets")
-    if any(step.probe_kind not in {ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE} for step in preview.steps):
+    # Sparse plans may deliberately combine a no-payload TCP admission step
+    # with a fixed built-in UDP payload.  Recompile their exact step list
+    # rather than forcing the legacy Cartesian payload summary to flatten it.
+    if (
+        any(step.probe_kind not in {ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE} for step in preview.steps)
+        or len({step.payload for step in preview.steps}) > 1
+    ):
         try:
             rebuilt = preview_probe_plan(
                 specs=tuple(
