@@ -68,13 +68,19 @@ reachability from CLI/JSON without false topology or protocol certainty.
 5. A minimal native path adapter yields bounded hop evidence for reuse by the
    paired plan; Phase 4 adds repeated-route UX and topology enrichment.
 
-**Plans**: 3 plans
+**Plans**: 4 plans
 
 Plans:
 
-- [ ] 02-01: Implement psutil inventory and minimal Windows/Linux/macOS route and DNS adapters.
-- [ ] 02-02: Implement bounded DNS/TCP/TLS/HTTP/native-ping probes, a minimal native path adapter, basic/China profiles and confidence-aware diagnosis.
-- [ ] 02-03: Add `status`/`diagnose` CLI projections, adapter fixtures and live smoke verification.
+**Wave 1**
+- [x] 02-01: Implement psutil inventory and minimal Windows/Linux/macOS route and DNS adapters.
+- [x] 02-02: Upgrade the canonical schema, sparse probe identity, exact admission/binding, per-step budgets, history projection and terminal finalization.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 02-03: Implement immutable basic/China/custom profiles, bounded DNS/TCP/TLS/HTTP/native probes and endpoint-scoped diagnosis.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 02-04: Add the shared application facade, `status`/`diagnose` projections, stable exits, controlled smoke, installation parity and documentation.
 
 ### Phase 3: Authenticated Paired Differential Diagnostics
 
@@ -183,7 +189,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Evidence and Safety Foundation | 3/3 | Complete | 2026-07-30 |
-| 2. Local Snapshot and Layered Diagnosis | 0/3 | Not started | - |
+| 2. Local Snapshot and Layered Diagnosis | 2/4 | In progress | 2026-08-01 |
 | 3. Authenticated Paired Differential Diagnostics | 0/3 | Not started | - |
 | 4. Safe Discovery, Topology Evidence, and Routes | 0/2 | Not started | - |
 | 5. WebUI, Reports, and Release Hardening | 0/3 | Not started | - |
