@@ -490,6 +490,19 @@ class TaskContext:
             preflight_kwargs: dict[str, object] = {"now": self.wall_clock()}
             if self.resolver is not None:
                 preflight_kwargs["resolver"] = self.resolver
+            elif self._steps[step_id].source_hostname is not None:
+                # Production hostname rechecks use the same bounded helper as
+                # planning and system-DNS evidence.  The plan still performs
+                # its normal exact slot/scope comparison synchronously over
+                # this one finite answer set.
+                from .resolver import resolve_addresses
+                step = self._steps[step_id]
+                resolved = await resolve_addresses(
+                    step.source_hostname,
+                    operation_timeout=step.timeout_s,
+                    hard_deadline=step.timeout_s,
+                )
+                preflight_kwargs["resolver"] = lambda _hostname: resolved.addresses
             if payload is not None:
                 preflight_kwargs["payload"] = payload
             prepared = self.plan.preflight_step(step_id, **preflight_kwargs)
