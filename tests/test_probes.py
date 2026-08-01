@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import errno
 import ipaddress
+import inspect
+import json
 from pathlib import Path
 import ssl
 import unittest
@@ -14,7 +16,7 @@ from mercury.planner import PreparedStep, ProbeSpec, StepCost, Transport, previe
 from mercury.policy import ScopeGrant
 from mercury.probes import dns_probe, http_probe, tcp_probe, tls_probe
 from mercury.profiles import DiagnosisRequest, compile_diagnosis
-from mercury.resolver import ResolutionResult
+from mercury.resolver import MAX_RESOLUTION_ADDRESSES, MAX_RESOLUTION_ROWS, ResolutionResult
 from mercury.resolver import resolve_addresses
 
 
@@ -116,6 +118,40 @@ class ResolverIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await resolve_addresses("example.test", operation_timeout=3, hard_deadline=3, command_runner=missing)).outcome, CommandOutcome.NONZERO)
         self.assertEqual((await resolve_addresses("example.test", operation_timeout=3, hard_deadline=3, command_runner=failed)).outcome, CommandOutcome.ERROR)
 
+    async def test_resolution_row_and_address_boundaries_fail_closed(self) -> None:
+        async def helper_rows(rows: list[str]):
+            async def command(argv, *, timeout_s, max_output_bytes):
+                return CommandResult(argv, 0, json.dumps(rows), "", CommandOutcome.SUCCESS)
+            return await resolve_addresses("example.test", operation_timeout=3, hard_deadline=3, command_runner=command)
+
+        accepted = ["127.0.0.1"] * MAX_RESOLUTION_ROWS
+        # Duplicate rows are legitimate resolver output; the canonical set stays bounded.
+        self.assertEqual((await helper_rows(accepted)).outcome, CommandOutcome.SUCCESS)
+        self.assertEqual((await helper_rows(accepted + ["192.0.2.1"])).error, "ResolutionRowOverflow")
+
+        addresses = [f"2001:4860:4860::{index}" for index in range(MAX_RESOLUTION_ADDRESSES)]
+        self.assertEqual((await helper_rows(addresses)).outcome, CommandOutcome.SUCCESS)
+        overflow = await helper_rows(addresses + ["2001:4860:4860::100"])
+        self.assertEqual((overflow.outcome, overflow.addresses, overflow.error), (CommandOutcome.ERROR, (), "ResolutionAddressOverflow"))
+
+    async def test_cancellation_propagates_without_a_late_result(self) -> None:
+        started = asyncio.Event()
+        released = asyncio.Event()
+
+        async def command(argv, *, timeout_s, max_output_bytes):
+            started.set()
+            await released.wait()
+            return CommandResult(argv, 0, '["127.0.0.1"]', "", CommandOutcome.SUCCESS)
+
+        task = asyncio.create_task(resolve_addresses("example.test", operation_timeout=3, hard_deadline=3, command_runner=command))
+        await started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        released.set()
+        await asyncio.sleep(0)
+        self.assertTrue(task.cancelled())
+
 
 class TcpProbeTests(unittest.IsolatedAsyncioTestCase):
     async def test_connect_success_and_refusal_have_distinct_evidence(self) -> None:
@@ -139,6 +175,20 @@ class TcpProbeTests(unittest.IsolatedAsyncioTestCase):
         observation = await tcp_probe(prepared, connector=refused)
         self.assertEqual(observation.evidence_kind, EvidenceKind.TCP_REFUSED)
         self.assertEqual(observation.disposition, Disposition.NEGATIVE)
+
+    async def test_reset_unreachable_and_timeout_remain_distinct(self) -> None:
+        prepared = next(step for step in await _compiled_steps() if step.step.probe_kind is ProbeKind.TCP_CONNECT)
+        cases = (
+            (ConnectionResetError(errno.ECONNRESET, "reset"), EvidenceKind.TCP_RESET, Disposition.NEGATIVE),
+            (OSError(errno.ENETUNREACH, "unreachable"), EvidenceKind.NETWORK_UNREACHABLE, Disposition.NEGATIVE),
+            (TimeoutError(), EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE),
+        )
+        for failure, kind, disposition in cases:
+            with self.subTest(kind=kind):
+                async def connector(*_: object, failure=failure, **__: object):
+                    raise failure
+                observation = await tcp_probe(prepared, connector=connector)
+                self.assertEqual((observation.evidence_kind, observation.disposition), (kind, disposition))
 
 
 class ConnectorBindingTests(unittest.IsolatedAsyncioTestCase):
@@ -166,11 +216,12 @@ class ConnectorBindingTests(unittest.IsolatedAsyncioTestCase):
 
 class TlsLoopbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_controlled_loopback_tls_succeeds_only_with_its_explicit_ca(self) -> None:
-        cert_data = Path(__import__("sys").base_prefix) / "Lib" / "test" / "certdata"
-        certificate, server_chain = cert_data / "pycacert.pem", cert_data / "keycert3.pem"
-        self.assertTrue(certificate.is_file() and server_chain.is_file(), "CPython test TLS certificate is unavailable")
+        cert_data = Path(__file__).with_name("fixtures") / "tls"
+        certificate = cert_data / "test-ca.pem"
+        server_certificate, server_key = cert_data / "localhost-cert.pem", cert_data / "localhost-key.pem"
+        self.assertTrue(certificate.is_file() and server_certificate.is_file() and server_key.is_file())
         server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        server_context.load_cert_chain(server_chain)
+        server_context.load_cert_chain(server_certificate, server_key)
         async def handler(reader, writer):
             writer.close()
             await writer.wait_closed()
@@ -240,6 +291,19 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         observation = await http_probe(prepared, connector=connector)
         self.assertEqual(observation.evidence_kind, EvidenceKind.EXECUTION_ERROR)
         self.assertTrue(writer.closed)
+
+
+class SourceBoundaryTests(unittest.TestCase):
+    def test_protocol_and_diagnosis_layers_have_no_unsafe_resolution_or_tls_bypass(self) -> None:
+        import mercury.diagnosis as diagnosis
+        import mercury.probes as probes
+        import mercury.profiles as profiles
+        import mercury.tasks as tasks
+
+        source = "\n".join(inspect.getsource(module) for module in (profiles, probes, diagnosis, tasks))
+        for forbidden in ("socket.getaddrinfo", "loop.getaddrinfo", "run_in_executor", "shell=True", "CERT_NONE", "_create_unverified_context"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
 
 if __name__ == "__main__":

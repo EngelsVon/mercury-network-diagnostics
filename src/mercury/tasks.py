@@ -378,6 +378,12 @@ class TaskContext:
         self.wall_clock = wall_clock
         self.monotonic = monotonic
         self.resolver = resolver
+        # One absolute monotonic deadline serves every bounded helper call as
+        # well as the outer task timeout. Individual steps may use less time,
+        # but may never restart the full task-duration allowance.
+        self._deadline_monotonic = (
+            self.monotonic() + self.plan.preview.limits.max_duration_s
+        )
         self._observations: list[Observation] = []
         self._conclusions: list[Conclusion] = []
         self._capabilities: list[Capability] = []
@@ -497,10 +503,13 @@ class TaskContext:
                 # this one finite answer set.
                 from .resolver import resolve_addresses
                 step = self._steps[step_id]
+                remaining = self._deadline_monotonic - self.monotonic()
+                if remaining < 0.1:
+                    raise TimeoutError("task deadline exhausted before DNS preflight")
                 resolved = await resolve_addresses(
                     step.source_hostname,
-                    operation_timeout=step.timeout_s,
-                    hard_deadline=step.timeout_s,
+                    operation_timeout=min(step.timeout_s, remaining),
+                    hard_deadline=remaining,
                 )
                 preflight_kwargs["resolver"] = lambda _hostname: resolved.addresses
             if payload is not None:
