@@ -27,7 +27,7 @@ from ..models import TaskResult
 from ..paired import PairedRequest
 from ..profiles import DiagnosisRequest
 from ..trace import TraceRequest
-from ..reports import redact
+from ..reports import html_report, redact
 
 
 MAX_BODY_BYTES = 16 * 1024
@@ -386,6 +386,15 @@ class MercuryRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_html(self, status: HTTPStatus, value: str) -> None:
+        raw = value.encode("utf-8")
+        self.send_response(status)
+        self._security_headers()
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json(status, {"error": {"category": "web", "message": message}})
 
@@ -477,6 +486,13 @@ class MercuryRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/history/") and path.endswith("/report"):
             identifier = path.removeprefix("/api/history/").removesuffix("/report").rstrip("/")
             try:
+                format_values = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get("format", ["json"])
+                if format_values not in (["json"], ["html"]):
+                    raise WebError("report format is invalid")
+                if format_values == ["html"]:
+                    response = self.server.broker.query(lambda app: {"html": html_report(app.history_show(identifier))})
+                    self._send_html(HTTPStatus.OK, response["html"])
+                    return
                 payload = self.server.broker.query(lambda app: app.report_history(identifier))
             except WebError as exc:
                 self._send_error(HTTPStatus.NOT_FOUND, str(exc))

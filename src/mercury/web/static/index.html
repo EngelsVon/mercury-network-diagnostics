@@ -53,6 +53,19 @@
       <h2 id="evidence-heading">Evidence semantics</h2>
       <p>Positive, negative, inconclusive, unavailable, and error outcomes are distinct. A gateway, neighbor cache entry, or first route hop is not an observed switch.</p>
     </section>
+    <section aria-labelledby="history-heading">
+      <h2 id="history-heading">History and reports</h2>
+      <button id="history-button" type="button">Refresh completed history</button>
+      <pre id="history-output" aria-live="polite"></pre>
+      <label for="compare-left">Earlier task ID</label>
+      <input id="compare-left" autocomplete="off">
+      <label for="compare-right">Later task ID</label>
+      <input id="compare-right" autocomplete="off">
+      <button id="compare-button" type="button">Compare tasks</button>
+      <label for="report-task">Task ID for redacted HTML report</label>
+      <input id="report-task" autocomplete="off">
+      <button id="report-button" type="button">Open redacted HTML report</button>
+    </section>
   </main>
   <script src="/static/app.js" defer></script>
 </body>

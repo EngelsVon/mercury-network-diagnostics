@@ -3,6 +3,7 @@ let csrf = "";
 let activeTask = null;
 const state = document.querySelector("#task-state");
 const output = document.querySelector("#task-output");
+const historyOutput = document.querySelector("#history-output");
 function field(name) { return document.querySelector(name).value.trim(); }
 async function request(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", ...options });
@@ -61,5 +62,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelector("#cancel-button").addEventListener("click", async () => {
     if (!activeTask) return;
     try { await request(`/api/tasks/${activeTask}`, { method: "DELETE", headers: { "X-Mercury-CSRF": csrf } }); } catch (error) { state.textContent = error.message; }
+  });
+  document.querySelector("#history-button").addEventListener("click", async () => {
+    try { historyOutput.textContent = JSON.stringify(await request("/api/history"), null, 2); } catch (error) { historyOutput.textContent = error.message; }
+  });
+  document.querySelector("#compare-button").addEventListener("click", async () => {
+    const left = field("#compare-left");
+    const right = field("#compare-right");
+    try { historyOutput.textContent = JSON.stringify(await request(`/api/history/compare?left=${encodeURIComponent(left)}&right=${encodeURIComponent(right)}`), null, 2); } catch (error) { historyOutput.textContent = error.message; }
+  });
+  document.querySelector("#report-button").addEventListener("click", () => {
+    const task = field("#report-task");
+    if (task) window.open(`/api/history/${encodeURIComponent(task)}/report?format=html`, "_blank", "noopener");
   });
 });

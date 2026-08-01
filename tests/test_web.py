@@ -14,6 +14,7 @@ from mercury.models import (
     Confidence, Conclusion, Direction, Disposition, EffectiveConfig, EvidenceKind,
     Health, Observation, Progress, TaskResult, TaskState,
 )
+from mercury.history import HistoryRecord
 from mercury.web import CSRF_HEADER, MercuryWebServer, WebConfig, WebError
 
 
@@ -77,6 +78,11 @@ class FakeApplication:
     def report_history(self, task_id: str):
         type(self).calls.append("report_history")
         return {"task_id": task_id, "result": {"target": "[redacted identifier]"}}
+
+    def history_show(self, task_id: str):
+        type(self).calls.append("history_show")
+        now = datetime(2026, 8, 2, tzinfo=timezone.utc)
+        return HistoryRecord(task_id, "web", TaskState.COMPLETED, now, now, {}, {}, result())
 
 
 class WebServerTests(unittest.TestCase):
@@ -207,7 +213,10 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(json.loads(raw)["target"], "[redacted identifier]")
         status, _, raw = self.request("GET", "/api/history/one/report", headers={"Cookie": self.cookie})
         self.assertEqual((status, json.loads(raw)["result"]["target"]), (200, "[redacted identifier]"))
-        self.assertEqual(FakeApplication.calls, ["history_list", "compare_history", "report_history"])
+        status, headers, raw = self.request("GET", "/api/history/one/report?format=html", headers={"Cookie": self.cookie})
+        self.assertEqual((status, headers["content-type"]), (200, "text/html; charset=utf-8"))
+        self.assertIn(b"Mercury report", raw)
+        self.assertEqual(FakeApplication.calls, ["history_list", "compare_history", "report_history", "history_show"])
 
 
 if __name__ == "__main__":
