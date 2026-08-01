@@ -64,12 +64,12 @@
 
 ### Packaging, compatibility, and verification
 
-- [ ] **PACK-01**: 用户从同一个 Python wheel/安装目录获得 `mercury` CLI、agent 和 WebUI 静态资源。
-- [ ] **PACK-02**: Windows 和 Ubuntu 普通用户都能运行 inventory、TCP/TLS/HTTP 和 WebUI 基线，并看到特权/工具缺失的降级说明；macOS 及其他平台明确报告为 unsupported，不属于 v1 发布目标。
+- [x] **PACK-01**: 用户从同一个 Python wheel/安装目录获得 `mercury` CLI、agent 和 WebUI 静态资源。
+- [x] **PACK-02**: Windows 和 Ubuntu 普通用户都能运行 inventory、TCP/TLS/HTTP 和 WebUI 基线，并看到特权/工具缺失的降级说明；macOS 及其他平台明确报告为 unsupported，不属于 v1 发布目标。
 - [x] **TEST-01**: 维护者能用标准库测试运行证据模型、目标策略、预算、状态迁移、历史保留及取消逻辑。
-- [ ] **TEST-02**: 维护者能在受控环境验证成功、拒绝、超时/丢弃、UDP 静默、DNS 失败、延迟和不对称路径，而 CI 不会扫描未授权公网。
-- [ ] **TEST-03**: 维护者能用标准库测试平台解析器、Web API 安全边界、peer mTLS/token 鉴权、重放/越权拒绝和双端证据关联。
-- [ ] **DOCS-01**: 用户文档包含安全授权说明、快速开始、各平台能力、TLS agent 配置、结果语义和明确非目标。
+- [x] **TEST-02**: 维护者能在受控环境验证成功、拒绝、超时/丢弃、UDP 静默、DNS 失败、延迟和不对称路径，而 CI 不会扫描未授权公网。
+- [x] **TEST-03**: 维护者能用标准库测试平台解析器、Web API 安全边界、peer mTLS/token 鉴权、重放/越权拒绝和双端证据关联。
+- [x] **DOCS-01**: 用户文档包含安全授权说明、快速开始、各平台能力、TLS agent 配置、结果语义和明确非目标。
 
 ## v2 Requirements
 
@@ -143,12 +143,12 @@
 | HIST-01 | Phase 1 | Complete |
 | HIST-02 | Phase 5 | Complete |
 | HIST-03 | Phase 5 | Complete |
-| PACK-01 | Phase 5 | Pending |
-| PACK-02 | Phase 5 | Pending |
+| PACK-01 | Phase 5 | Complete |
+| PACK-02 | Phase 5 | Complete |
 | TEST-01 | Phase 1 | Complete |
-| TEST-02 | Phase 5 | Pending |
-| TEST-03 | Phase 5 | Pending |
-| DOCS-01 | Phase 5 | Pending |
+| TEST-02 | Phase 5 | Complete |
+| TEST-03 | Phase 5 | Complete |
+| DOCS-01 | Phase 5 | Complete |
 
 **Coverage:**
 

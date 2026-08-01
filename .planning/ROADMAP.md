@@ -16,7 +16,7 @@ engine.
 - [x] **Phase 2: Local Snapshot and Layered Diagnosis** - Deliver a useful Windows/Ubuntu CLI for network facts and multi-layer reachability.
 - [x] **Phase 3: Authenticated Paired Differential Diagnostics** - Run one bounded cross-layer plan from both Mercury endpoints and explain directional differences.
 - [x] **Phase 4: Safe Discovery, Topology Evidence, and Routes** - Add passive-first subnet context, bounded TCP discovery, honest route evidence, neighbors and optional LLDP.
-- [ ] **Phase 5: WebUI, Reports, and Release Hardening** - Ship the shared-engine dashboard, reports, compatibility checks, documentation and end-to-end verification.
+- [x] **Phase 5: WebUI, Reports, and Release Hardening** - Ship the shared-engine dashboard, reports, compatibility checks, documentation and end-to-end verification.
 
 ## Phase Details
 
@@ -180,7 +180,7 @@ Plans:
 
 - [x] 05-01: Implement the stdlib HTTP task API and accessible native HTML/CSS/JS dashboard with polling/cancellation.
 - [x] 05-02: Implement history browsing, centralized redaction and JSON/self-contained HTML reports.
-- [ ] 05-03: Complete controlled/cross-platform E2E, clean-install packaging, security/code/Ponytail reviews and user documentation.
+- [x] 05-03: Complete controlled/cross-platform E2E, clean-install packaging, security/code/Ponytail reviews and user documentation.
 
 ## Progress
 
@@ -192,7 +192,7 @@ Plans:
 | 2. Local Snapshot and Layered Diagnosis | 4/4 | Complete | 2026-08-01 |
 | 3. Authenticated Paired Differential Diagnostics | 3/3 | Complete | 2026-08-02 |
 | 4. Safe Discovery, Topology Evidence, and Routes | 2/2 | Complete | 2026-08-02 |
-| 5. WebUI, Reports, and Release Hardening | 2/3 | In progress | - |
+| 5. WebUI, Reports, and Release Hardening | 3/3 | Complete | 2026-08-02 |
 
 ---
 *Roadmap created: 2026-07-30*  

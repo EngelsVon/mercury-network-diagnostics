@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-02-PLAN.md; 05-03 is next
-last_updated: "2026-08-02T05:00:00Z"
-last_activity: 2026-08-02 -- completed redacted history reports and compatible comparisons with uv verification
+stopped_at: Phase 05 complete; v1 roadmap complete
+last_updated: "2026-08-02T06:00:00Z"
+last_activity: 2026-08-02 -- Phase 05 release, clean-install and documentation verification passed with uv
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 15
-  completed_plans: 14
-  percent: 93
+  completed_plans: 15
+  percent: 100
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-07-30)
 
 **Core value:** 在用户明确授权的网络范围内，以安全、可解释且可复现的方式定位节点间可达性故障及其网络层原因。  
-**Current focus:** Phase 05 — webui-reports-and-release-hardening
+**Current focus:** v1 milestone verification complete
 
 ## Current Position
 
-Phase: 05 (webui-reports-and-release-hardening) — IN PROGRESS
+Phase: 05 (webui-reports-and-release-hardening) — COMPLETE
 
 Plan: 03 of 03
-Status: 05-02 complete; release packaging, controlled verification, and documentation are next
-Last activity: 2026-08-02 -- redacted reports and compatible history comparisons verified
+Status: v1 roadmap complete; Phase 05 verification passed
+Last activity: 2026-08-02 -- clean wheel installation, controlled suite, release documentation and static asset packaging verified
 
-Progress: [#########-] 93%
+Progress: [##########] 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 14
+- Total plans completed: 15
 - Average duration: not separately tracked (combined Phase 1 execution)
 - Total execution time: approximately 2.8 hours
 
