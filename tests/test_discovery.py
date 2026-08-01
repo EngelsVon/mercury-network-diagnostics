@@ -15,6 +15,7 @@ from mercury.discovery import (
 from mercury.history import HistoryStore
 from mercury.models import CapabilityState, EvidenceKind, TaskState
 from mercury.platform.common import CommandOutcome, CommandResult
+from mercury.platform.common import PlatformRecords, RouteRecord
 from mercury.planner import authorize_plan
 from mercury.policy import PolicyError
 from mercury.tasks import TaskService
@@ -63,6 +64,17 @@ class PassiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(linux[0].address, "192.0.2.1")
         self.assertEqual(windows[0].interface_name, "Ethernet")
         self.assertEqual(wifi[0].ssid, "Campus")
+
+    async def test_passive_routes_are_explicit_candidate_context(self):
+        async def routes():
+            return PlatformRecords(routes=(RouteRecord(4, "192.0.2.0/24", "fixture.route", interface_name="eth0", on_link=True),))
+
+        result = await collect_passive_discovery(
+            psutil_module=FakePsutil(), system=lambda: "Linux",
+            command_runner=missing_command, platform_collector=routes,
+        )
+        route = next(item for item in result.observations if item.probe == "connected_ipv4_route")
+        self.assertEqual((route.detail["network"], route.detail["interface_name"]), ("192.0.2.0/24", "eth0"))
 
 
 class ActiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):

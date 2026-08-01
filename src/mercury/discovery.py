@@ -13,7 +13,7 @@ import ipaddress
 import json
 import platform
 import socket
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -34,6 +34,7 @@ from .policy import PolicyError, ScopeGrant
 from .probes import run_protocol_probe
 from .tasks import TaskContext, TaskService
 from .platform.common import CommandOutcome, CommandResult, run_passive_command
+from .platform import PlatformRecords, collect_platform
 
 
 COMMON_TCP_PORTS = (22, 53, 80, 443, 445, 3389, 8080)
@@ -234,6 +235,7 @@ async def collect_passive_discovery(
     psutil_module: Any = psutil,
     system: Callable[[], str] = platform.system,
     command_runner=None,
+    platform_collector: Callable[[], Awaitable[PlatformRecords]] = collect_platform,
     task_id: str = "discover-passive-local",
 ) -> TaskResult:
     """Collect passive context only; it never calls a probe or opens a socket."""
@@ -254,6 +256,16 @@ async def collect_passive_discovery(
         capabilities.append(Capability("connected_ipv4_networks", CapabilityState.ERROR, "psutil.net_if_addrs", type(exc).__name__))
     for record in networks:
         observe("connected_ipv4_network", "psutil.net_if_addrs", {"interface_name": record.interface_name, "network": record.network, "passive": True})
+    try:
+        platform_records = await platform_collector()
+    except Exception as exc:
+        capabilities.append(Capability("passive_routes", CapabilityState.ERROR, "mercury.platform", type(exc).__name__))
+    else:
+        capabilities.append(Capability("passive_routes", CapabilityState.AVAILABLE, "mercury.platform"))
+        capabilities.extend(platform_records.capabilities)
+        for route in platform_records.routes:
+            if route.family == 4 and route.on_link:
+                observe("connected_ipv4_route", route.source, {"network": route.destination, "interface_name": route.interface_name, "interface_index": route.interface_index, "gateway": route.gateway, "on_link": True, "passive": True})
     ipv6_limit = observe("discovery_limit", "mercury.discovery", {"feature": "ipv6_host_enumeration", "reason": "unsupported_in_v1"}, kind=EvidenceKind.UNSUPPORTED, disposition=Disposition.UNAVAILABLE)
     capabilities.append(Capability("ipv6_host_enumeration", CapabilityState.UNSUPPORTED, "mercury.discovery", "v1_ipv4_only"))
 
