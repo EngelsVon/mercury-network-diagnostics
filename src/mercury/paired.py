@@ -159,18 +159,28 @@ def _port(value: int, label: str) -> int:
 @dataclass(frozen=True, slots=True)
 class PairedEndpoint:
     identity: str
+    # ``address`` is the authenticated remote source and immutable plan target.
+    # ``local_address`` is only the local bind address; it never becomes a
+    # reverse destination or replaces the peer-source check.
     address: str
     tcp_port: int
     udp_port: int
+    local_address: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, str) or not self.identity or len(self.identity) > 64:
             raise PairedError("paired identity is invalid")
         object.__setattr__(self, "address", _address(self.address, "paired address"))
+        if self.local_address is not None:
+            object.__setattr__(self, "local_address", _address(self.local_address, "paired local address"))
         object.__setattr__(self, "tcp_port", _port(self.tcp_port, "paired TCP port"))
         object.__setattr__(self, "udp_port", _port(self.udp_port, "paired UDP port"))
         if self.tcp_port == self.udp_port:
             raise PairedError("paired TCP and UDP ports must be distinct")
+
+    @property
+    def bind_address(self) -> str:
+        return self.local_address or self.address
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,12 +311,12 @@ class PairedListenerService:
         try:
             self._tcp = await asyncio.start_server(
                 self._handle_tcp,
-                host=self.lease.endpoint.address,
+                host=self.lease.endpoint.bind_address,
                 port=self.lease.endpoint.tcp_port,
             )
             transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
                 lambda: _LeaseDatagram(self),
-                local_addr=(self.lease.endpoint.address, self.lease.endpoint.udp_port),
+                local_addr=(self.lease.endpoint.bind_address, self.lease.endpoint.udp_port),
             )
             self._udp = transport
         except PermissionError:
