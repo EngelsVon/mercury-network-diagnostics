@@ -182,7 +182,9 @@ class AuthenticatedPairedRunner:
     async def run(self, request: PairedRequest) -> TaskResult:
         if type(request) is not PairedRequest or not request.authorized:
             raise PairedError("paired request requires explicit authorization")
-        correlation = secrets.token_urlsafe(18)
+        # Peer correlations must start alphanumeric; token_urlsafe may start
+        # with '_' or '-', which the strict control grammar rightly rejects.
+        correlation = "p" + secrets.token_urlsafe(18)
         expires_at = utc_now() + timedelta(seconds=request.timeout_s)
         capability = await self._request("capabilities", correlation, expires_at, {})
         capabilities = capability.body.get("capabilities")

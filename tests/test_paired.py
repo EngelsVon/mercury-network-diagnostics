@@ -303,7 +303,13 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
 
 class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
     async def test_authenticated_control_runs_independently_admitted_role_swap(self) -> None:
-        """D-12 local proof; two-machine smoke remains explicit and opt-in only."""
+        """D-12 local proof.
+
+        An opt-in two-machine smoke may use only the user-authorized Ubuntu
+        peer at its configured address, temporary restrictive-permission
+        certificate/token files, and this fixed manifest.  Copy only sanitized
+        evidence, then remove the temporary remote files; never automate SSH.
+        """
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         token_path = Path(temporary.name) / "token"
