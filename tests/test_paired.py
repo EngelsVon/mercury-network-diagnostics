@@ -425,6 +425,48 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row.direction for row in rows], ["A→B", "B→A"])
         self.assertTrue(all(row.observation_ids for row in rows))
 
+    async def test_control_grace_collects_a_role_result_at_lease_expiry(self) -> None:
+        """The data lease can expire before its terminal result is collected."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        token_path = Path(temporary.name) / "token"
+        token_path.write_text("controlled-loopback-token", encoding="utf-8")
+        base = PeerConfig(
+            identity="loopback-peer", bind_host="127.0.0.1", control_port=0,
+            certificate_path=None, key_path=None, ca_path=None, token_path=token_path,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+        )
+
+        async def remote_role(_role: str, _correlation: str) -> TaskResult:
+            await asyncio.sleep(0.15)
+            return _role_result("remote", Disposition.INCONCLUSIVE, EvidenceKind.SILENT)
+
+        remote_history = HistoryStore(":memory:")
+        self.addCleanup(remote_history.close)
+        remote_app = MercuryApplication(
+            history=remote_history, paired_peer_service=PairedPeerService(remote_role),
+        )
+        agent = await remote_app.start_agent(base)
+        try:
+            server = agent.server
+            assert server is not None
+            port = server.sockets[0].getsockname()[1]
+
+            async def local_role(_role: str, _correlation: str) -> TaskResult:
+                return _role_result("local", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED)
+
+            runner = AuthenticatedPairedRunner(PeerClient(replace(base, control_port=port)), local_role)
+            local_history = HistoryStore(":memory:")
+            self.addCleanup(local_history.close)
+            result = await MercuryApplication(history=local_history, paired_runner=runner).run_paired(PairedRequest(
+                identity="loopback-peer", address="127.0.0.1", config_path="peer.json",
+                timeout_s=0.1, authorized=True, unsafe_development=True,
+            ))
+        finally:
+            await remote_app.stop_agent()
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        self.assertEqual(result.conclusions[0].health, Health.PARTIAL)
+
     async def test_peer_submit_cannot_carry_scan_selectors(self) -> None:
         # The frame validation is the peer boundary: submission has no target,
         # CIDR, port, payload, scope, resolver, or runner fields to admit.

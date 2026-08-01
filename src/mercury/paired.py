@@ -45,6 +45,11 @@ _MATRIX_ORDER = {"local_snapshot": 0, "system_dns": 1, "native_path": 2, "tcp_co
 _PAIRED_MANIFEST = "paired-v1"
 _ROLE_A_TO_B = "A-to-B"
 _ROLE_B_TO_A = "B-to-A"
+# The data-plane lease remains bounded by the configured profile.  Control gets
+# a brief, fixed window afterwards solely to retrieve the terminal result and
+# cancel retained state; otherwise a lease expiring on schedule races the final
+# read-result frame.
+_CONTROL_RESULT_GRACE_S = 2.0
 
 RoleExecutor = Callable[[str, str], Awaitable[TaskResult]]
 
@@ -217,18 +222,19 @@ class AuthenticatedPairedRunner:
         # Peer correlations must start alphanumeric; token_urlsafe may start
         # with '_' or '-', which the strict control grammar rightly rejects.
         correlation = "p" + secrets.token_urlsafe(18)
-        expires_at = utc_now() + timedelta(seconds=request.timeout_s)
+        data_expires_at = utc_now() + timedelta(seconds=request.timeout_s)
+        control_expires_at = data_expires_at + timedelta(seconds=_CONTROL_RESULT_GRACE_S)
         submitted = False
         try:
-            async with asyncio.timeout(request.timeout_s):
-                capability = await self._request("capabilities", correlation, expires_at, {})
+            async with asyncio.timeout(request.timeout_s + _CONTROL_RESULT_GRACE_S):
+                capability = await self._request("capabilities", correlation, control_expires_at, {})
                 capabilities = capability.body.get("capabilities")
                 if not isinstance(capabilities, (list, tuple)) or _PAIRED_MANIFEST not in capabilities:
                     raise PairedError("configured peer does not admit the fixed paired manifest")
                 # Submit first: the remote B-to-A role can bind its finite
                 # listeners before local A-to-B sends the fixed probes.
                 submitted_frame = await self._request(
-                    "submit", correlation, expires_at,
+                    "submit", correlation, control_expires_at,
                     {"manifest": _PAIRED_MANIFEST, "role": _ROLE_B_TO_A},
                 )
                 if submitted_frame.body != {"status": "accepted"}:
@@ -237,14 +243,14 @@ class AuthenticatedPairedRunner:
                 local = await self._local_role_executor(_ROLE_A_TO_B, correlation)
                 if type(local) is not TaskResult or local.task_kind != "paired":
                     raise PairedError("local paired role executor returned an invalid result")
-                remote_result = await self._read_remote_result(correlation, expires_at)
+                remote_result = await self._read_remote_result(correlation, control_expires_at)
                 return _combine_role_results(request, local, remote_result, correlation)
         except TimeoutError as exc:
             raise PairedError("paired execution exceeded its finite deadline") from exc
         finally:
             if submitted:
                 try:
-                    await asyncio.shield(self._request("cancel", correlation, expires_at, {}))
+                    await asyncio.shield(self._request("cancel", correlation, control_expires_at, {}))
                 except (PeerError, OSError):
                     pass
 
