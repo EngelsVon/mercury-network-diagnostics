@@ -648,11 +648,17 @@ class TaskContext:
             occurred_at=observation.ended_at,
         )
 
-    def add_conclusion(self, conclusion: Conclusion) -> None:
+    def add_conclusion(self, conclusion: Conclusion, *, step_id: str | None = None) -> None:
         if type(conclusion) is not Conclusion:
             raise TaskError("runner conclusion must be a Conclusion")
         if conclusion.id == "task-summary":
             raise TaskError("runner cannot use the reserved task-summary ID")
+        if step_id is not None:
+            counts = self._step_counts.get(step_id)
+            if step_id not in self._admitted_steps or step_id in self._completed_steps or counts is None:
+                raise TaskError("runner conclusion is not attributed to an admitted step")
+            if counts["conclusions"] >= self._prepared_steps[step_id].step.cost.max_conclusions:
+                raise TaskError("step conclusion reservation exhausted")
         if len(self._conclusions) >= MAX_CONTEXT_CONCLUSIONS:
             raise TaskError("too many task conclusions")
         assert_persistence_safe(
@@ -662,10 +668,18 @@ class TaskContext:
         candidate = (*self._conclusions, conclusion)
         self._assert_output_fits(conclusions=candidate)
         self._conclusions.append(conclusion)
+        if step_id is not None:
+            self._step_counts[step_id]["conclusions"] += 1
 
-    def add_capability(self, capability: Capability) -> None:
+    def add_capability(self, capability: Capability, *, step_id: str | None = None) -> None:
         if type(capability) is not Capability:
             raise TaskError("runner capability must be a Capability")
+        if step_id is not None:
+            counts = self._step_counts.get(step_id)
+            if step_id not in self._admitted_steps or step_id in self._completed_steps or counts is None:
+                raise TaskError("runner capability is not attributed to an admitted step")
+            if counts["capabilities"] >= self._prepared_steps[step_id].step.cost.max_capabilities:
+                raise TaskError("step capability reservation exhausted")
         if len(self._capabilities) >= MAX_CONTEXT_CAPABILITIES:
             raise TaskError("too many task capabilities")
         assert_persistence_safe(
@@ -675,8 +689,16 @@ class TaskContext:
         candidate = (*self._capabilities, capability)
         self._assert_output_fits(capabilities=candidate)
         self._capabilities.append(capability)
+        if step_id is not None:
+            self._step_counts[step_id]["capabilities"] += 1
 
-    def add_error(self, value: object) -> bool:
+    def add_error(self, value: object, *, step_id: str | None = None) -> bool:
+        if step_id is not None:
+            counts = self._step_counts.get(step_id)
+            if step_id not in self._admitted_steps or step_id in self._completed_steps or counts is None:
+                raise TaskError("runner error is not attributed to an admitted step")
+            if counts["errors"] >= self._prepared_steps[step_id].step.cost.max_errors:
+                return False
         if len(self._errors) >= MAX_CONTEXT_ERRORS:
             return False
         message = sanitize_persisted_text(value, maximum=1_024)
@@ -686,6 +708,8 @@ class TaskContext:
         except TaskError:
             return False
         self._errors.append(candidate[-1])
+        if step_id is not None:
+            self._step_counts[step_id]["errors"] += 1
         return True
 
 
@@ -1091,6 +1115,17 @@ class TaskService:
         if identifier in self._tasks or identifier in self._results:
             raise TaskError(f"duplicate task ID {identifier!r}")
         request = project_history_request(dict(requested_config or {}))
+        effective = _effective_config(plan)
+        try:
+            fallback = _output_budget_result(
+                task_id=identifier, task_kind="diagnose", started_at=validation_time,
+                ended_at=validation_time, requested_config=request, effective_config=effective,
+                progress=Progress(admitted=0, completed=0, total=plan.preview.estimate.logical_attempts),
+            )
+        except Exception as exc:
+            raise TaskError("task metadata cannot form a valid result") from exc
+        if _result_bytes(fallback) > plan.preview.limits.max_output_bytes:
+            raise TaskError("max_output_bytes cannot hold the canonical task result")
         self.history.create_task(
             task_id=identifier, task_kind="diagnose", request=request, plan=plan.to_wire(),
             owner_id=self._owner_id,

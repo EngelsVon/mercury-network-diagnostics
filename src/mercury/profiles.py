@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .models import ProbeKind
 from .planner import (
@@ -17,6 +17,7 @@ from .planner import (
     ProbeSpec,
     StepCost,
     Transport,
+    DEFAULT_LIMITS,
     authorize_plan,
     preview_probe_plan,
 )
@@ -140,6 +141,15 @@ def _cost(*, packets: int = 1, observations: int = 1) -> StepCost:
     return StepCost(1, 0, 0, logical_packets=packets, max_observations=observations, max_output_bytes=8_192)
 
 
+def _local_snapshot_cost() -> StepCost:
+    """Reserve the bounded 02-01 snapshot before passive collection begins."""
+    return StepCost(
+        1, 0, 0, logical_packets=0, max_observations=8_720,
+        max_capabilities=32, max_conclusions=16, max_errors=16,
+        max_output_bytes=12 * 1024 * 1024,
+    )
+
+
 async def compile_diagnosis(
     request: DiagnosisRequest,
     *,
@@ -165,7 +175,9 @@ async def compile_diagnosis(
     else:
         endpoints = (definition.raw_tcp_target,) + tuple(CustomTarget(host, 443) for host in definition.https_hosts)
         profile = definition.name
-    specs: list[ProbeSpec] = [ProbeSpec(ProbeKind.LOCAL_SNAPSHOT, "local", cost=_cost(packets=0))]
+    specs: list[ProbeSpec] = [ProbeSpec(
+        ProbeKind.LOCAL_SNAPSHOT, "local", cost=_local_snapshot_cost(),
+    )]
     groups: list[ProbeGroupKey] = []
     for endpoint in endpoints:
         target = parse_target(endpoint.host)
@@ -218,7 +230,10 @@ async def compile_diagnosis(
                       max_hops=8, timeout_s=request.timeout_s, required=False,
                       cost=_cost(packets=24, observations=9)),
         ))
-    preview = preview_probe_plan(specs=tuple(specs), grant=grant, profile=profile)
+    diagnosis_limits = replace(DEFAULT_LIMITS, max_output_bytes=24 * 1024 * 1024)
+    preview = preview_probe_plan(
+        specs=tuple(specs), grant=grant, profile=profile, limits=diagnosis_limits,
+    )
     return CompiledDiagnosis(request, profile, tuple(item.canonical for item in endpoints), authorize_plan(preview), tuple(groups))
 
 

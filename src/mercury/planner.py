@@ -606,7 +606,8 @@ class ProbePlan:
         step.payload.verify(payload)
         self.preview.scope.assert_current(now)
         target = normalize_targets((step.target,))[0]
-        authorize_targets((target,), self.preview.scope, now=now)
+        if step.probe_kind is not ProbeKind.LOCAL_SNAPSHOT:
+            authorize_targets((target,), self.preview.scope, now=now)
         transport = step.transport.value if step.transport is not None else None
         if not target.is_loopback and not self.preview.scope.permits_probe(
             step.probe_kind, step.port, transport
