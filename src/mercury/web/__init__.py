@@ -17,7 +17,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from ..app import MercuryApplication
 from ..codec import dumps_document, result_to_wire
@@ -27,6 +27,7 @@ from ..models import TaskResult
 from ..paired import PairedRequest
 from ..profiles import DiagnosisRequest
 from ..trace import TraceRequest
+from ..reports import redact
 
 
 MAX_BODY_BYTES = 16 * 1024
@@ -161,6 +162,30 @@ class WebTaskBroker:
     def close(self) -> None:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=3)
+
+    def query(self, operation: Callable[[MercuryApplication], dict[str, object]]) -> dict[str, object]:
+        """Run a read-only facade operation on the broker-owned SQLite thread."""
+        ready = threading.Event()
+        outcome: dict[str, object] = {}
+
+        async def execute() -> None:
+            try:
+                with HistoryStore(self.history_path) as history:
+                    outcome["value"] = operation(self.app_factory(history=history))
+            except Exception as exc:
+                outcome["error"] = exc
+            finally:
+                ready.set()
+
+        self._loop.call_soon_threadsafe(lambda: self._loop.create_task(execute()))
+        if not ready.wait(timeout=2):
+            raise WebError("history service is unavailable")
+        if "error" in outcome:
+            raise WebError(sanitize_exception(outcome["error"]))
+        value = outcome.get("value")
+        if not isinstance(value, dict):
+            raise WebError("history service returned an invalid response")
+        return value
 
 
 def _require_shape(value: object, *, keys: frozenset[str], required: frozenset[str]) -> dict[str, object]:
@@ -429,6 +454,34 @@ class MercuryRequestHandler(BaseHTTPRequestHandler):
             session = self._session()
             assert session is not None
             self._send_json(HTTPStatus.OK, {"csrf": session[1], "loopback": self.server.config.loopback})
+            return
+        if path == "/api/history":
+            self._send_json(HTTPStatus.OK, self.server.broker.query(lambda app: {"tasks": [
+                {"task_id": item.task_id, "task_kind": item.task_kind, "state": item.state.value, "updated_at": item.updated_at.isoformat()}
+                for item in app.history_list(limit=50)
+            ]}))
+            return
+        if path == "/api/history/compare":
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            left, right = query.get("left"), query.get("right")
+            if left is None or right is None or len(left) != 1 or len(right) != 1:
+                self._send_error(HTTPStatus.BAD_REQUEST, "two history task IDs are required")
+                return
+            try:
+                payload = self.server.broker.query(lambda app: redact(app.compare_history(left[0], right[0])))
+            except WebError as exc:
+                self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            self._send_json(HTTPStatus.OK, payload)
+            return
+        if path.startswith("/api/history/") and path.endswith("/report"):
+            identifier = path.removeprefix("/api/history/").removesuffix("/report").rstrip("/")
+            try:
+                payload = self.server.broker.query(lambda app: app.report_history(identifier))
+            except WebError as exc:
+                self._send_error(HTTPStatus.NOT_FOUND, str(exc))
+                return
+            self._send_json(HTTPStatus.OK, payload)
             return
         if path.startswith("/api/tasks/"):
             snapshot = self.server.broker.snapshot(path.rsplit("/", 1)[-1])

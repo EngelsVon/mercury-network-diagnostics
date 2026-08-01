@@ -96,6 +96,15 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(CliError):
             parser.parse_args(("web", "--target", "192.0.2.1"))
 
+    def test_history_compare_and_export_are_closed_commands(self) -> None:
+        parser = build_parser()
+        compared = parser.parse_args(("history", "compare", "left", "right", "--json"))
+        exported = parser.parse_args(("history", "export", "task", "--format", "html", "--retain-sensitive"))
+        self.assertEqual((compared.history_command, compared.left_task_id, compared.right_task_id), ("compare", "left", "right"))
+        self.assertEqual((exported.history_command, exported.format, exported.retain_sensitive), ("export", "html", True))
+        with self.assertRaises(CliError):
+            parser.parse_args(("history", "export", "task", "--output", "report.html"))
+
     def test_discovery_parser_exposes_only_passive_or_fixed_tcp_controls(self) -> None:
         parser = build_parser()
         active = parser.parse_args(("discover", "--network", "127.0.0.1/32", "--scope", "127.0.0.0/8", "--profile", "custom", "--ports", "443", "--authorized"))

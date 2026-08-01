@@ -25,6 +25,7 @@ from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
 from .tasks import TaskService
 from .trace import TraceRequest, default_trace_grant, run_trace
+from .reports import compare_records, report_wire
 
 
 def _default_grant(request: DiagnosisRequest) -> ScopeGrant:
@@ -152,6 +153,24 @@ class MercuryApplication:
         if type(result) is not TaskResult:
             raise RuntimeError("trace executor returned an invalid result")
         return result
+
+    def history_list(self, *, limit: int = 50):
+        return self.history.list_tasks(limit=limit)
+
+    def history_show(self, task_id: str):
+        return self.history.get_task(task_id)
+
+    def compare_history(self, left_task_id: str, right_task_id: str) -> dict[str, object]:
+        left, right = self.history.get_task(left_task_id), self.history.get_task(right_task_id)
+        if left is None or right is None:
+            raise PolicyError("history task was not found")
+        return compare_records(left, right)
+
+    def report_history(self, task_id: str, *, retain_sensitive: bool = False) -> dict[str, object]:
+        record = self.history.get_task(task_id)
+        if record is None:
+            raise PolicyError("history task was not found")
+        return report_wire(record, retain_sensitive=retain_sensitive)
 
     async def start_agent(self, config: PeerConfig) -> PeerAgent:
         """Start the application-owned peer-control listener once."""

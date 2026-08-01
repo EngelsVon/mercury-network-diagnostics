@@ -21,6 +21,7 @@ from .codec import dumps_document, result_to_wire
 from .discovery import DiscoveryRequest
 from .trace import TraceRequest
 from .web import WebConfig, serve_web
+from .reports import ReportError, html_report, json_report
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
 from .app import MercuryApplication
 from .models import Disposition, EvidenceKind, Health, TaskResult, TaskState
@@ -244,6 +245,15 @@ def build_parser() -> argparse.ArgumentParser:
     history_show = history_subparsers.add_parser("show", help="show a task")
     history_show.add_argument("task_id")
     _add_json_option(history_show)
+    history_compare = history_subparsers.add_parser("compare", help="compare compatible completed tasks")
+    history_compare.add_argument("left_task_id")
+    history_compare.add_argument("right_task_id")
+    _add_json_option(history_compare)
+    history_export = history_subparsers.add_parser("export", help="export one completed task with default redaction")
+    history_export.add_argument("task_id")
+    history_export.add_argument("--format", choices=("json", "html"), default="json")
+    history_export.add_argument("--retain-sensitive", action="store_true", help="retain identifiers and payloads; credentials remain redacted")
+    _add_json_option(history_export)
 
     task_parser = subparsers.add_parser(
         "task", help=argparse.SUPPRESS, description="Offline developer tasks"
@@ -564,23 +574,32 @@ def _dispatch(args: argparse.Namespace) -> int:
         return EXIT_OK
     if args.command == "history":
         with HistoryStore(args.data_path) as history:
+            application = MercuryApplication(history=history)
             if args.history_command == "list":
-                records = history.list_tasks(limit=args.limit)
+                records = application.history_list(limit=args.limit)
                 _emit(
                     [_history_record_wire(record) for record in records],
                     render_history(records),
                     as_json=as_json,
                 )
                 return EXIT_OK
-            record = history.get_task(args.task_id)
+            if args.history_command == "show":
+                record = application.history_show(args.task_id)
+                if record is None:
+                    raise CliError(f"history task {args.task_id!r} was not found")
+                payload = _history_record_wire(record)
+                human = render_result(record.result) if record.result is not None else f"Task {record.task_id} [{record.state.value}] has no result."
+                _emit(payload, human, as_json=as_json)
+                return EXIT_OK
+            if args.history_command == "compare":
+                payload = application.compare_history(args.left_task_id, args.right_task_id)
+                _emit(payload, dumps_document(payload, pretty=True), as_json=as_json)
+                return EXIT_OK
+            record = application.history_show(args.task_id)
             if record is None:
                 raise CliError(f"history task {args.task_id!r} was not found")
-            payload = _history_record_wire(record)
-            human = (
-                render_result(record.result)
-                if record.result is not None
-                else f"Task {record.task_id} [{record.state.value}] has no result."
-            )
+            payload = application.report_history(args.task_id, retain_sensitive=args.retain_sensitive)
+            human = html_report(record, retain_sensitive=args.retain_sensitive) if args.format == "html" else json_report(record, retain_sensitive=args.retain_sensitive)
             _emit(payload, human, as_json=as_json)
             return EXIT_OK
     if args.command == "task" and args.task_command == "synthetic":
@@ -606,7 +625,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         message = _error_payload("policy", str(exc))
         print(message if as_json else f"mercury: policy: {exc}", file=sys.stderr)
         return EXIT_POLICY
-    except (CliError, HistoryError, ValueError) as exc:
+    except (CliError, HistoryError, ReportError, ValueError) as exc:
         message = _error_payload("input", str(exc))
         print(message if as_json else f"mercury: input: {exc}", file=sys.stderr)
         return EXIT_USAGE

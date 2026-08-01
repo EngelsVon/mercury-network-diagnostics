@@ -66,6 +66,18 @@ class FakeApplication:
         type(self).calls.append("paired")
         return result()
 
+    def history_list(self, *, limit: int):
+        type(self).calls.append("history_list")
+        return ()
+
+    def compare_history(self, left_task_id: str, right_task_id: str):
+        type(self).calls.append("compare_history")
+        return {"left_task_id": left_task_id, "right_task_id": right_task_id, "target": "203.0.113.1"}
+
+    def report_history(self, task_id: str):
+        type(self).calls.append("report_history")
+        return {"task_id": task_id, "result": {"target": "[redacted identifier]"}}
+
 
 class WebServerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -185,6 +197,17 @@ class WebServerTests(unittest.TestCase):
         self.assertIn('for="kind"', html)
         self.assertIn('src="/static/app.js" defer', html)
         self.assertNotIn("onclick=", html)
+
+    def test_history_routes_use_the_broker_facade_and_redact_by_default(self) -> None:
+        self.session()
+        status, _, raw = self.request("GET", "/api/history", headers={"Cookie": self.cookie})
+        self.assertEqual((status, json.loads(raw)), (200, {"tasks": []}))
+        status, _, raw = self.request("GET", "/api/history/compare?left=one&right=two", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)["target"], "[redacted identifier]")
+        status, _, raw = self.request("GET", "/api/history/one/report", headers={"Cookie": self.cookie})
+        self.assertEqual((status, json.loads(raw)["result"]["target"]), (200, "[redacted identifier]"))
+        self.assertEqual(FakeApplication.calls, ["history_list", "compare_history", "report_history"])
 
 
 if __name__ == "__main__":
