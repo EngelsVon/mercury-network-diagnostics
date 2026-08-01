@@ -76,7 +76,7 @@ class InstalledEntryPointTests(unittest.TestCase):
             self.assertEqual(len(wheels), 1)
 
             environment_path = root / "venv"
-            venv.EnvBuilder(with_pip=True).create(environment_path)
+            venv.EnvBuilder(with_pip=True, system_site_packages=True).create(environment_path)
             if os.name == "nt":
                 python = environment_path / "Scripts" / "python.exe"
                 console = environment_path / "Scripts" / "mercury.exe"
@@ -131,6 +131,8 @@ class InstalledEntryPointTests(unittest.TestCase):
             stable_cases = (
                 ("version", "--json"),
                 ("model", "--json"),
+                ("status", "--help"),
+                ("diagnose", "--help"),
                 ("--json", "plan"),
                 ("--json", "plan", "192.0.2.10", "--ports", "443"),
             )

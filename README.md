@@ -1,62 +1,71 @@
-# Mercury（墨丘利）
+# Mercury
 
-Mercury is an evidence-first network reachability diagnostic tool under active
-development. Its narrow purpose is to explain which endpoint, direction,
-layer, protocol, or port differs—not to replace Nmap, MTR, iperf3, or an LLDP
-daemon.
+Mercury is a local-first, evidence-first network diagnostics tool. It reports
+what was observed for selected endpoints and layers; it is not a scanner,
+topology oracle, or a replacement for Nmap, MTR, iperf3, or LLDP tooling.
 
-The current foundation release provides:
+## Installation
 
-- a versioned JSON evidence model with separate protocol evidence and semantic
-  disposition;
-- strict target/scope parsing, DNS answer revalidation, cost previews, and
-  non-bypassable work ceilings;
-- cancellable offline lifecycle verification with partial SQLite history;
-- one CLI entry point for schema, plan, lifecycle, and history inspection.
-
-Real network inventory and probes arrive in the next phases. The synthetic task
-never opens a network socket.
-
-## Development quick start
+Mercury supports CPython 3.11+ and has one runtime dependency, `psutil`.
 
 ```powershell
-python -m pip install -e .
-python -m mercury --help
-python -m mercury model --json
-python -m mercury plan 127.0.0.1 --ports 53,443 --json
-python -m mercury task synthetic --steps 5 --delay 0.01
-python -m unittest discover -s tests -v
+python -m pip install mercury-netdiag
+mercury --help
 ```
 
-For any non-loopback active plan, pass `--authorized` and an exact `--scope`.
-This is an attestation that you own the target or have permission to test it;
-Mercury cannot grant legal or organizational authority.
+For a checkout, use `python -m pip install -e .`.
 
-Full-port and custom UDP plans require digest-bound second confirmations before
-execution. “All packet kinds” is not finite and is intentionally unsupported.
-Budgets count logical attempt starts, Mercury-generated UDP datagrams, and
-application payload bytes. They do not claim to measure kernel retransmissions
-or exact on-wire framing.
+## Quick start
 
-## Evidence semantics
+`status` is passive and collects local host, interface, route, DNS, capability,
+and limitation evidence:
 
-Silence, timeout, refusal, reset, unreachable, unsupported, permission denied,
-and execution error are different observations. In particular, UDP or ICMP
-silence is inconclusive—not proof that a port is open, closed, or reachable.
+```powershell
+mercury status
+mercury status --json
+```
 
-Mercury does not label a gateway, ARP neighbor, or traceroute hop as a switch.
-Only direct evidence such as LLDP can identify adjacent infrastructure; when
-that evidence is unavailable, the correct answer is “not observable.”
+Run diagnosis only for endpoints you own or are authorized to test. Built-in
+profiles are immutable (`basic-v1` and `china-v1`); custom endpoints are exact
+repeatable `HOST:PORT` values, including `[::1]:443`.
 
-## Safety and privacy
+```powershell
+mercury diagnose --profile basic --authorized
+mercury diagnose --target example.internal:443 --target [::1]:443 --timeout 3 --authorized --json
+```
 
-- Active work is normalized, authorized, costed, and bounded before execution.
-- Local SQLite history is count/age bounded and uses a current-user data
-  directory; tokens, private keys, pairing secrets, and credential fields are
-  rejected from persistence.
-- Export redaction, mTLS peer mode, discovery, route analysis, and the WebUI are
-  scheduled work and are not claimed by this foundation release.
-- Tests use loopback and deterministic fakes; they do not scan public networks.
+Timeouts are finite and inclusive: `0.1..30` seconds. DNS results can change
+between planning and connection; Mercury rechecks the admitted numeric address
+and reports a scoped rejection rather than silently switching destinations.
 
-See `.planning/REQUIREMENTS.md` and `.planning/ROADMAP.md` for the verified
-scope and delivery plan.
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Passive status completed, or diagnosis health is `healthy` |
+| 1 | Diagnosis has explicit selected-endpoint failure evidence |
+| 2 | Invalid command input |
+| 3 | Authorization or scope policy rejected the operation |
+| 4 | Diagnosis is partial, mixed, silent, unavailable, or inconclusive |
+| 70 | Internal result-contract error |
+
+## Platform capabilities
+
+Windows, Linux, and macOS ordinary-user status collection reports each native
+adapter's available, unavailable, permission, or error state. Optional native
+ping/path tools degrade explicitly. A gateway, ARP/NDP neighbor, or first route
+hop is not an observed access switch: status states `Access switch: not
+observable` until direct LLDP or managed evidence exists.
+
+## Safety and limitations
+
+- Active work is normalized, authorized, admitted, rate-limited, and bounded
+  before it starts. Public profile use requires explicit authorization.
+- DNS, TCP, TLS, HTTP, native ping, and path observations retain separate
+  outcomes; silence and timeout are inconclusive, not success or failure.
+- Diagnosis conclusions cover only the selected endpoints and observed layers;
+  Mercury never makes a universal Internet or root-cause claim.
+- Tests use fakes and loopback only. They never resolve or connect to built-in
+  public profile targets.
+- SQLite history rejects credentials and secret material. Peer mode, discovery,
+  WebUI, reports, and release hardening remain future work.

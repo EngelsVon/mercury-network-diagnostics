@@ -19,7 +19,8 @@ from typing import Sequence
 from . import DB_SCHEMA_VERSION, MODEL_SCHEMA_VERSION, __version__
 from .codec import dumps_document, result_to_wire
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
-from .models import Disposition, EvidenceKind, TaskState
+from .app import MercuryApplication
+from .models import Disposition, EvidenceKind, Health, TaskResult, TaskState
 from .planner import (
     ABSOLUTE_CEILINGS,
     DEFAULT_LIMITS,
@@ -30,7 +31,8 @@ from .planner import (
     preview_plan,
 )
 from .policy import PolicyError, ScopeGrant, parse_target
-from .render import render_history, render_preview, render_result
+from .profiles import DiagnosisRequest
+from .render import render_diagnosis, render_history, render_preview, render_result, render_status
 from .tasks import SyntheticRunner, TaskService
 
 EXIT_OK = 0
@@ -125,6 +127,16 @@ def build_parser() -> argparse.ArgumentParser:
         "model", help="show evidence semantics and absolute ceilings"
     )
     _add_json_option(model_parser)
+
+    status_parser = subparsers.add_parser("status", help="collect passive local network facts")
+    _add_json_option(status_parser)
+
+    diagnose_parser = subparsers.add_parser("diagnose", help="run an authorized layered diagnosis")
+    diagnose_parser.add_argument("--profile", choices=("basic", "china"), default="basic")
+    diagnose_parser.add_argument("--target", action="append", default=[])
+    diagnose_parser.add_argument("--timeout", type=float, default=3.0)
+    diagnose_parser.add_argument("--authorized", action="store_true")
+    _add_json_option(diagnose_parser)
 
     plan_parser = subparsers.add_parser(
         "plan", help="canonicalize and cost an active plan without executing it"
@@ -341,6 +353,20 @@ async def _run_synthetic(
     return result_to_wire(result), render_result(result), exit_code
 
 
+def diagnosis_exit_code(result: TaskResult) -> int:
+    conclusions = [item for item in result.conclusions if item.id == "diagnosis-health"]
+    if len(conclusions) != 1:
+        raise RuntimeError("diagnosis-health conclusion contract violated")
+    exit_code = {
+        Health.HEALTHY: EXIT_OK,
+        Health.FAILED: EXIT_FAILED,
+        Health.PARTIAL: EXIT_PARTIAL,
+    }.get(conclusions[0].health)
+    if exit_code is None:
+        raise RuntimeError("diagnosis-health conclusion contract violated")
+    return exit_code
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     as_json = bool(getattr(args, "json", False))
     if args.command == "version":
@@ -360,6 +386,21 @@ def _dispatch(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
         return EXIT_OK
+    if args.command in {"status", "diagnose"}:
+        with HistoryStore(args.data_path) as history:
+            application = MercuryApplication(history=history)
+            if args.command == "status":
+                result = asyncio.run(application.status())
+                _emit(result_to_wire(result), render_status(result), as_json=as_json)
+                return EXIT_OK
+            request = DiagnosisRequest(
+                profile="custom" if args.target else args.profile,
+                targets=tuple(args.target), timeout_s=args.timeout,
+                authorized=args.authorized,
+            )
+            result = asyncio.run(application.diagnose(request))
+            _emit(result_to_wire(result), render_diagnosis(result), as_json=as_json)
+            return diagnosis_exit_code(result)
     if args.command == "plan":
         ports = _parse_ports(args.ports)
         transports = tuple(args.transports or ("tcp",))
@@ -459,5 +500,6 @@ __all__ = [
     "EXIT_USAGE",
     "MercuryArgumentParser",
     "build_parser",
+    "diagnosis_exit_code",
     "main",
 ]

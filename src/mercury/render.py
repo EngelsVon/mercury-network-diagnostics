@@ -40,6 +40,49 @@ def render_result(result: TaskResult) -> str:
     return "\n".join(lines)
 
 
+def render_status(result: TaskResult) -> str:
+    """Project only canonical passive inventory evidence for an operator."""
+    observations = result.observations
+    host = [item for item in observations if item.probe == "host_fact"]
+    interfaces = [item for item in observations if item.probe in {"interface", "interface_address"}]
+    routes = [item for item in observations if item.probe == "route"]
+    dns = [item for item in observations if item.probe == "dns_server"]
+    lines = ["Host"]
+    lines.extend(f"  {item.detail.get('field')}: {item.detail.get('value')}" for item in host)
+    lines.append("Interfaces")
+    lines.extend(f"  {item.detail}" for item in interfaces)
+    lines.append("Routes and default gateways")
+    lines.extend(f"  {item.detail}" for item in routes)
+    lines.append("DNS servers")
+    lines.extend(f"  {item.detail}" for item in dns)
+    lines.append("Capabilities and limitations")
+    lines.extend(f"  {item.name}: {item.state.value} ({item.source})" for item in result.capabilities)
+    lines.append("  Access switch: not observable (no_direct_lldp_or_managed_evidence)")
+    return "\n".join(lines)
+
+
+def render_diagnosis(result: TaskResult) -> str:
+    """Project the already-derived endpoint health without changing it."""
+    health = next((item for item in result.conclusions if item.id == "diagnosis-health"), None)
+    if health is None:
+        raise RuntimeError("diagnosis-health conclusion contract violated")
+    lines = [f"Diagnosis: {health.health.value}", f"Profile: {result.effective_config.profile}"]
+    lines.extend(f"Limitation: {item}" for item in health.limitations)
+    lines.append("Selected endpoint layers")
+    for item in result.observations:
+        if item.probe == "local_snapshot":
+            label = "local prerequisite"
+        else:
+            label = item.probe
+        detail = item.detail.get("category") or item.detail.get("status") or ""
+        lines.append(
+            f"  {item.target} | {label} | {item.disposition.value} | "
+            f"{item.duration_ms:.1f} ms | attempt {item.attempt} | {item.source} {detail}".rstrip()
+        )
+    lines.append("Supporting observations: " + ", ".join(health.observation_ids))
+    return "\n".join(lines)
+
+
 def render_preview(preview: PlanPreview) -> str:
     estimate = preview.estimate
     lines = [
@@ -86,5 +129,4 @@ def render_history(records: Iterable[HistoryRecord]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["render_history", "render_preview", "render_result"]
-
+__all__ = ["render_diagnosis", "render_history", "render_preview", "render_result", "render_status"]
