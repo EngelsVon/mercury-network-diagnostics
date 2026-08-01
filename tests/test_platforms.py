@@ -27,17 +27,6 @@ from mercury.platform.linux import (
     parse_resolv_conf,
     parse_routes as parse_linux_routes,
 )
-from mercury.platform.macos import (
-    MACOS_NETSTAT_V4_ARGV,
-    MACOS_NETSTAT_V6_ARGV,
-    MACOS_ROUTE_V4_ARGV,
-    MACOS_ROUTE_V6_ARGV,
-    MACOS_SCUTIL_DNS_ARGV,
-    collect_platform as collect_macos,
-    parse_netstat,
-    parse_route_get,
-    parse_scutil_dns,
-)
 from mercury.platform.windows import (
     WINDOWS_DNS_ARGV,
     WINDOWS_ROUTES_ARGV,
@@ -483,55 +472,11 @@ class LinuxAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.capabilities[-1].detail, "parse_error")
 
 
-class MacosAdapterTests(unittest.IsolatedAsyncioTestCase):
-    async def test_macos_fixtures_cover_defaults_and_scoped_supplemental_dns(self) -> None:
-        default = parse_route_get(fixture("macos", "route-v4.txt"), 4)
-        routes_v4 = parse_netstat(fixture("macos", "netstat-v4.txt"), 4)
-        routes_v6 = parse_netstat(fixture("macos", "netstat-v6.txt"), 6)
-        dns = parse_scutil_dns(fixture("macos", "scutil-dns.txt"))
-        self.assertTrue(default.is_default)
-        self.assertEqual(len(routes_v4), 2)
-        self.assertEqual(len(routes_v6), 2)
-        self.assertEqual(dns[1].scope_id, "en0")
-        self.assertEqual(dns[1].scoped_domain, "corp.example.test")
-        self.assertEqual(dns[1].configuration_state, "supplemental")
-
-        runner = FixtureRunner(
-            {
-                MACOS_ROUTE_V4_ARGV: command_result(MACOS_ROUTE_V4_ARGV, stdout=fixture("macos", "route-v4.txt")),
-                MACOS_ROUTE_V6_ARGV: command_result(MACOS_ROUTE_V6_ARGV, outcome=CommandOutcome.NONZERO),
-                MACOS_NETSTAT_V4_ARGV: command_result(MACOS_NETSTAT_V4_ARGV, stdout=fixture("macos", "netstat-v4.txt")),
-                MACOS_NETSTAT_V6_ARGV: command_result(MACOS_NETSTAT_V6_ARGV, stdout=fixture("macos", "netstat-v6.txt")),
-                MACOS_SCUTIL_DNS_ARGV: command_result(MACOS_SCUTIL_DNS_ARGV, stdout=fixture("macos", "scutil-dns.txt")),
-            }
-        )
-        result = await collect_macos(runner=runner)
-        self.assertIn(default, result.routes)
-        self.assertNotEqual(result.capabilities[1].state, CapabilityState.AVAILABLE)
-        self.assertEqual(result.dns_servers, dns)
-
-    async def test_macos_malformed_dns_does_not_erase_routes(self) -> None:
-        runner = FixtureRunner(
-            {
-                MACOS_ROUTE_V4_ARGV: command_result(MACOS_ROUTE_V4_ARGV, stdout=fixture("macos", "route-v4.txt")),
-                MACOS_ROUTE_V6_ARGV: command_result(MACOS_ROUTE_V6_ARGV, outcome=CommandOutcome.MISSING_TOOL),
-                MACOS_NETSTAT_V4_ARGV: command_result(MACOS_NETSTAT_V4_ARGV, stdout=fixture("macos", "netstat-v4.txt")),
-                MACOS_NETSTAT_V6_ARGV: command_result(MACOS_NETSTAT_V6_ARGV, stdout=fixture("macos", "netstat-v6.txt")),
-                MACOS_SCUTIL_DNS_ARGV: command_result(MACOS_SCUTIL_DNS_ARGV, stdout="resolver #1\n  if_index : 1 (lo0)\n"),
-            }
-        )
-        result = await collect_macos(runner=runner)
-        self.assertGreater(len(result.routes), 0)
-        self.assertEqual(result.dns_servers, ())
-        self.assertEqual(result.capabilities[-1].detail, "parse_error")
-
-
 class DispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_direct_dispatch_selects_only_the_matching_collector(self) -> None:
         for platform_name, selected in (
             ("win32", "windows"),
             ("linux", "linux"),
-            ("darwin", "macos"),
         ):
             calls: list[str] = []
 
@@ -543,28 +488,25 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
                 calls.append("linux")
                 return PlatformRecords()
 
-            async def macos(**kwargs: object) -> PlatformRecords:
-                calls.append("macos")
-                return PlatformRecords()
-
             with self.subTest(platform_name=platform_name):
                 result = await collect_platform(
                     platform_name=platform_name,
                     windows_collector=windows,
                     linux_collector=linux,
-                    macos_collector=macos,
                 )
                 self.assertEqual(result, PlatformRecords())
                 self.assertEqual(calls, [selected])
 
     async def test_unsupported_platform_is_an_explicit_capability(self) -> None:
-        result = await collect_platform(platform_name="plan9")
-        self.assertEqual(len(result.capabilities), 1)
-        self.assertEqual(
-            result.capabilities[0].state,
-            CapabilityState.UNSUPPORTED,
-        )
-        self.assertIn("plan9", result.capabilities[0].source)
+        for platform_name in ("darwin", "plan9"):
+            with self.subTest(platform_name=platform_name):
+                result = await collect_platform(platform_name=platform_name)
+                self.assertEqual(len(result.capabilities), 1)
+                self.assertEqual(
+                    result.capabilities[0].state,
+                    CapabilityState.UNSUPPORTED,
+                )
+                self.assertIn(platform_name, result.capabilities[0].source)
 
 
 class _Transport:

@@ -1,4 +1,4 @@
-"""Direct dispatch for Mercury's three built-in platform collectors."""
+"""Direct dispatch for Mercury's Windows and Linux platform collectors."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ async def collect_platform(
     platform_name: str | None = None,
     windows_collector: PlatformCollector | None = None,
     linux_collector: PlatformCollector | None = None,
-    macos_collector: PlatformCollector | None = None,
     **kwargs: object,
 ) -> PlatformRecords:
     """Call one concrete adapter selected directly from ``sys.platform``."""
@@ -33,18 +32,16 @@ async def collect_platform(
             from .linux import collect_platform as linux_collector
 
         return await linux_collector(**kwargs)
-    if selected == "darwin":
-        if macos_collector is None:
-            from .macos import collect_platform as macos_collector
-
-        return await macos_collector(**kwargs)
     return PlatformRecords(
         capabilities=(
             Capability(
                 name="platform_inventory",
                 state=CapabilityState.UNSUPPORTED,
                 source=f"sys.platform:{selected}",
-                detail="Mercury supports win32, linux, and darwin adapters",
+                detail=(
+                    "Mercury supports Windows and Ubuntu; "
+                    "this platform has no inventory adapter"
+                ),
             ),
         )
     )

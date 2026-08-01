@@ -65,7 +65,7 @@
 ### Packaging, compatibility, and verification
 
 - [ ] **PACK-01**: 用户从同一个 Python wheel/安装目录获得 `mercury` CLI、agent 和 WebUI 静态资源。
-- [ ] **PACK-02**: Windows 和 Ubuntu 普通用户都能运行 inventory、TCP/TLS/HTTP 和 WebUI 基线，并看到特权/工具缺失的降级说明；macOS 不属于 v1 发布目标。
+- [ ] **PACK-02**: Windows 和 Ubuntu 普通用户都能运行 inventory、TCP/TLS/HTTP 和 WebUI 基线，并看到特权/工具缺失的降级说明；macOS 及其他平台明确报告为 unsupported，不属于 v1 发布目标。
 - [x] **TEST-01**: 维护者能用标准库测试运行证据模型、目标策略、预算、状态迁移、历史保留及取消逻辑。
 - [ ] **TEST-02**: 维护者能在受控环境验证成功、拒绝、超时/丢弃、UDP 静默、DNS 失败、延迟和不对称路径，而 CI 不会扫描未授权公网。
 - [ ] **TEST-03**: 维护者能用标准库测试平台解析器、Web API 安全边界、peer mTLS/token 鉴权、重放/越权拒绝和双端证据关联。

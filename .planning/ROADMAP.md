@@ -73,7 +73,7 @@ reachability from CLI/JSON without false topology or protocol certainty.
 Plans:
 
 **Wave 1**
-- [x] 02-01: Implement psutil inventory and minimal Windows/Ubuntu route and DNS adapters; retain macOS only as unsupported/non-release compatibility code.
+- [x] 02-01: Implement psutil inventory and minimal Windows/Ubuntu route and DNS adapters; report macOS and other platforms as explicitly unsupported.
 - [x] 02-02: Upgrade the canonical schema, sparse probe identity, exact admission/binding, per-step budgets, history projection and terminal finalization.
 
 **Wave 2** *(blocked on Wave 1 completion)*

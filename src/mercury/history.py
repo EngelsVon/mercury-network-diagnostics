@@ -143,8 +143,6 @@ def default_history_path() -> Path:
     if sys.platform == "win32":
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
         return root / "Mercury" / "history.sqlite3"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Mercury" / "history.sqlite3"
     root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return root / "mercury" / "history.sqlite3"
 

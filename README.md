@@ -51,11 +51,13 @@ and reports a scoped rejection rather than silently switching destinations.
 
 ## Platform capabilities
 
-Windows and Ubuntu ordinary-user status collection reports each native adapter's
-available, unavailable, permission, or error state. Optional native ping/path
-tools degrade explicitly. A gateway, ARP/NDP neighbor, or first route hop is
-not an observed access switch: status states `Access switch: not observable`
-until direct LLDP or managed evidence exists. macOS is not a v1 release target.
+Windows and Ubuntu are Mercury's supported platforms. Ordinary-user status
+collection reports each native adapter's available, unavailable, permission, or
+error state. Optional native ping/path tools degrade explicitly. A gateway,
+ARP/NDP neighbor, or first route hop is not an observed access switch: status
+states `Access switch: not observable` until direct LLDP or managed evidence
+exists. Other platforms, including macOS, return explicit unsupported capability
+evidence and are not supported release targets.
 
 ## Safety and limitations
 

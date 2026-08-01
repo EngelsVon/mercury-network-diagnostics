@@ -1,6 +1,0 @@
-Routing tables
-
-Internet6:
-Destination                             Gateway                         Flags               Netif Expire
-default                                 fe80::1%en0                     UGSc                en0
-fe80::%en0/64                           link#12                         Uc                  en0
