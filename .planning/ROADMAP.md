@@ -77,7 +77,7 @@ Plans:
 - [x] 02-02: Upgrade the canonical schema, sparse probe identity, exact admission/binding, per-step budgets, history projection and terminal finalization.
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 02-03: Implement immutable basic/China/custom profiles, bounded DNS/TCP/TLS/HTTP/native probes and endpoint-scoped diagnosis.
+- [x] 02-03: Implement immutable basic/China/custom profiles, bounded DNS/TCP/TLS/HTTP/native probes and endpoint-scoped diagnosis.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 02-04: Add the shared application facade, `status`/`diagnose` projections, stable exits, controlled smoke, installation parity and documentation.
@@ -189,7 +189,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Evidence and Safety Foundation | 3/3 | Complete | 2026-07-30 |
-| 2. Local Snapshot and Layered Diagnosis | 2/4 | In progress | 2026-08-01 |
+| 2. Local Snapshot and Layered Diagnosis | 3/4 | In progress | 2026-08-01 |
 | 3. Authenticated Paired Differential Diagnostics | 0/3 | Not started | - |
 | 4. Safe Discovery, Topology Evidence, and Routes | 0/2 | Not started | - |
 | 5. WebUI, Reports, and Release Hardening | 0/3 | Not started | - |

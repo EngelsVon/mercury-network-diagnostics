@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 02-02 complete; resume Plan 02-03 profiles and protocol runners
+stopped_at: Phase 02-03 complete; resume Plan 02-04 application facade and CLI projections
 last_updated: "2026-07-31T12:00:00Z"
-last_activity: 2026-08-01 -- Phase 02-02 schema, sparse-plan and task-boundary work committed
+last_activity: 2026-08-01 -- Phase 02-03 immutable profiles, bounded probes and closed health classification completed
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 15
-  completed_plans: 5
-  percent: 33
+  completed_plans: 6
+  percent: 40
 ---
 
 # Project State
@@ -27,17 +27,17 @@ See: `.planning/PROJECT.md` (updated 2026-07-30)
 
 Phase: 2 of 5 (Local Snapshot and Layered Diagnosis)
 
-Plan: 2 of 4 in current phase
-Status: Plan 02-02 complete; next Plan 02-03
-Last activity: 2026-08-01 -- Phase 02-02 schema, sparse plan and task-boundary work committed
+Plan: 3 of 4 in current phase
+Status: Plan 02-03 complete; next Plan 02-04
+Last activity: 2026-08-01 -- Phase 02-03 immutable profiles, bounded probes and closed health classification completed
 
-Progress: [#####-----] 50%
+Progress: [########--] 75%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 5
+- Total plans completed: 6
 - Average duration: not separately tracked (combined Phase 1 execution)
 - Total execution time: approximately 2.8 hours
 
@@ -47,8 +47,8 @@ Progress: [#####-----] 50%
 |-------|-------|-------|----------|
 | Phase 1 | 3 | approximately 2.8 hours | combined execution |
 
-**Recent Trend:** Plan 02-02 completed with strict schema vocabulary, sparse
-probe admission, bound evidence, and 149 hermetic tests.
+**Recent Trend:** Plan 02-03 completed with immutable diagnosis profiles,
+bounded layer-specific probes, closed service-owned health, and 180 hermetic tests.
 
 ## Accumulated Context
 
@@ -94,6 +94,6 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-08-01
-Stopped at: Phase 02-02 complete; resume Plan 02-03 profiles and protocol runners
+Stopped at: Phase 02-03 complete; resume Plan 02-04 application facade and CLI projections
 
-Resume file: `.planning/phases/02-local-snapshot-and-layered-diagnosis/02-03-PLAN.md`
+Resume file: `.planning/phases/02-local-snapshot-and-layered-diagnosis/02-04-PLAN.md`
