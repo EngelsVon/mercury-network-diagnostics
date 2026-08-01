@@ -72,3 +72,11 @@ The automated gate is loopback-only. A later, explicit opt-in smoke may use only
 
 - Confirmed all six implementation/test files exist.
 - Confirmed commits `3d26fd0`, `6cef689`, and `3720330` exist in Git history.
+
+## Final Verification Addendum (2026-08-02)
+
+- `uv run --no-sync python -m unittest discover -s tests -q` passed: 212 tests, 3 skips.
+- `uv run --no-sync python -m compileall -q src tests` and `uvx ruff check --select E4,E7,E9,F src tests` passed.
+- A user-authorized Windows (`172.26.200.14`) to Ubuntu (`172.27.20.195`) smoke used temporary CA-signed dual-purpose mTLS certificates, mutual SHA-256 pins and a separate token, without unsafe-development mode. It produced direct authenticated-control and TCP/UDP send, arrival and reply evidence.
+- The smoke found and fixed a deadline race: data-plane leases retain their original finite expiry, while a fixed two-second control-only grace permits terminal result collection and cancellation. A regression test covers this path.
+- Both endpoints' temporary private keys, certificates, token, copied source, debug data and the remote agent were removed after the test.

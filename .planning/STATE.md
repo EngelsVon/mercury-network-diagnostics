@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 03 context gathered; research and planning in progress
-last_updated: "2026-08-01T15:20:07.837Z"
-last_activity: 2026-08-01 -- Phase 03 execution started
+stopped_at: Phase 03 complete; Phase 04 ready for planning
+last_updated: "2026-08-02T02:25:00Z"
+last_activity: 2026-08-02 -- Phase 03 completed with uv verification and a controlled Windows/Ubuntu mTLS smoke
 progress:
   total_phases: 5
-  completed_phases: 2
-  total_plans: 10
-  completed_plans: 7
-  percent: 70
+  completed_phases: 3
+  total_plans: 15
+  completed_plans: 10
+  percent: 67
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-07-30)
 
 **Core value:** 在用户明确授权的网络范围内，以安全、可解释且可复现的方式定位节点间可达性故障及其网络层原因。  
-**Current focus:** Phase 03 — authenticated-paired-differential-diagnostics
+**Current focus:** Phase 04 — safe-discovery-topology-and-routes
 
 ## Current Position
 
-Phase: 03 (authenticated-paired-differential-diagnostics) — EXECUTING
+Phase: 04 (safe-discovery-topology-and-routes) — READY TO PLAN
 
-Plan: 1 of 3
-Status: Executing Phase 03
-Last activity: 2026-08-01 -- Phase 03 execution started
+Plan: not yet planned
+Status: Phase 03 complete; Phase 04 is the next roadmap phase
+Last activity: 2026-08-02 -- controlled strict-mTLS TCP/UDP smoke passed
 
-Progress: [#########-] 47%
+Progress: [#######---] 67%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 7
+- Total plans completed: 10
 - Average duration: not separately tracked (combined Phase 1 execution)
 - Total execution time: approximately 2.8 hours
 
@@ -47,8 +47,9 @@ Progress: [#########-] 47%
 |-------|-------|-------|----------|
 | Phase 1 | 3 | approximately 2.8 hours | combined execution |
 
-**Recent Trend:** Phase 02 completed with a shared CLI facade, controlled
-loopback smoke, and Windows/Ubuntu installed-wheel passive-status artifacts.
+**Recent Trend:** Phase 03 completed with strict mTLS, token and pinned peer
+control, finite source-bound TCP/UDP leases, and a Windows/Ubuntu controlled
+smoke that produced TCP/UDP arrival and reply evidence.
 
 ## Accumulated Context
 

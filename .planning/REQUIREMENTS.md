@@ -18,7 +18,7 @@
 - [x] **SAFE-02**: 系统对每个任务强制执行主机数、端口数、逻辑尝试、Mercury 生成的 UDP 数据报/应用载荷字节、全局与每目标 attempt-start 速率、并发数、持续时间、事件数和输出大小的不可绕过绝对上限；绝对上限至少允许单主机 1–65535 TCP 检查，但不允许多维无界笛卡尔积，且不得声称精确计量内核重传或线上帧开销。
 - [x] **SAFE-03**: 任何非 loopback 主动任务都需要用户显式声明已获目标授权；全 TCP 端口模式和自定义 UDP 载荷还分别需要独立危险确认。
 - [x] **SAFE-04**: 用户输入的 IPv4、IPv6、CIDR 和主机名在连接时按解析后的每个地址重新接受范围策略检查。
-- [ ] **SAFE-05**: 非 loopback 的 Mercury agent 在没有 TLS 证书、私钥、受信客户端证书和访问令牌时拒绝启动；仅显式开发覆盖可关闭 mTLS，且必须产生醒目审计警告。
+- [x] **SAFE-05**: 非 loopback 的 Mercury agent 在没有 TLS 证书、私钥、受信客户端证书和访问令牌时拒绝启动；仅显式开发覆盖可关闭 mTLS，且必须产生醒目审计警告。
 
 ### Local network inventory
 
@@ -45,12 +45,12 @@
 
 ### Paired Mercury diagnostics
 
-- [ ] **PEER-01**: 运维者可以启动带协议版本、能力和审计信息的 Mercury agent；远程控制默认使用 mTLS 与已配置证书指纹识别两端，并以可轮换 bearer token 作为独立授权因子；token/私钥不得进入 URL、结果、历史或日志。
-- [ ] **PEER-02**: 运维者可显式配置 agent 为单个有界计划临时监听的 TCP/UDP 测试端口，并查看每个端口成功、占用、过期或权限不足状态。
-- [ ] **PEER-03**: 用户输入另一 Mercury agent 的 IP/主机名后，可以验证身份/能力并协商一个角色互换的固定分层计划，比较两端本机快照、DNS、到对端的路径、TCP/UDP 以及允许列表内的 TLS/HTTP 证据。
-- [ ] **PEER-04**: 用户能看到 A→B 与 B→A 的发送、到达、回复和接收关联证据及分层差异矩阵，从而区分端点、方向、协议/端口、解析和路径差异；每个解释都链接原始观察。
-- [ ] **PEER-05**: 用户可请求 agent 只向当前已认证控制连接的源 IP 执行有界反向 TCP 检查；agent 不接受任意第三方扫描目标。
-- [ ] **PEER-06**: 高级 UDP 测试只允许内置有限载荷 profile 或不超过 1400 字节的显式载荷，受包/字节/速率预算与独立危险确认约束，并清楚声明“所有包种”不可穷举。
+- [x] **PEER-01**: 运维者可以启动带协议版本、能力和审计信息的 Mercury agent；远程控制默认使用 mTLS 与已配置证书指纹识别两端，并以可轮换 bearer token 作为独立授权因子；token/私钥不得进入 URL、结果、历史或日志。
+- [x] **PEER-02**: 运维者可显式配置 agent 为单个有界计划临时监听的 TCP/UDP 测试端口，并查看每个端口成功、占用、过期或权限不足状态。
+- [x] **PEER-03**: 用户输入另一 Mercury agent 的 IP/主机名后，可以验证身份/能力并协商一个角色互换的固定分层计划，比较两端本机快照、DNS、到对端的路径、TCP/UDP 以及允许列表内的 TLS/HTTP 证据。
+- [x] **PEER-04**: 用户能看到 A→B 与 B→A 的发送、到达、回复和接收关联证据及分层差异矩阵，从而区分端点、方向、协议/端口、解析和路径差异；每个解释都链接原始观察。
+- [x] **PEER-05**: 用户可请求 agent 只向当前已认证控制连接的源 IP 执行有界反向 TCP 检查；agent 不接受任意第三方扫描目标。
+- [x] **PEER-06**: 高级 UDP 测试只允许内置有限载荷 profile 或不超过 1400 字节的显式载荷，受包/字节/速率预算与独立危险确认约束，并清楚声明“所有包种”不可穷举。
 
 ### WebUI, history, and reports
 
@@ -115,7 +115,7 @@
 | SAFE-02 | Phase 1 | Complete |
 | SAFE-03 | Phase 1 | Complete |
 | SAFE-04 | Phase 1 | Complete |
-| SAFE-05 | Phase 3 | Pending |
+| SAFE-05 | Phase 3 | Complete |
 | INVT-01 | Phase 2 | Complete |
 | INVT-02 | Phase 2 | Complete |
 | INVT-03 | Phase 2 | Complete |
@@ -130,12 +130,12 @@
 | DISC-03 | Phase 4 | Pending |
 | DISC-04 | Phase 4 | Pending |
 | DISC-05 | Phase 4 | Pending |
-| PEER-01 | Phase 3 | Pending |
-| PEER-02 | Phase 3 | Pending |
-| PEER-03 | Phase 3 | Pending |
-| PEER-04 | Phase 3 | Pending |
-| PEER-05 | Phase 3 | Pending |
-| PEER-06 | Phase 3 | Pending |
+| PEER-01 | Phase 3 | Complete |
+| PEER-02 | Phase 3 | Complete |
+| PEER-03 | Phase 3 | Complete |
+| PEER-04 | Phase 3 | Complete |
+| PEER-05 | Phase 3 | Complete |
+| PEER-06 | Phase 3 | Complete |
 | WEB-01 | Phase 5 | Pending |
 | WEB-02 | Phase 5 | Pending |
 | WEB-03 | Phase 5 | Pending |

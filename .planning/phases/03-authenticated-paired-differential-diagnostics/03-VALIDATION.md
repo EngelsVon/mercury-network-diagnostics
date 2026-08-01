@@ -1,9 +1,9 @@
 ---
 phase: 03
 slug: authenticated-paired-differential-diagnostics
-status: ready
+status: complete
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-08-01
 ---
 
@@ -56,4 +56,4 @@ created: 2026-08-01
 - [x] Feedback latency target is below 60 seconds.
 - [x] `nyquist_compliant: true` is set in frontmatter.
 
-**Approval:** planned 2026-08-01
+**Approval:** completed 2026-08-02 with uv-managed Windows verification and a user-authorized Ubuntu mTLS smoke.
