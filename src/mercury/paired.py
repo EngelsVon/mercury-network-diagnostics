@@ -10,15 +10,17 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import struct
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .models import (
     Confidence,
+    Conclusion,
     Direction,
     Disposition,
     EvidenceKind,
+    Health,
     Observation,
     TaskResult,
     utc_now,
@@ -67,6 +69,51 @@ class PairedMatrixRow:
     confidence: Confidence
     observation_ids: tuple[str, ...]
     limitations: tuple[str, ...]
+
+
+class PairedRunner:
+    """Add one evidence-cited paired-health conclusion to a shared runner.
+
+    The supplied role runner is responsible for the admitted plan actions; this
+    wrapper neither selects a destination nor creates an additional task or
+    accounting system.  It is deliberately injectable so the authenticated
+    control composition can run the exact same object on each endpoint.
+    """
+
+    def __init__(self, role_runner: Callable[[TaskContext], Awaitable[None]]) -> None:
+        self._role_runner = role_runner
+
+    async def __call__(self, context: TaskContext) -> None:
+        await self._role_runner(context)
+        observations = tuple(
+            item for item in context.observations
+            if "paired_endpoint" in item.detail
+        )
+        if not observations:
+            raise PairedError("paired runner produced no endpoint-labelled evidence")
+        dispositions = {item.disposition for item in observations}
+        if dispositions == {Disposition.POSITIVE}:
+            health, confidence, summary, limitations = (
+                Health.HEALTHY, Confidence.HIGH,
+                "All paired observations are direct positive evidence.", (),
+            )
+        elif Disposition.NEGATIVE in dispositions:
+            health, confidence, summary, limitations = (
+                Health.FAILED, Confidence.HIGH,
+                "Paired observations include a direct negative outcome.", (),
+            )
+        else:
+            health, confidence, summary, limitations = (
+                Health.PARTIAL, Confidence.LOW,
+                "One or more paired observations are inconclusive; silence is not a cause.",
+                ("DNS, timeout, and UDP silence do not identify a firewall, loss, route, gateway, or switch.",),
+            )
+        context.add_conclusion(Conclusion(
+            id="paired-health", title="Paired directional health", summary=summary,
+            health=health, confidence=confidence,
+            observation_ids=tuple(item.id for item in observations),
+            limitations=limitations,
+        ))
 
 
 def paired_matrix(result: TaskResult) -> tuple[PairedMatrixRow, ...]:
@@ -443,6 +490,6 @@ class _LeaseDatagram(asyncio.DatagramProtocol):
 
 __all__ = [
     "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
-    "PairedMatrixRow", "PairedRequest", "paired_matrix",
+    "PairedMatrixRow", "PairedRequest", "PairedRunner", "paired_matrix",
     "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

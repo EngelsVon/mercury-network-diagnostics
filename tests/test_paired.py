@@ -16,6 +16,7 @@ from mercury.paired import (
     PairedError,
     PairedLease,
     PairedListenerService,
+    PairedRunner,
     encode_tcp_tag,
     encode_udp_tag,
     is_valid_udp_tag,
@@ -260,9 +261,12 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
         service = TaskService(history)
 
         async def runner(context: TaskContext) -> None:
-            listener = PairedListenerService(lease, context=context)
-            await listener.start()
-            await listener.stop()
+            async def role(inner: TaskContext) -> None:
+                listener = PairedListenerService(lease, context=inner)
+                await listener.start()
+                await listener.stop()
+
+            await PairedRunner(role)(context)
 
         result = await service.run(lease.plan, runner, task_kind="paired")
         rows = paired_matrix(result)
@@ -270,6 +274,7 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row.direction for row in rows}, {"A→B"})
         self.assertTrue(all(row.observation_ids for row in rows))
         self.assertTrue(any("silence is inconclusive" in row.limitations[0] for row in rows))
+        self.assertEqual(result.conclusions[-2].id, "paired-health")
 
 
 def service_token():
