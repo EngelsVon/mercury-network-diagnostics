@@ -56,7 +56,7 @@ reachability from CLI/JSON without false topology or protocol certainty.
 **UI hint**: no  
 **Success Criteria**:
 
-1. On Windows/Linux/macOS, `mercury status` reports host, interfaces, routes,
+1. On Windows and Ubuntu, `mercury status` reports host, interfaces, routes,
    DNS and explicit capability/degradation evidence.
 2. Gateway and locally observed facts retain their provenance; the output
    explicitly says an access switch is not observable until Phase 4 supplies
@@ -73,7 +73,7 @@ reachability from CLI/JSON without false topology or protocol certainty.
 Plans:
 
 **Wave 1**
-- [x] 02-01: Implement psutil inventory and minimal Windows/Linux/macOS route and DNS adapters.
+- [x] 02-01: Implement psutil inventory and minimal Windows/Ubuntu route and DNS adapters; retain macOS only as unsupported/non-release compatibility code.
 - [x] 02-02: Upgrade the canonical schema, sparse probe identity, exact admission/binding, per-step budgets, history projection and terminal finalization.
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -165,7 +165,7 @@ inspect history/reports and install a verified cross-platform v1 release.
 2. CLI/WebUI history opens completed/partial tasks, compares two compatible
    runs, and exports default-redacted JSON or self-contained HTML without
    leaking tokens.
-3. Ordinary-user smoke tests pass on Windows/Linux/macOS with explicit
+3. Ordinary-user smoke tests pass on Windows/Ubuntu with explicit
    capability degradation; controlled tests cover success, refusal, silence,
    DNS failure, delay and asymmetric direction without public scanning.
 4. A clean user can install one package containing CLI, agent and Web assets,

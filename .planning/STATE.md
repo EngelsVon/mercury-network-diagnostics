@@ -79,7 +79,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- Validate Windows/Linux/macOS route, DNS and neighbor adapters with real fixtures.
+- Validate Windows/Ubuntu route, DNS and neighbor adapters with real fixtures; macOS is not a v1 release target.
 - Validate two-machine certificate setup before calling peer mode easy.
 - Validate product value with real campus/enterprise incidents before adding breadth.
 

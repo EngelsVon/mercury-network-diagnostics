@@ -42,7 +42,9 @@ trigger.
 
 ## Stack
 
-- CPython 3.11+; develop/test on the available 3.13 interpreter.
+- CPython 3.11+; develop/test on the available 3.13 interpreter. v1 support
+  targets Windows and Ubuntu; other platforms may report unsupported capability
+  evidence but are not release targets.
 - One runtime dependency: `psutil`.
 - Prefer `argparse`, `asyncio`, `socket`, `ssl`, `http.server`, `sqlite3`,
   `ipaddress`, `subprocess`, `dataclasses`, `json` and `importlib.resources`.
