@@ -43,6 +43,7 @@ class FoundationContractTests(unittest.TestCase):
                 "max_duration_s",
                 "max_events",
                 "max_output_bytes",
+                "max_logical_packets",
             },
         )
         self.assertEqual(ABSOLUTE_CEILINGS.max_ports, 65_535)

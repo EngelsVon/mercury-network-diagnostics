@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from . import MODEL_SCHEMA_VERSION
 from .codec import dumps_document
@@ -22,6 +23,7 @@ from .policy import (
     recheck_resolution,
     resolve_for_plan,
 )
+from .models import ProbeKind
 
 
 class BudgetError(ValueError):
@@ -50,6 +52,7 @@ class BudgetLimits:
     max_duration_s: int
     max_events: int
     max_output_bytes: int
+    max_logical_packets: int = 10_000
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -86,6 +89,7 @@ ABSOLUTE_CEILINGS = BudgetLimits(
     max_duration_s=3_600,
     max_events=100_000,
     max_output_bytes=64 * 1024 * 1024,
+    max_logical_packets=200_000,
 )
 
 DEFAULT_LIMITS = BudgetLimits(
@@ -100,6 +104,7 @@ DEFAULT_LIMITS = BudgetLimits(
     max_duration_s=300,
     max_events=10_000,
     max_output_bytes=8 * 1024 * 1024,
+    max_logical_packets=10_000,
 )
 
 
@@ -116,6 +121,7 @@ class WorkEstimate:
     output_bytes: int
     global_attempt_start_rate: int
     target_attempt_start_rate: int
+    logical_packets: int = 0
 
     def __post_init__(self) -> None:
         for item in fields(self):
@@ -124,7 +130,6 @@ class WorkEstimate:
                 raise BudgetError(f"{item.name} must be a non-negative integer")
         for name in (
             "hosts",
-            "ports",
             "logical_attempts",
             "concurrency",
             "worst_case_duration_s",
@@ -195,56 +200,83 @@ class StepCost:
     logical_attempts: int
     generated_datagrams: int
     application_bytes: int
+    logical_packets: int = 0
+    max_observations: int = 1
+    max_capabilities: int = 0
+    max_conclusions: int = 0
+    max_errors: int = 0
+    max_output_bytes: int = 512
 
     def __post_init__(self) -> None:
         if type(self.logical_attempts) is not int or self.logical_attempts != 1:
             raise BudgetError("step logical_attempts must equal one")
-        for name in ("generated_datagrams", "application_bytes"):
+        for name in (
+            "generated_datagrams", "application_bytes", "logical_packets",
+            "max_capabilities", "max_conclusions", "max_errors",
+        ):
             value = getattr(self, name)
             if type(value) is not int or value < 0:
                 raise BudgetError(f"step {name} must be a non-negative integer")
+        for name in ("max_observations", "max_output_bytes"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise BudgetError(f"step {name} must be a positive integer")
 
     def to_wire(self) -> dict[str, int]:
         return {
             "logical_attempts": self.logical_attempts,
             "generated_datagrams": self.generated_datagrams,
             "application_bytes": self.application_bytes,
+            "logical_packets": self.logical_packets,
+            "max_observations": self.max_observations,
+            "max_capabilities": self.max_capabilities,
+            "max_conclusions": self.max_conclusions,
+            "max_errors": self.max_errors,
+            "max_output_bytes": self.max_output_bytes,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ProbeStep:
     id: str
+    probe_kind: ProbeKind
     target: str
-    address: str
+    address: str | None
     scope_id: str | None
-    port: int
-    transport: Transport
+    port: int | None
+    transport: Transport | None
     attempt: int
     source_hostname: str | None
     resolution_slot: int | None
     payload: PayloadMetadata
     cost: StepCost
+    server_name: str | None = None
+    http_scheme: str | None = None
+    max_hops: int | None = None
+    timeout_s: float = 3.0
+    required: bool = True
 
     def __post_init__(self) -> None:
         if type(self.id) is not str or not re.fullmatch(r"step-[0-9a-f]{64}", self.id):
             raise BudgetError("step id must be a canonical SHA-256 identifier")
+        if type(self.probe_kind) is not ProbeKind:
+            raise BudgetError("step probe_kind must be ProbeKind")
         if type(self.target) is not str:
             raise BudgetError("step target must be text")
         canonical_target = normalize_targets((self.target,))[0]
         if canonical_target.canonical != self.target:
             raise BudgetError("step target is not canonical")
-        if type(self.address) is not str:
-            raise BudgetError("step address must be text")
-        address_target = normalize_targets((self.address,))[0]
-        if address_target.kind is not TargetKind.ADDRESS:
-            raise BudgetError("step address must be a concrete address")
-        if address_target.scope_id != self.scope_id:
-            raise BudgetError("step scope ID does not match its address")
-        if type(self.port) is not int or not 1 <= self.port <= 65_535:
-            raise BudgetError("step port is invalid")
-        if type(self.transport) is not Transport:
-            raise BudgetError("step transport must be Transport")
+        address_target = None
+        if self.address is not None:
+            if type(self.address) is not str:
+                raise BudgetError("step address must be text")
+            address_target = normalize_targets((self.address,))[0]
+            if address_target.kind is not TargetKind.ADDRESS:
+                raise BudgetError("step address must be a concrete address")
+            if address_target.scope_id != self.scope_id:
+                raise BudgetError("step scope ID does not match its address")
+        elif self.scope_id is not None:
+            raise BudgetError("addressless step cannot have a scope ID")
         if type(self.attempt) is not int or not 1 <= self.attempt <= 100:
             raise BudgetError("step attempt is invalid")
         if self.source_hostname is not None:
@@ -257,6 +289,53 @@ class ProbeStep:
                 raise BudgetError("step hostname resolution metadata is invalid")
         elif self.resolution_slot is not None:
             raise BudgetError("non-hostname step cannot have a resolution slot")
+        if (
+            type(self.timeout_s) not in (int, float)
+            or not math.isfinite(float(self.timeout_s))
+            or not 0.1 <= float(self.timeout_s) <= 30.0
+        ):
+            raise BudgetError("step timeout_s must be finite within 0.1..30")
+        object.__setattr__(self, "timeout_s", float(self.timeout_s))
+        if type(self.required) is not bool:
+            raise BudgetError("step required must be a boolean")
+        ported = {
+            ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE,
+            ProbeKind.TLS_HANDSHAKE, ProbeKind.HTTP_EXCHANGE,
+        }
+        if self.probe_kind in ported:
+            if address_target is None or type(self.port) is not int or not 1 <= self.port <= 65_535:
+                raise BudgetError("ported step requires a concrete address and port")
+            expected = Transport.UDP if self.probe_kind is ProbeKind.UDP_EXCHANGE else Transport.TCP
+            if self.transport is not expected:
+                raise BudgetError("step transport does not match probe kind")
+        else:
+            if self.port is not None or self.transport is not None:
+                raise BudgetError("non-port probe cannot claim port or transport")
+        if self.probe_kind is ProbeKind.LOCAL_SNAPSHOT and self.target != "local":
+            raise BudgetError("local snapshot target must be local")
+        if self.probe_kind is ProbeKind.SYSTEM_DNS and canonical_target.hostname is None:
+            raise BudgetError("system DNS target must be a hostname")
+        if self.probe_kind in {ProbeKind.LOCAL_SNAPSHOT, ProbeKind.SYSTEM_DNS} and address_target is not None:
+            raise BudgetError("addressless probe cannot carry an address")
+        if self.probe_kind in {ProbeKind.NATIVE_PING, ProbeKind.NATIVE_PATH} and address_target is None:
+            raise BudgetError("native probe requires a concrete address")
+        if self.probe_kind in {ProbeKind.TLS_HANDSHAKE, ProbeKind.HTTP_EXCHANGE}:
+            if type(self.server_name) is not str or not self.server_name or len(self.server_name) > 253:
+                raise BudgetError("TLS/HTTP probe requires bounded server_name")
+        elif self.server_name is not None:
+            raise BudgetError("server_name is not valid for this probe kind")
+        if self.probe_kind is ProbeKind.HTTP_EXCHANGE:
+            if self.http_scheme not in {"http", "https"}:
+                raise BudgetError("HTTP probe requires http_scheme")
+        elif self.http_scheme is not None:
+            raise BudgetError("http_scheme is not valid for this probe kind")
+        if self.probe_kind is ProbeKind.NATIVE_PATH:
+            if type(self.max_hops) is not int or not 1 <= self.max_hops <= 8:
+                raise BudgetError("native path requires max_hops within 1..8")
+        elif self.max_hops is not None:
+            raise BudgetError("max_hops is not valid for this probe kind")
+        if self.probe_kind is not ProbeKind.UDP_EXCHANGE and self.payload.length:
+            raise BudgetError("only UDP exchange can carry payload metadata")
         if type(self.payload) is not PayloadMetadata:
             raise BudgetError("step payload must be PayloadMetadata")
         if type(self.cost) is not StepCost:
@@ -265,31 +344,85 @@ class ProbeStep:
     def to_wire(self) -> dict[str, object]:
         return {
             "id": self.id,
+            "probe_kind": self.probe_kind.value,
             "target": self.target,
             "address": self.address,
             "scope_id": self.scope_id,
             "port": self.port,
-            "transport": self.transport.value,
+            "transport": self.transport.value if self.transport is not None else None,
             "attempt": self.attempt,
             "source_hostname": self.source_hostname,
             "resolution_slot": self.resolution_slot,
+            "server_name": self.server_name,
+            "http_scheme": self.http_scheme,
+            "max_hops": self.max_hops,
+            "timeout_s": self.timeout_s,
+            "required": self.required,
             "payload_metadata": self.payload.to_wire(),
             "cost": self.cost.to_wire(),
         }
 
 
 @dataclass(frozen=True, slots=True)
+class ProbeSpec:
+    """Small sparse compiler input; only its compiled steps may execute."""
+
+    probe_kind: ProbeKind
+    target: str
+    address: str | None = None
+    scope_id: str | None = None
+    port: int | None = None
+    transport: Transport | None = None
+    attempt: int = 1
+    source_hostname: str | None = None
+    resolution_slot: int | None = None
+    server_name: str | None = None
+    http_scheme: str | None = None
+    max_hops: int | None = None
+    timeout_s: float = 3.0
+    required: bool = True
+    payload_metadata: PayloadMetadata = field(default_factory=lambda: PayloadMetadata("none-v1", 0))
+    cost: StepCost = field(default_factory=lambda: StepCost(1, 0, 0))
+
+    def __post_init__(self) -> None:
+        if type(self.payload_metadata) is not PayloadMetadata or type(self.cost) is not StepCost:
+            raise BudgetError("probe payload_metadata and cost must be canonical")
+        _build_probe_step(self, "step-" + ("0" * 64))
+
+    def to_wire(self) -> dict[str, object]:
+        return _build_probe_step(self, "step-" + ("0" * 64)).to_wire() | {"id": None}
+
+
+def _build_probe_step(spec: ProbeSpec, identifier: str) -> ProbeStep:
+    return ProbeStep(
+        id=identifier, probe_kind=spec.probe_kind, target=spec.target,
+        address=spec.address, scope_id=spec.scope_id, port=spec.port,
+        transport=spec.transport, attempt=spec.attempt,
+        source_hostname=spec.source_hostname, resolution_slot=spec.resolution_slot,
+        payload=spec.payload_metadata, cost=spec.cost, server_name=spec.server_name,
+        http_scheme=spec.http_scheme, max_hops=spec.max_hops,
+        timeout_s=spec.timeout_s, required=spec.required,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedStep:
     step: ProbeStep
-    address: str
+    address: str | None
     dns_changed: bool = False
 
     def __post_init__(self) -> None:
         if type(self.step) is not ProbeStep:
             raise ConfirmationError("prepared step must reference ProbeStep")
-        address = normalize_targets((self.address,))[0]
-        if address.kind is not TargetKind.ADDRESS:
-            raise ConfirmationError("prepared step address must be concrete")
+        if self.address is None:
+            if self.step.address is not None:
+                raise ConfirmationError("prepared address is required for an address-bearing step")
+        else:
+            address = normalize_targets((self.address,))[0]
+            if address.kind is not TargetKind.ADDRESS:
+                raise ConfirmationError("prepared step address must be concrete")
+            if self.address != self.step.address:
+                raise ConfirmationError("prepared address differs from the digest-bound step")
         if type(self.dns_changed) is not bool:
             raise ConfirmationError("dns_changed must be a boolean")
 
@@ -473,10 +606,13 @@ class ProbePlan:
         self.preview.scope.assert_current(now)
         target = normalize_targets((step.target,))[0]
         authorize_targets((target,), self.preview.scope, now=now)
-        if not target.is_loopback and not self.preview.scope.permits_step(
-            step.port, step.transport.value
+        transport = step.transport.value if step.transport is not None else None
+        if not target.is_loopback and not self.preview.scope.permits_probe(
+            step.probe_kind, step.port, transport
         ):
-            raise ConfirmationError("step port or transport escaped scope")
+            raise ConfirmationError("step probe kind, port, or transport escaped scope")
+        if step.address is None:
+            return PreparedStep(step=step, address=None)
         if step.source_hostname is None:
             return PreparedStep(step=step, address=step.address)
         snapshot = next(
@@ -507,6 +643,8 @@ class ProbePlan:
                 "DNS rotation removed the address reserved for this step"
             )
         address = addresses[step.resolution_slot]
+        if address != step.address:
+            raise ConfirmationError("DNS rotation changed the digest-bound address")
         return PreparedStep(
             step=step,
             address=address,
@@ -586,6 +724,7 @@ def _assert_estimate_within(estimate: WorkEstimate, limits: BudgetLimits) -> Non
             estimate.generated_datagrams,
             limits.max_datagrams,
         ),
+        ("logical_packets", estimate.logical_packets, limits.max_logical_packets),
         (
             "application_bytes",
             estimate.application_bytes,
@@ -651,13 +790,24 @@ def _compile_steps(
                 application_bytes = payload.length * (
                     datagrams if transport is Transport.UDP else 1
                 )
+                step_payload = (
+                    payload
+                    if transport is Transport.UDP
+                    else PayloadMetadata(profile="none-v1", length=0)
+                )
                 cost = StepCost(
                     logical_attempts=1,
                     generated_datagrams=datagrams,
                     application_bytes=application_bytes,
+                    logical_packets=datagrams if transport is Transport.UDP else 1,
                 )
                 for attempt in range(1, repeats + 1):
                     identity = {
+                        "probe_kind": (
+                            ProbeKind.UDP_EXCHANGE.value
+                            if transport is Transport.UDP
+                            else ProbeKind.TCP_CONNECT.value
+                        ),
                         "target": target.canonical,
                         "address": address_target.canonical,
                         "scope_id": address_target.scope_id,
@@ -666,12 +816,17 @@ def _compile_steps(
                         "attempt": attempt,
                         "source_hostname": source_hostname,
                         "resolution_slot": resolution_slot,
-                        "payload_metadata": payload.to_wire(),
+                        "payload_metadata": step_payload.to_wire(),
                         "cost": cost.to_wire(),
                     }
                     steps.append(
                         ProbeStep(
                             id=_step_identifier(identity),
+                            probe_kind=(
+                                ProbeKind.UDP_EXCHANGE
+                                if transport is Transport.UDP
+                                else ProbeKind.TCP_CONNECT
+                            ),
                             target=target.canonical,
                             address=address_target.canonical,
                             scope_id=address_target.scope_id,
@@ -680,11 +835,138 @@ def _compile_steps(
                             attempt=attempt,
                             source_hostname=source_hostname,
                             resolution_slot=resolution_slot,
-                            payload=payload,
+                            payload=step_payload,
                             cost=cost,
                         )
                     )
     return tuple(steps)
+
+
+def result_envelope_upper_bound(
+    plan_shape: Mapping[str, object],
+    projected_request: Mapping[str, object] | None = None,
+) -> int:
+    """Bound the mutually exclusive service-terminal result envelope.
+
+    The value is intentionally based on canonical JSON, so adding a terminal
+    field cannot silently bypass the aggregate output reservation.
+    """
+    request = dict(projected_request or {})
+    shapes = (
+        {"plan": plan_shape, "request": request, "terminal": "normal", "error": None},
+        {"plan": plan_shape, "request": request, "terminal": "finalization-error", "error": "x" * 4096},
+        {"plan": plan_shape, "request": request, "terminal": "output-budget", "error": "x" * 4096},
+    )
+    return max(len(dumps_document(shape).encode("utf-8")) for shape in shapes)
+
+
+def preview_probe_plan(
+    *,
+    specs: Iterable[ProbeSpec],
+    grant: ScopeGrant,
+    profile: str = "custom-v1",
+    limits: BudgetLimits = DEFAULT_LIMITS,
+    now: datetime | None = None,
+) -> PlanPreview:
+    """Compile a finite sparse probe list without a Cartesian expansion."""
+    instant = now or datetime.now(timezone.utc)
+    if type(grant) is not ScopeGrant or type(limits) is not BudgetLimits:
+        raise BudgetError("grant and limits must be their canonical types")
+    if type(profile) is not str or not profile or len(profile) > 128:
+        raise BudgetError("profile name is invalid")
+    if type(instant) is not datetime or instant.tzinfo is None or instant.utcoffset() is None:
+        raise BudgetError("plan time must be a timezone-aware datetime")
+    limits.assert_within(ABSOLUTE_CEILINGS)
+    input_specs = tuple(specs)
+    if not input_specs or any(type(spec) is not ProbeSpec for spec in input_specs):
+        raise BudgetError("specs must be a non-empty ProbeSpec sequence")
+
+    compiled: list[ProbeStep] = []
+    target_values: list[str] = []
+    snapshots: dict[str, dict[int, str]] = {}
+    for spec in input_specs:
+        target = normalize_targets((spec.target,))[0]
+        if spec.probe_kind is not ProbeKind.LOCAL_SNAPSHOT:
+            authorize_targets((target,), grant, now=instant)
+        if spec.address is not None:
+            address = normalize_targets((spec.address,))[0]
+            authorize_targets((address,), grant, now=instant)
+        if not target.is_loopback and not grant.permits_probe(
+            spec.probe_kind,
+            spec.port,
+            spec.transport.value if spec.transport is not None else None,
+        ):
+            raise ConfirmationError("probe kind, port, or transport is outside scope")
+        base = _build_probe_step(spec, "step-" + ("0" * 64))
+        identity = base.to_wire()
+        identity.pop("id")
+        step = _build_probe_step(spec, _step_identifier(identity))
+        compiled.append(step)
+        target_values.append(step.target)
+        if step.source_hostname is not None and step.address is not None:
+            assert step.resolution_slot is not None
+            slots = snapshots.setdefault(step.source_hostname, {})
+            if step.resolution_slot in slots and slots[step.resolution_slot] != step.address:
+                raise BudgetError("hostname resolution slots disagree")
+            slots[step.resolution_slot] = step.address
+    steps = tuple(compiled)
+    if len({step.id for step in steps}) != len(steps):
+        raise BudgetError("sparse probe specs produce duplicate step identities")
+    resolutions = tuple(
+        ResolutionSnapshot(
+            hostname=hostname,
+            addresses=tuple(address for _, address in sorted(slots.items())),
+            resolved_at=instant,
+        )
+        for hostname, slots in sorted(snapshots.items())
+        if tuple(slots) == tuple(range(len(slots)))
+    )
+    if len(resolutions) != len(snapshots):
+        raise BudgetError("hostname resolution slots must be contiguous from zero")
+    targets = normalize_targets(tuple(target_values))
+    ports = tuple(sorted({step.port for step in steps if step.port is not None}))
+    transports = tuple(sorted({step.transport.value for step in steps if step.transport is not None}))
+    attempts = len(steps)
+    packets = sum(step.cost.logical_packets for step in steps)
+    if any(step.probe_kind is not ProbeKind.LOCAL_SNAPSHOT and step.cost.logical_packets == 0 for step in steps):
+        raise BudgetError("active probes must reserve positive logical_packets")
+    generated = sum(step.cost.generated_datagrams for step in steps)
+    application = sum(step.cost.application_bytes for step in steps)
+    plan_shape = {"steps": [step.to_wire() for step in steps], "scope": grant.to_wire()}
+    envelope = result_envelope_upper_bound(plan_shape)
+    estimate = WorkEstimate(
+        hosts=max(1, len({step.address or step.target for step in steps})),
+        ports=len(ports), logical_attempts=attempts, generated_datagrams=generated,
+        application_bytes=application, concurrency=min(limits.max_concurrency, attempts),
+        worst_case_duration_s=limits.max_duration_s,
+        events=sum(step.cost.max_observations for step in steps) + 5,
+        output_bytes=sum(step.cost.max_output_bytes for step in steps) + envelope,
+        global_attempt_start_rate=limits.max_global_rate,
+        target_attempt_start_rate=limits.max_target_rate, logical_packets=packets,
+    )
+    _assert_estimate_within(estimate, limits)
+    payloads = {step.payload for step in steps if step.probe_kind is ProbeKind.UDP_EXCHANGE}
+    if len(payloads) > 1:
+        raise BudgetError("legacy UDP summary cannot represent heterogeneous payloads")
+    payload = next(iter(payloads), PayloadMetadata("none-v1", 0))
+    repeats = max(step.attempt for step in steps)
+    draft = {
+        "schema_version": MODEL_SCHEMA_VERSION, "profile": profile,
+        "targets": [target.canonical for target in targets], "ports": list(ports),
+        "transports": list(transports), "repeats": repeats,
+        "payload_bytes_per_attempt": payload.length, "datagrams_per_udp_attempt": 1,
+        "steps": [step.to_wire() for step in steps], "scope": grant.to_wire(),
+        "resolutions": [{"hostname": item.hostname, "addresses": list(item.addresses)} for item in resolutions],
+        "limits": limits.to_wire(), "estimate": estimate.to_wire(), "required_confirmations": [],
+    }
+    digest = hashlib.sha256(dumps_document(draft).encode("utf-8")).hexdigest()
+    return PlanPreview(
+        profile=profile, targets=targets, ports=ports, transports=transports,
+        repeats=repeats, payload_bytes_per_attempt=payload.length,
+        datagrams_per_udp_attempt=1, steps=steps, scope=grant,
+        resolutions=resolutions, limits=limits, estimate=estimate,
+        required_confirmations=(), created_at=instant, digest=digest,
+    )
 
 
 def preview_plan(
@@ -843,9 +1125,8 @@ def preview_plan(
     )
     if len(steps) != logical_attempts:
         raise BudgetError("compiled step count does not match reserved attempts")
-    generated_datagrams = sum(
-        step.cost.generated_datagrams for step in steps
-    )
+    generated_datagrams = sum(step.cost.generated_datagrams for step in steps)
+    logical_packets = sum(step.cost.logical_packets for step in steps)
     application_bytes = sum(step.cost.application_bytes for step in steps)
     if generated_datagrams > ABSOLUTE_CEILINGS.max_datagrams:
         raise BudgetError(
@@ -859,7 +1140,7 @@ def preview_plan(
         )
     # accepted + running + cancellation request + terminal evidence + terminal
     events = logical_attempts + 5
-    output_bytes = logical_attempts * 512 + 4_096
+    output_bytes = sum(step.cost.max_output_bytes for step in steps) + 4_096
     estimate = WorkEstimate(
         hosts=host_count,
         ports=len(port_tuple),
@@ -872,6 +1153,7 @@ def preview_plan(
         output_bytes=output_bytes,
         global_attempt_start_rate=limits.max_global_rate,
         target_attempt_start_rate=limits.max_target_rate,
+        logical_packets=logical_packets,
     )
     _assert_estimate_within(estimate, limits)
 
@@ -1067,6 +1349,7 @@ __all__ = [
     "PlanPreview",
     "PreparedStep",
     "ProbePlan",
+    "ProbeSpec",
     "ProbeStep",
     "StepCost",
     "Transport",
@@ -1074,6 +1357,8 @@ __all__ = [
     "authorize_plan",
     "confirmation_phrase",
     "preview_plan",
+    "preview_probe_plan",
+    "result_envelope_upper_bound",
     "validate_plan",
     "validate_preview",
 ]

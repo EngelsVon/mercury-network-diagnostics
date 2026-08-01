@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Callable, Iterable, Sequence
 
+from .models import ProbeKind
+
 
 class PolicyError(ValueError):
     """A target or authorization decision failed closed."""
@@ -147,6 +149,7 @@ class ScopeGrant:
     hostnames: tuple[str, ...] = ()
     ports: tuple[int, ...] = ()
     transports: tuple[str, ...] = ()
+    probe_kinds: tuple[ProbeKind, ...] = tuple(ProbeKind)
     attested: bool = False
     purpose: str = ""
     expires_at: datetime | None = None
@@ -160,6 +163,8 @@ class ScopeGrant:
             raise PolicyError("scope ports must be a sequence")
         if not isinstance(self.transports, (list, tuple)):
             raise PolicyError("scope transports must be a sequence")
+        if not isinstance(self.probe_kinds, (list, tuple)):
+            raise PolicyError("scope probe_kinds must be a sequence")
         network_set: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
         for value in self.networks:
             if type(value) not in (
@@ -192,6 +197,11 @@ class ScopeGrant:
             if type(value) is not str or value.casefold() not in {"tcp", "udp"}:
                 raise PolicyError(f"invalid scope transport {value!r}")
             canonical_transports.add(value.casefold())
+        canonical_kinds: set[ProbeKind] = set()
+        for value in self.probe_kinds:
+            if type(value) is not ProbeKind:
+                raise PolicyError("scope probe_kinds must contain ProbeKind values")
+            canonical_kinds.add(value)
         if type(self.attested) is not bool:
             raise PolicyError("scope attested must be a boolean")
         if type(self.purpose) is not str or "\x00" in self.purpose:
@@ -201,6 +211,9 @@ class ScopeGrant:
         object.__setattr__(self, "ports", tuple(sorted(canonical_ports)))
         object.__setattr__(
             self, "transports", tuple(sorted(canonical_transports))
+        )
+        object.__setattr__(
+            self, "probe_kinds", tuple(sorted(canonical_kinds, key=lambda item: item.value))
         )
         if self.expires_at is not None and (
             type(self.expires_at) is not datetime
@@ -230,12 +243,36 @@ class ScopeGrant:
     def permits_step(self, port: int, transport: str) -> bool:
         return port in self.ports and transport.casefold() in self.transports
 
+    def permits_probe(
+        self,
+        kind: ProbeKind,
+        port: int | None,
+        transport: str | None,
+    ) -> bool:
+        """Check the exact finite probe authority without dummy port values."""
+        if type(kind) is not ProbeKind or kind not in self.probe_kinds:
+            return False
+        ported = {
+            ProbeKind.TCP_CONNECT,
+            ProbeKind.UDP_EXCHANGE,
+            ProbeKind.TLS_HANDSHAKE,
+            ProbeKind.HTTP_EXCHANGE,
+        }
+        if kind not in ported:
+            return port is None and transport is None
+        return (
+            type(port) is int
+            and type(transport) is str
+            and self.permits_step(port, transport)
+        )
+
     def to_wire(self) -> dict[str, object]:
         return {
             "networks": [str(item) for item in self.networks],
             "hostnames": list(self.hostnames),
             "ports": list(self.ports),
             "transports": list(self.transports),
+            "probe_kinds": [item.value for item in self.probe_kinds],
             "attested": self.attested,
             "purpose": self.purpose,
             "expires_at": (

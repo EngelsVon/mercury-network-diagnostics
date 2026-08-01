@@ -11,12 +11,16 @@ from mercury.planner import (
     BudgetError,
     BudgetLimits,
     ConfirmationError,
+    ProbeSpec,
+    StepCost,
     Transport,
     authorize_plan,
     confirmation_phrase,
     preview_plan,
+    preview_probe_plan,
     validate_plan,
 )
+from mercury.models import ProbeKind
 from mercury.policy import (
     PolicyError,
     ScopeGrant,
@@ -30,6 +34,84 @@ from mercury.policy import (
 
 
 NOW = datetime(2026, 7, 30, tzinfo=timezone.utc)
+
+
+class SparseProbePlanTests(unittest.TestCase):
+    def _cost(self, *, observations: int = 1, packets: int = 1) -> StepCost:
+        return StepCost(
+            logical_attempts=1,
+            generated_datagrams=0,
+            application_bytes=0,
+            logical_packets=packets,
+            max_observations=observations,
+            max_output_bytes=1024,
+        )
+
+    def test_sparse_probe_kind_field_matrix(self) -> None:
+        specs = (
+            ProbeSpec(ProbeKind.LOCAL_SNAPSHOT, "local", cost=self._cost(packets=0)),
+            ProbeSpec(ProbeKind.SYSTEM_DNS, "localhost", cost=self._cost()),
+            ProbeSpec(ProbeKind.TCP_CONNECT, "127.0.0.1", address="127.0.0.1", port=443, transport=Transport.TCP, cost=self._cost()),
+            ProbeSpec(ProbeKind.UDP_EXCHANGE, "127.0.0.1", address="127.0.0.1", port=53, transport=Transport.UDP, cost=self._cost()),
+            ProbeSpec(ProbeKind.TLS_HANDSHAKE, "localhost", address="127.0.0.1", port=443, transport=Transport.TCP, server_name="localhost", cost=self._cost()),
+            ProbeSpec(ProbeKind.HTTP_EXCHANGE, "localhost", address="127.0.0.1", port=443, transport=Transport.TCP, server_name="localhost", http_scheme="https", cost=self._cost()),
+            ProbeSpec(ProbeKind.NATIVE_PING, "127.0.0.1", address="127.0.0.1", cost=self._cost()),
+            ProbeSpec(ProbeKind.NATIVE_PATH, "127.0.0.1", address="127.0.0.1", max_hops=8, cost=self._cost(observations=9, packets=8)),
+        )
+        preview = preview_probe_plan(specs=specs, grant=ScopeGrant(networks=()), now=NOW)
+        self.assertEqual({step.probe_kind for step in preview.steps}, set(ProbeKind))
+        for step in preview.steps:
+            if step.probe_kind in {ProbeKind.SYSTEM_DNS, ProbeKind.NATIVE_PING, ProbeKind.NATIVE_PATH}:
+                self.assertIsNone(step.port)
+                self.assertIsNone(step.transport)
+        path = next(step for step in preview.steps if step.probe_kind is ProbeKind.NATIVE_PATH)
+        self.assertEqual(path.cost.max_observations, 9)
+        self.assertEqual(path.cost.logical_packets, 8)
+
+    def test_sparse_identity_and_digest_cover_every_meaningful_field(self) -> None:
+        baseline = ProbeSpec(
+            ProbeKind.HTTP_EXCHANGE, "localhost", address="127.0.0.1",
+            port=443, transport=Transport.TCP, server_name="localhost",
+            http_scheme="https", timeout_s=2.0, cost=self._cost(),
+        )
+        changed = replace(baseline, timeout_s=3.0)
+        first = preview_probe_plan(specs=(baseline,), grant=ScopeGrant(networks=()), now=NOW)
+        second = preview_probe_plan(specs=(changed,), grant=ScopeGrant(networks=()), now=NOW)
+        self.assertNotEqual(first.steps[0].id, second.steps[0].id)
+        self.assertNotEqual(first.digest, second.digest)
+
+    def test_non_port_probe_scope_is_explicit(self) -> None:
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            probe_kinds=(ProbeKind.TCP_CONNECT,), attested=True,
+        )
+        self.assertFalse(grant.permits_probe(ProbeKind.NATIVE_PING, None, None))
+        with self.assertRaises(ConfirmationError):
+            preview_probe_plan(
+                specs=(ProbeSpec(ProbeKind.NATIVE_PING, "192.0.2.9", address="192.0.2.9", cost=self._cost()),),
+                grant=grant, now=NOW,
+            )
+
+    def test_per_step_reservations_roll_up_to_aggregate_limits(self) -> None:
+        spec = ProbeSpec(ProbeKind.NATIVE_PATH, "127.0.0.1", address="127.0.0.1", max_hops=8, cost=self._cost(observations=9, packets=8))
+        preview = preview_probe_plan(specs=(spec,), grant=ScopeGrant(networks=()), now=NOW)
+        self.assertEqual(preview.estimate.events, 14)
+        self.assertEqual(preview.estimate.logical_packets, 8)
+        with self.assertRaises(BudgetError):
+            preview_probe_plan(specs=(spec,), grant=ScopeGrant(networks=()), limits=replace(DEFAULT_LIMITS, max_events=13), now=NOW)
+
+    def test_result_envelope_closes_at_exact_boundary(self) -> None:
+        spec = ProbeSpec(ProbeKind.NATIVE_PING, "127.0.0.1", address="127.0.0.1", cost=self._cost())
+        preview = preview_probe_plan(specs=(spec,), grant=ScopeGrant(networks=()), now=NOW)
+        exact = replace(DEFAULT_LIMITS, max_output_bytes=preview.estimate.output_bytes)
+        accepted = preview_probe_plan(specs=(spec,), grant=ScopeGrant(networks=()), limits=exact, now=NOW)
+        self.assertEqual(accepted.estimate.output_bytes, exact.max_output_bytes)
+        with self.assertRaises(BudgetError):
+            preview_probe_plan(specs=(spec,), grant=ScopeGrant(networks=()), limits=replace(exact, max_output_bytes=exact.max_output_bytes - 1), now=NOW)
+
+    def test_legacy_preview_plan_uses_shared_sparse_compiler(self) -> None:
+        preview = preview_plan(target_values=("127.0.0.1",), ports=(443,), transports=("tcp",), grant=ScopeGrant(networks=()), now=NOW)
+        self.assertEqual(preview.steps[0].probe_kind, ProbeKind.TCP_CONNECT)
 
 
 class TargetPolicyTests(unittest.TestCase):
@@ -254,13 +336,12 @@ class TargetPolicyTests(unittest.TestCase):
                 resolver=lambda _: ("192.0.2.11", "192.0.2.12"),
                 now=NOW,
             )
-        prepared = plan.preflight_step(
-            preview.steps[0].id,
-            resolver=lambda _: ("192.0.2.11",),
-            now=NOW,
-        )
-        self.assertEqual(prepared.address, "192.0.2.11")
-        self.assertTrue(prepared.dns_changed)
+        with self.assertRaisesRegex(ConfirmationError, "digest-bound"):
+            plan.preflight_step(
+                preview.steps[0].id,
+                resolver=lambda _: ("192.0.2.11",),
+                now=NOW,
+            )
 
     def test_dns_out_of_scope_is_rejected_before_plan(self) -> None:
         grant = ScopeGrant(
