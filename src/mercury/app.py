@@ -6,12 +6,13 @@ import asyncio
 import ipaddress
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from .diagnosis import DiagnosisRunner
 from .history import HistoryStore
 from .inventory import collect_status
 from .models import TaskResult
-from .peer import PeerAgent, PeerConfig
+from .peer import PeerAgent, PeerConfig, load_peer_config
 from .paired import PairedRequest
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
@@ -111,6 +112,14 @@ class MercuryApplication:
         await agent.start()
         self._peer_agent = agent
         return agent
+
+    async def start_agent_from_file(
+        self, path: Path, *, unsafe_development: bool = False,
+    ) -> PeerAgent:
+        """Load operator-provisioned paths and start the shared control agent."""
+        return await self.start_agent(
+            load_peer_config(path, unsafe_development=unsafe_development)
+        )
 
     async def stop_agent(self) -> None:
         """Stop the application-owned listener without exposing transport to the CLI."""

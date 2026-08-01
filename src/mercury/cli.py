@@ -148,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
     paired_parser.add_argument("--unsafe-development", action="store_true")
     _add_json_option(paired_parser)
 
+    agent_parser = subparsers.add_parser("agent", help="serve authenticated paired control")
+    agent_parser.add_argument("--config", type=Path, required=True, help="operator-provisioned peer configuration path")
+    agent_parser.add_argument("--unsafe-development", action="store_true", help="loopback-only development override")
+    _add_json_option(agent_parser)
+
     plan_parser = subparsers.add_parser(
         "plan", help="canonicalize and cost an active plan without executing it"
     )
@@ -387,6 +392,24 @@ def paired_exit_code(result: TaskResult) -> int:
     return exit_code
 
 
+async def _run_agent(args: argparse.Namespace, history: HistoryStore) -> tuple[object, str]:
+    application = MercuryApplication(history=history)
+    agent = await application.start_agent_from_file(
+        args.config, unsafe_development=args.unsafe_development,
+    )
+    payload = {
+        "identity": agent.config.identity,
+        "bind_host": agent.config.bind_host,
+        "control_port": agent.config.control_port,
+        "unsafe_development": agent.config.unsafe_development,
+    }
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await application.stop_agent()
+    return payload, ""
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     as_json = bool(getattr(args, "json", False))
     if args.command == "version":
@@ -431,6 +454,11 @@ def _dispatch(args: argparse.Namespace) -> int:
             result = asyncio.run(MercuryApplication(history=history).run_paired(request))
         _emit(result_to_wire(result), render_paired(result), as_json=as_json)
         return paired_exit_code(result)
+    if args.command == "agent":
+        with HistoryStore(args.data_path) as history:
+            payload, human = asyncio.run(_run_agent(args, history))
+        _emit(payload, human, as_json=as_json)
+        return EXIT_OK
     if args.command == "plan":
         ports = _parse_ports(args.ports)
         transports = tuple(args.transports or ("tcp",))

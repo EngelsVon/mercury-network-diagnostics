@@ -17,7 +17,9 @@ from mercury.cli import (
     EXIT_POLICY,
     EXIT_FAILED,
     EXIT_USAGE,
+    CliError,
     _run_synthetic,
+    build_parser,
     diagnosis_exit_code,
     paired_exit_code,
     main,
@@ -78,6 +80,15 @@ def paired_result(health: Health = Health.PARTIAL) -> TaskResult:
 
 
 class CliTests(unittest.TestCase):
+    def test_agent_and_paired_accept_only_closed_configuration_inputs(self) -> None:
+        parser = build_parser()
+        agent = parser.parse_args(("agent", "--config", "peer.json", "--unsafe-development"))
+        self.assertEqual((agent.command, agent.config.name, agent.unsafe_development), ("agent", "peer.json", True))
+        paired = parser.parse_args(("paired", "--config", "peer.json", "--identity", "peer", "--address", "127.0.0.1", "--authorized"))
+        self.assertEqual((paired.command, paired.timeout, paired.authorized), ("paired", 3.0, True))
+        with self.assertRaises(CliError):
+            parser.parse_args(("paired", "--config", "peer.json", "--identity", "peer", "--address", "127.0.0.1", "--port", "1"))
+
     def test_paired_exit_requires_one_canonical_health_conclusion(self) -> None:
         self.assertEqual(paired_exit_code(paired_result(Health.HEALTHY)), EXIT_OK)
         self.assertEqual(paired_exit_code(paired_result(Health.PARTIAL)), EXIT_PARTIAL)
