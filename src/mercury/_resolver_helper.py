@@ -12,8 +12,12 @@ def main() -> int:
         return 2
     try:
         rows = socket.getaddrinfo(sys.argv[1], None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        category = "NameNotFound" if exc.errno == socket.EAI_NONAME else "ResolverFailure"
+        print(json.dumps({"error": category}, separators=(",", ":")))
+        return 1
     except OSError:
-        print("[]")
+        print(json.dumps({"error": "ResolverFailure"}, separators=(",", ":")))
         return 1
     addresses = []
     for row in rows[:1025]:

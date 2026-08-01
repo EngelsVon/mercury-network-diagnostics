@@ -5,11 +5,13 @@ import unittest
 
 from mercury.models import Disposition, EvidenceKind, ProbeKind
 from mercury.platform.common import CommandOutcome
+from mercury.platform.common import CommandResult
 from mercury.planner import PreparedStep
 from mercury.policy import ScopeGrant
 from mercury.probes import dns_probe, http_probe, tcp_probe, tls_probe
 from mercury.profiles import DiagnosisRequest, compile_diagnosis
 from mercury.resolver import ResolutionResult
+from mercury.resolver import resolve_addresses
 
 
 async def _loopback_resolver(hostname: str, **_: object) -> ResolutionResult:
@@ -87,6 +89,28 @@ class DnsProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((await dns_probe(dns, resolver=timeout)).disposition, Disposition.INCONCLUSIVE)
         self.assertEqual((await dns_probe(dns, resolver=broken)).disposition, Disposition.ERROR)
+
+
+class ResolverIsolationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_isolated_helper_and_timeout_validation(self) -> None:
+        calls = []
+        async def command(argv, *, timeout_s, max_output_bytes):
+            calls.append((argv, timeout_s, max_output_bytes))
+            return CommandResult(argv, 0, '["127.0.0.1"]', "", CommandOutcome.SUCCESS)
+        resolved = await resolve_addresses("example.test", operation_timeout=5.001, hard_deadline=30.0, command_runner=command)
+        self.assertEqual(resolved.addresses, ("127.0.0.1",))
+        self.assertEqual(calls[0][0][0:2], (__import__("sys").executable, "-I"))
+        self.assertEqual(calls[0][1], 5.001)
+        with self.assertRaises(ValueError):
+            await resolve_addresses("example.test", operation_timeout=30.001, hard_deadline=30.0, command_runner=command)
+
+    async def test_name_not_found_is_explicit_but_other_helper_failure_is_error(self) -> None:
+        async def missing(argv, *, timeout_s, max_output_bytes):
+            return CommandResult(argv, 1, '{"error":"NameNotFound"}', "", CommandOutcome.NONZERO)
+        async def failed(argv, *, timeout_s, max_output_bytes):
+            return CommandResult(argv, 1, '{"error":"ResolverFailure"}', "", CommandOutcome.NONZERO)
+        self.assertEqual((await resolve_addresses("example.test", operation_timeout=3, hard_deadline=3, command_runner=missing)).outcome, CommandOutcome.NONZERO)
+        self.assertEqual((await resolve_addresses("example.test", operation_timeout=3, hard_deadline=3, command_runner=failed)).outcome, CommandOutcome.ERROR)
 
 
 class TcpProbeTests(unittest.IsolatedAsyncioTestCase):
