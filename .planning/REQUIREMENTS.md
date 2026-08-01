@@ -54,10 +54,10 @@
 
 ### WebUI, history, and reports
 
-- [ ] **WEB-01**: 用户运行 `mercury web` 后可在默认 loopback WebUI 查看分层健康、网卡、网关/DNS、邻居/LLDP 和能力信息。
-- [ ] **WEB-02**: 用户可从 WebUI 提交 basic 诊断、paired 差异诊断、授权 discovery 和 route 任务，轮询查看进度、取消并打开结构化结果及 A↔B 分层矩阵。
-- [ ] **WEB-03**: WebUI 使用与 CLI 完全相同的服务函数和结果模型，不维护第二套探测逻辑。
-- [ ] **WEB-04**: WebUI 默认仅绑定 loopback，并校验 Host、Origin、SameSite session、CSRF header、请求体上限和 CSP；非 loopback 绑定在没有 TLS 证书、私钥和访问令牌时拒绝启动，除非用户显式启用仅供开发的不安全模式。
+- [x] **WEB-01**: 用户运行 `mercury web` 后可在默认 loopback WebUI 查看分层健康、网卡、网关/DNS、邻居/LLDP 和能力信息。
+- [x] **WEB-02**: 用户可从 WebUI 提交 basic 诊断、paired 差异诊断、授权 discovery 和 route 任务，轮询查看进度、取消并打开结构化结果及 A↔B 分层矩阵。
+- [x] **WEB-03**: WebUI 使用与 CLI 完全相同的服务函数和结果模型，不维护第二套探测逻辑。
+- [x] **WEB-04**: WebUI 默认仅绑定 loopback，并校验 Host、Origin、SameSite session、CSRF header、请求体上限和 CSP；非 loopback 绑定在没有 TLS 证书、私钥和访问令牌时拒绝启动，除非用户显式启用仅供开发的不安全模式。
 - [x] **HIST-01**: 用户的任务请求、有效计划、状态和原始结果保存在仅当前用户可访问的本地 SQLite 中，并受数量/时间保留上限控制；token、私钥、配对密钥和未截断自定义载荷永不持久化。
 - [ ] **HIST-02**: 用户可从 CLI/WebUI 查看和比较两个兼容的历史任务，并导出 JSON 或自包含 HTML 报告。
 - [ ] **HIST-03**: 导出默认脱敏访问令牌、主机名、MAC、公网 IP 和原始载荷；用户必须显式选择保留敏感字段。
@@ -136,10 +136,10 @@
 | PEER-04 | Phase 3 | Complete |
 | PEER-05 | Phase 3 | Complete |
 | PEER-06 | Phase 3 | Complete |
-| WEB-01 | Phase 5 | Pending |
-| WEB-02 | Phase 5 | Pending |
-| WEB-03 | Phase 5 | Pending |
-| WEB-04 | Phase 5 | Pending |
+| WEB-01 | Phase 5 | Complete |
+| WEB-02 | Phase 5 | Complete |
+| WEB-03 | Phase 5 | Complete |
+| WEB-04 | Phase 5 | Complete |
 | HIST-01 | Phase 1 | Complete |
 | HIST-02 | Phase 5 | Pending |
 | HIST-03 | Phase 5 | Pending |
