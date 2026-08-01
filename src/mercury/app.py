@@ -11,6 +11,7 @@ from .diagnosis import DiagnosisRunner
 from .history import HistoryStore
 from .inventory import collect_status
 from .models import TaskResult
+from .peer import PeerAgent, PeerConfig
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
 from .tasks import TaskService
@@ -55,6 +56,7 @@ class MercuryApplication:
         compiler=compile_diagnosis,
         runner_factory=DiagnosisRunner,
         service_factory=TaskService,
+        peer_agent_factory=PeerAgent,
     ) -> None:
         self.history = history
         self.status_collector = status_collector
@@ -62,6 +64,8 @@ class MercuryApplication:
         self.compiler = compiler
         self.runner_factory = runner_factory
         self.service_factory = service_factory
+        self.peer_agent_factory = peer_agent_factory
+        self._peer_agent: PeerAgent | None = None
 
     async def status(self) -> TaskResult:
         result = await self.status_collector()
@@ -93,6 +97,24 @@ class MercuryApplication:
         if not isinstance(result, TaskResult):
             raise RuntimeError("diagnosis service returned an invalid result")
         return result
+
+    async def start_agent(self, config: PeerConfig) -> PeerAgent:
+        """Start the application-owned peer-control listener once."""
+        if self._peer_agent is not None:
+            raise RuntimeError("peer agent is already running")
+        agent = self.peer_agent_factory(config)
+        if not isinstance(agent, PeerAgent):
+            raise RuntimeError("peer agent factory returned an invalid agent")
+        await agent.start()
+        self._peer_agent = agent
+        return agent
+
+    async def stop_agent(self) -> None:
+        """Stop the application-owned listener without exposing transport to the CLI."""
+        if self._peer_agent is None:
+            return
+        agent, self._peer_agent = self._peer_agent, None
+        await agent.stop()
 
 
 __all__ = ["MercuryApplication"]

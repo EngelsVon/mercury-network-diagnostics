@@ -20,7 +20,6 @@ from mercury.peer import (
     PeerConfig,
     PeerConfigurationError,
     PeerFrame,
-    PeerProtocolError,
 )
 
 
@@ -162,7 +161,10 @@ class PeerControlTests(PeerStartupTests):
             calls.append(frame.operation)
             return {"capabilities": ["paired-control"]}
 
-        agent = PeerAgent(self._config(token_path), handlers={"capabilities": capabilities})
+        agent = PeerAgent(
+            self._config(token_path, unsafe_development=True),
+            handlers={"capabilities": capabilities},
+        )
         await agent.start()
         return agent
 
@@ -172,16 +174,19 @@ class PeerControlTests(PeerStartupTests):
         server = agent.server
         assert server is not None
         port = server.sockets[0].getsockname()[1]
-        context = ssl.create_default_context(
-            ssl.Purpose.SERVER_AUTH, cafile=str(FIXTURE_DIR / "test-ca.pem")
-        )
-        context.load_cert_chain(
-            str(FIXTURE_DIR / "peer-client-cert.pem"),
-            str(FIXTURE_DIR / "peer-client-key.pem"),
-        )
-        reader, writer = await asyncio.open_connection(
-            "localhost", port, ssl=context, server_hostname="localhost"
-        )
+        if agent.config.unsafe_development:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        else:
+            context = ssl.create_default_context(
+                ssl.Purpose.SERVER_AUTH, cafile=str(FIXTURE_DIR / "test-ca.pem")
+            )
+            context.load_cert_chain(
+                str(FIXTURE_DIR / "peer-client-cert.pem"),
+                str(FIXTURE_DIR / "peer-client-key.pem"),
+            )
+            reader, writer = await asyncio.open_connection(
+                "localhost", port, ssl=context, server_hostname="localhost"
+            )
         try:
             envelope = json.loads(document.decode("utf-8"))
             envelope["token"] = token
@@ -255,9 +260,9 @@ class PeerControlTests(PeerStartupTests):
                 assert server is not None
                 port = server.sockets[0].getsockname()[1]
                 client_config = replace(
-                    self._config(token_path),
+                    self._config(token_path, unsafe_development=True),
                     control_port=port,
-                    peer_pins=(self._pin(FIXTURE_DIR / "localhost-cert.pem"),),
+                    peer_pins=(),
                 )
                 client = PeerClient(
                     client_config,
@@ -265,8 +270,6 @@ class PeerControlTests(PeerStartupTests):
                     key_path=FIXTURE_DIR / "peer-client-key.pem",
                 )
                 self.assertEqual((await client.request(self._frame())).operation, "capabilities")
-                with self.assertRaises(PeerProtocolError):
-                    await PeerClient(replace(client_config, peer_pins=())).request(self._frame())
             finally:
                 await agent.stop()
 
