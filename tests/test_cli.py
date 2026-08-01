@@ -95,6 +95,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(paired_exit_code(paired_result(Health.FAILED)), EXIT_FAILED)
         with self.assertRaisesRegex(RuntimeError, "paired-health"):
             paired_exit_code(diagnosis_result())
+
+    def test_paired_cli_projects_the_exact_facade_result(self) -> None:
+        result = paired_result(Health.PARTIAL)
+
+        class FakeApplication:
+            def __init__(self, *, history):
+                self.history = history
+
+            async def run_paired(self, request):
+                self.request = request
+                return result
+
+        with patch("mercury.cli.MercuryApplication", FakeApplication):
+            code, output, error = invoke(
+                "paired", "--config", "peer.json", "--identity", "peer",
+                "--address", "127.0.0.1", "--authorized", "--json",
+            )
+        self.assertEqual((code, error), (EXIT_PARTIAL, ""))
+        self.assertEqual(json.loads(output), result_to_wire(result))
+
+        with patch("mercury.cli.MercuryApplication", FakeApplication):
+            code, output, error = invoke(
+                "paired", "--config", "peer.json", "--identity", "peer",
+                "--address", "127.0.0.1", "--authorized",
+            )
+        self.assertEqual((code, error), (EXIT_PARTIAL, ""))
+        self.assertTrue(output.startswith("Directional matrix\n"))
+        self.assertIn("evidence: paired-observation", output)
     def test_version_and_model_json(self) -> None:
         code, output, error = invoke("version", "--json")
         self.assertEqual((code, error), (EXIT_OK, ""))

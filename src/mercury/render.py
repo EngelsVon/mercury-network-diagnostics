@@ -89,7 +89,7 @@ def render_paired(result: TaskResult) -> str:
     health = [item for item in result.conclusions if item.id == "paired-health"]
     if len(health) != 1:
         raise RuntimeError("paired-health conclusion contract violated")
-    lines = [f"Paired diagnosis: {health[0].health.value}", "Directional matrix"]
+    lines = ["Directional matrix"]
     for row in paired_matrix(result):
         citations = ", ".join(row.observation_ids)
         lines.append(
@@ -97,6 +97,7 @@ def render_paired(result: TaskResult) -> str:
             f"{row.confidence.value} | evidence: {citations}"
         )
         lines.extend(f"    Limitation: {item}" for item in row.limitations)
+    lines.append(f"Paired diagnosis: {health[0].health.value}")
     lines.extend(f"Limitation: {item}" for item in health[0].limitations)
     return "\n".join(lines)
 
