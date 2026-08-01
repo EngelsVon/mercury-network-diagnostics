@@ -40,6 +40,7 @@ completed: 2026-08-02
 ## Task Commits
 
 1. **Tasks 1-3: reports, comparison, CLI/Web projections** - `870c01e` (`feat(05-02): add redacted history reports`)
+2. **Post-verification UI completion: dashboard history comparison and HTML report entry** - `c68d745` (`feat(phase5): expose history reports in dashboard`)
 
 ## Deviations from Plan
 

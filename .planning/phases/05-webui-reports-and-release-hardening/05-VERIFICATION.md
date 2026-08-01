@@ -30,6 +30,9 @@ history/reports, and install a verified Windows/Ubuntu v1 release.
 - `uv build`
 - `git diff --check`
 
+The full suite was rerun after the dashboard history/report interaction was
+added; the same 241 tests passed with 3 controlled skips.
+
 ## Release boundary
 
 The automated suite remains fake/fixture/loopback controlled. Windows and
