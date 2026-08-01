@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mercury diagnostics</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Mercury diagnostics</h1>
+    <p id="safety">Loopback-only by default. Active work requires authorization.</p>
+  </header>
+  <main>
+    <section aria-labelledby="status-heading">
+      <h2 id="status-heading">Local status</h2>
+      <button id="status-button" type="button">Collect passive status</button>
+      <pre id="status-output" aria-live="polite"></pre>
+    </section>
+    <section aria-labelledby="task-heading">
+      <h2 id="task-heading">Task</h2>
+      <form id="task-form">
+        <label for="kind">Task kind</label>
+        <select id="kind" name="kind">
+          <option value="diagnose">Diagnose</option>
+          <option value="discover_passive">Passive discovery</option>
+          <option value="discover">Authorized discovery</option>
+          <option value="trace">Trace</option>
+          <option value="paired">Paired diagnostic</option>
+        </select>
+        <label for="profile">Profile</label>
+        <select id="profile" name="profile"><option value="basic">Basic</option><option value="china">China</option><option value="common">Common TCP discovery</option><option value="custom">Custom TCP discovery</option><option value="full">Full TCP discovery (confirmation required)</option></select>
+        <label for="target">Target, network, or peer address</label>
+        <input id="target" name="target" autocomplete="off">
+        <label for="scope">Authorized CIDR scope</label>
+        <input id="scope" name="scope" autocomplete="off">
+        <label for="ports">Custom discovery ports (comma-separated)</label>
+        <input id="ports" name="ports" inputmode="numeric" autocomplete="off">
+        <label for="confirmation">Full discovery confirmation</label>
+        <input id="confirmation" name="confirmation" autocomplete="off">
+        <label for="config-path">Paired configuration path</label>
+        <input id="config-path" name="config-path" autocomplete="off">
+        <label for="identity">Paired peer identity</label>
+        <input id="identity" name="identity" autocomplete="off">
+        <label><input id="authorized" name="authorized" type="checkbox"> I am authorized to test this target</label>
+        <button type="submit">Start task</button>
+      </form>
+      <p id="task-state" aria-live="polite"></p>
+      <button id="cancel-button" type="button" disabled>Cancel active task</button>
+      <pre id="task-output" aria-live="polite"></pre>
+    </section>
+    <section aria-labelledby="evidence-heading">
+      <h2 id="evidence-heading">Evidence semantics</h2>
+      <p>Positive, negative, inconclusive, unavailable, and error outcomes are distinct. A gateway, neighbor cache entry, or first route hop is not an observed switch.</p>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

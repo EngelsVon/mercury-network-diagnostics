@@ -20,6 +20,7 @@ from . import DB_SCHEMA_VERSION, MODEL_SCHEMA_VERSION, __version__
 from .codec import dumps_document, result_to_wire
 from .discovery import DiscoveryRequest
 from .trace import TraceRequest
+from .web import WebConfig, serve_web
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
 from .app import MercuryApplication
 from .models import Disposition, EvidenceKind, Health, TaskResult, TaskState
@@ -174,6 +175,13 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument("--config", type=Path, required=True, help="operator-provisioned peer configuration path")
     agent_parser.add_argument("--unsafe-development", action="store_true", help="loopback-only development override")
     _add_json_option(agent_parser)
+
+    web_parser = subparsers.add_parser("web", help="serve the local Mercury dashboard")
+    web_parser.add_argument("--bind", default="127.0.0.1", help="numeric IP to bind (default: 127.0.0.1)")
+    web_parser.add_argument("--port", type=int, default=8765, help="TCP port (default: 8765; 0 selects a free port)")
+    web_parser.add_argument("--cert", type=Path, help="TLS certificate required for non-loopback binding")
+    web_parser.add_argument("--key", type=Path, help="TLS private key required for non-loopback binding")
+    web_parser.add_argument("--token-file", type=Path, help="local token file required for non-loopback binding")
 
     plan_parser = subparsers.add_parser(
         "plan", help="canonicalize and cost an active plan without executing it"
@@ -511,6 +519,24 @@ def _dispatch(args: argparse.Namespace) -> int:
         with HistoryStore(args.data_path) as history:
             payload, human = asyncio.run(_run_agent(args, history))
         _emit(payload, human, as_json=as_json)
+        return EXIT_OK
+    if args.command == "web":
+        token = None
+        if args.token_file is not None:
+            try:
+                token = args.token_file.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise CliError(f"cannot read web token file: {exc.strerror or 'unavailable'}") from exc
+        serve_web(
+            WebConfig(
+                bind_host=args.bind,
+                port=args.port,
+                certificate_path=args.cert,
+                key_path=args.key,
+                token=token,
+            ),
+            history_path=args.data_path,
+        )
         return EXIT_OK
     if args.command == "plan":
         ports = _parse_ports(args.ports)

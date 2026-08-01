@@ -89,6 +89,13 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(CliError):
             parser.parse_args(("paired", "--config", "peer.json", "--identity", "peer", "--address", "127.0.0.1", "--port", "1"))
 
+    def test_web_parser_exposes_only_lifecycle_and_transport_security_options(self) -> None:
+        parser = build_parser()
+        web = parser.parse_args(("web", "--bind", "127.0.0.1", "--port", "0", "--cert", "cert.pem", "--key", "key.pem", "--token-file", "token.txt"))
+        self.assertEqual((web.command, web.bind, web.port, web.cert.name, web.key.name, web.token_file.name), ("web", "127.0.0.1", 0, "cert.pem", "key.pem", "token.txt"))
+        with self.assertRaises(CliError):
+            parser.parse_args(("web", "--target", "192.0.2.1"))
+
     def test_discovery_parser_exposes_only_passive_or_fixed_tcp_controls(self) -> None:
         parser = build_parser()
         active = parser.parse_args(("discover", "--network", "127.0.0.1/32", "--scope", "127.0.0.0/8", "--profile", "custom", "--ports", "443", "--authorized"))
