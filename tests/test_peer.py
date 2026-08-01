@@ -228,6 +228,31 @@ class PeerControlTests(PeerStartupTests):
             finally:
                 await agent.stop()
 
+    async def test_peer_client_completes_strict_mutual_tls_control(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            token_path = Path(temporary) / "token"
+            token_path.write_text("test-token", encoding="utf-8")
+            agent = PeerAgent(
+                self._config(token_path),
+                handlers={"capabilities": lambda _frame: {"capabilities": ["paired-v1"]}},
+            )
+            await agent.start()
+            try:
+                server = agent.server
+                assert server is not None
+                client_config = self._config(
+                    token_path,
+                    control_port=server.sockets[0].getsockname()[1],
+                    certificate_path=FIXTURE_DIR / "peer-client-cert.pem",
+                    key_path=FIXTURE_DIR / "peer-client-key.pem",
+                    peer_pins=(self._pin(FIXTURE_DIR / "localhost-cert.pem"),),
+                    server_hostname="localhost",
+                )
+                frame = await PeerClient(client_config).request(self._frame())
+                self.assertEqual(dict(frame.body), {"capabilities": ["paired-v1"]})
+            finally:
+                await agent.stop()
+
     async def test_malformed_frames_and_bad_token_fail_before_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             token_path = Path(temporary) / "token"
