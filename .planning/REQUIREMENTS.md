@@ -22,18 +22,18 @@
 
 ### Local network inventory
 
-- [ ] **INVT-01**: 用户能查看主机名、操作系统、Mercury/Python 版本、采集时间和本机能力/降级原因。
-- [ ] **INVT-02**: 用户能查看各网卡的名称、状态、IPv4/IPv6 地址与前缀、MAC、MTU和可用时的链路速度。
-- [ ] **INVT-03**: 用户能查看默认网关、路由和 DNS 服务器；某个平台无法结构化读取时会看到明确的 unavailable/error 证据。
+- [x] **INVT-01**: 用户能查看主机名、操作系统、Mercury/Python 版本、采集时间和本机能力/降级原因。
+- [x] **INVT-02**: 用户能查看各网卡的名称、状态、IPv4/IPv6 地址与前缀、MAC、MTU和可用时的链路速度。
+- [x] **INVT-03**: 用户能查看默认网关、路由和 DNS 服务器；某个平台无法结构化读取时会看到明确的 unavailable/error 证据。
 - [x] **INVT-04**: 用户能查看被动 ARP/NDP 邻居，以及在 `lldpctl -f json` 可用时看到 LLDP 邻居。
 - [x] **INVT-05**: 用户界面明确区分网关、L2 邻居、首个路由跳、Wi-Fi AP 与 LLDP 基础设施；没有直接证据时显示“无法从本机观测交换机”。
 
 ### Layered diagnosis
 
-- [ ] **DIAG-01**: 用户可以运行 basic 诊断，分别检查本地接口/路由、DNS、公共 IP 的 TCP、TLS 和多个常用 HTTPS 目标。
-- [ ] **DIAG-02**: 用户可以选择面向中国常用站点的 profile，或通过 CLI 指定额外的 host:port 目标与超时。
-- [ ] **DIAG-03**: 每个 DNS/TCP/TLS/HTTP/native-ping 探针均报告分层结果、耗时、尝试次数和错误证据。
-- [ ] **DIAG-04**: CLI 同一诊断可输出简洁人类可读摘要或稳定 JSON，并用退出码区分 healthy、partial 和 failed。
+- [x] **DIAG-01**: 用户可以运行 basic 诊断，分别检查本地接口/路由、DNS、公共 IP 的 TCP、TLS 和多个常用 HTTPS 目标。
+- [x] **DIAG-02**: 用户可以选择面向中国常用站点的 profile，或通过 CLI 指定额外的 host:port 目标与超时。
+- [x] **DIAG-03**: 每个 DNS/TCP/TLS/HTTP/native-ping 探针均报告分层结果、耗时、尝试次数和错误证据。
+- [x] **DIAG-04**: CLI 同一诊断可输出简洁人类可读摘要或稳定 JSON，并用退出码区分 healthy、partial 和 failed。
 
 ### Discovery and route analysis
 
