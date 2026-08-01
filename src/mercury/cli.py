@@ -32,7 +32,8 @@ from .planner import (
 )
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import DiagnosisRequest
-from .render import render_diagnosis, render_history, render_preview, render_result, render_status
+from .paired import PairedRequest
+from .render import render_diagnosis, render_history, render_paired, render_preview, render_result, render_status
 from .tasks import SyntheticRunner, TaskService
 
 EXIT_OK = 0
@@ -137,6 +138,15 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose_parser.add_argument("--timeout", type=float, default=3.0)
     diagnose_parser.add_argument("--authorized", action="store_true")
     _add_json_option(diagnose_parser)
+
+    paired_parser = subparsers.add_parser("paired", help="run the fixed authenticated paired profile")
+    paired_parser.add_argument("--config", type=Path, required=True, help="operator-provisioned peer configuration path")
+    paired_parser.add_argument("--identity", required=True, help="configured peer identity")
+    paired_parser.add_argument("--address", required=True, help="configured peer numeric address")
+    paired_parser.add_argument("--timeout", type=float, default=3.0)
+    paired_parser.add_argument("--authorized", action="store_true")
+    paired_parser.add_argument("--unsafe-development", action="store_true")
+    _add_json_option(paired_parser)
 
     plan_parser = subparsers.add_parser(
         "plan", help="canonicalize and cost an active plan without executing it"
@@ -367,6 +377,16 @@ def diagnosis_exit_code(result: TaskResult) -> int:
     return exit_code
 
 
+def paired_exit_code(result: TaskResult) -> int:
+    conclusions = [item for item in result.conclusions if item.id == "paired-health"]
+    if len(conclusions) != 1:
+        raise RuntimeError("paired-health conclusion contract violated")
+    exit_code = {Health.HEALTHY: EXIT_OK, Health.FAILED: EXIT_FAILED, Health.PARTIAL: EXIT_PARTIAL}.get(conclusions[0].health)
+    if exit_code is None:
+        raise RuntimeError("paired-health conclusion contract violated")
+    return exit_code
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     as_json = bool(getattr(args, "json", False))
     if args.command == "version":
@@ -401,6 +421,16 @@ def _dispatch(args: argparse.Namespace) -> int:
             result = asyncio.run(application.diagnose(request))
             _emit(result_to_wire(result), render_diagnosis(result), as_json=as_json)
             return diagnosis_exit_code(result)
+    if args.command == "paired":
+        request = PairedRequest(
+            identity=args.identity, address=args.address, config_path=str(args.config),
+            timeout_s=args.timeout, authorized=args.authorized,
+            unsafe_development=args.unsafe_development,
+        )
+        with HistoryStore(args.data_path) as history:
+            result = asyncio.run(MercuryApplication(history=history).run_paired(request))
+        _emit(result_to_wire(result), render_paired(result), as_json=as_json)
+        return paired_exit_code(result)
     if args.command == "plan":
         ports = _parse_ports(args.ports)
         transports = tuple(args.transports or ("tcp",))
@@ -501,5 +531,6 @@ __all__ = [
     "MercuryArgumentParser",
     "build_parser",
     "diagnosis_exit_code",
+    "paired_exit_code",
     "main",
 ]

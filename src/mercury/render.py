@@ -6,6 +6,7 @@ from typing import Iterable
 
 from .history import HistoryRecord
 from .models import TaskResult
+from .paired import paired_matrix
 from .planner import PlanPreview, confirmation_phrase
 
 
@@ -83,6 +84,23 @@ def render_diagnosis(result: TaskResult) -> str:
     return "\n".join(lines)
 
 
+def render_paired(result: TaskResult) -> str:
+    """Project the fixed paired matrix; it performs no network work."""
+    health = [item for item in result.conclusions if item.id == "paired-health"]
+    if len(health) != 1:
+        raise RuntimeError("paired-health conclusion contract violated")
+    lines = [f"Paired diagnosis: {health[0].health.value}", "Directional matrix"]
+    for row in paired_matrix(result):
+        citations = ", ".join(row.observation_ids)
+        lines.append(
+            f"  {row.direction} | {row.layer} | {row.outcome} | "
+            f"{row.confidence.value} | evidence: {citations}"
+        )
+        lines.extend(f"    Limitation: {item}" for item in row.limitations)
+    lines.extend(f"Limitation: {item}" for item in health[0].limitations)
+    return "\n".join(lines)
+
+
 def render_preview(preview: PlanPreview) -> str:
     estimate = preview.estimate
     lines = [
@@ -129,4 +147,4 @@ def render_history(records: Iterable[HistoryRecord]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["render_diagnosis", "render_history", "render_preview", "render_result", "render_status"]
+__all__ = ["render_diagnosis", "render_history", "render_paired", "render_preview", "render_result", "render_status"]

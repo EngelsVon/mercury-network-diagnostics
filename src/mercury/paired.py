@@ -14,16 +14,86 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from .models import Direction, Disposition, EvidenceKind, Observation, utc_now
+from .models import (
+    Confidence,
+    Direction,
+    Disposition,
+    EvidenceKind,
+    Observation,
+    TaskResult,
+    utc_now,
+)
 from .planner import ProbePlan, ProbeStep, Transport, validate_plan
 from .tasks import TaskContext
 
 _TCP_REPLY = b"MRP1A"
 _MAX_PAYLOAD = 1_400
+_MATRIX_ORDER = {"local_snapshot": 0, "system_dns": 1, "native_path": 2, "tcp_connect": 3, "udp_exchange": 4, "tls_handshake": 5, "http_exchange": 6}
 
 
 class PairedError(RuntimeError):
     """A pair-only lease was rejected before listener I/O."""
+
+
+@dataclass(frozen=True, slots=True)
+class PairedRequest:
+    """Operator input for the closed paired profile; no target/port/payload knob."""
+
+    identity: str
+    address: str
+    config_path: str
+    timeout_s: float
+    authorized: bool
+    unsafe_development: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, str) or not self.identity or len(self.identity) > 64:
+            raise PairedError("paired identity is invalid")
+        object.__setattr__(self, "address", _address(self.address, "paired address"))
+        if not isinstance(self.config_path, str) or not self.config_path or len(self.config_path) > 4096:
+            raise PairedError("paired configuration path is invalid")
+        if type(self.timeout_s) not in (int, float) or not 0.1 <= float(self.timeout_s) <= 30:
+            raise PairedError("paired timeout must be within 0.1..30 seconds")
+        object.__setattr__(self, "timeout_s", float(self.timeout_s))
+        if type(self.authorized) is not bool or type(self.unsafe_development) is not bool:
+            raise PairedError("paired authorization is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class PairedMatrixRow:
+    layer: str
+    direction: str
+    outcome: str
+    confidence: Confidence
+    observation_ids: tuple[str, ...]
+    limitations: tuple[str, ...]
+
+
+def paired_matrix(result: TaskResult) -> tuple[PairedMatrixRow, ...]:
+    """Pure, cited projection of canonical endpoint-labelled observations."""
+    if type(result) is not TaskResult:
+        raise PairedError("paired matrix requires a canonical task result")
+    grouped: dict[tuple[str, str], list[Observation]] = {}
+    for item in result.observations:
+        if "paired_endpoint" not in item.detail:
+            continue
+        direction = "A→B" if item.direction in {Direction.OUTBOUND, Direction.REVERSE} else "B→A"
+        grouped.setdefault((item.probe, direction), []).append(item)
+    rows: list[PairedMatrixRow] = []
+    for (layer, direction), observations in sorted(
+        grouped.items(), key=lambda pair: (_MATRIX_ORDER.get(pair[0][0], 99), pair[0][1]),
+    ):
+        last = observations[-1]
+        limitations = ()
+        confidence = Confidence.HIGH if last.disposition is Disposition.POSITIVE else Confidence.LOW
+        if last.evidence_kind in {EvidenceKind.SILENT, EvidenceKind.TIMEOUT}:
+            limitations = ("No arrival/reply was observed; silence is inconclusive.",)
+        rows.append(PairedMatrixRow(
+            layer=layer, direction=direction, outcome=last.evidence_kind.value,
+            confidence=confidence, observation_ids=tuple(item.id for item in observations),
+            limitations=limitations,
+        ))
+    return tuple(rows)
 
 
 def _address(value: str, label: str) -> str:
@@ -373,5 +443,6 @@ class _LeaseDatagram(asyncio.DatagramProtocol):
 
 __all__ = [
     "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
+    "PairedMatrixRow", "PairedRequest", "paired_matrix",
     "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 from .diagnosis import DiagnosisRunner
@@ -12,6 +12,7 @@ from .history import HistoryStore
 from .inventory import collect_status
 from .models import TaskResult
 from .peer import PeerAgent, PeerConfig
+from .paired import PairedRequest
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
 from .tasks import TaskService
@@ -57,6 +58,7 @@ class MercuryApplication:
         runner_factory=DiagnosisRunner,
         service_factory=TaskService,
         peer_agent_factory=PeerAgent,
+        paired_executor: Callable[[PairedRequest], Awaitable[TaskResult]] | None = None,
     ) -> None:
         self.history = history
         self.status_collector = status_collector
@@ -65,6 +67,7 @@ class MercuryApplication:
         self.runner_factory = runner_factory
         self.service_factory = service_factory
         self.peer_agent_factory = peer_agent_factory
+        self.paired_executor = paired_executor
         self._peer_agent: PeerAgent | None = None
 
     async def status(self) -> TaskResult:
@@ -115,6 +118,17 @@ class MercuryApplication:
             return
         agent, self._peer_agent = self._peer_agent, None
         await agent.stop()
+
+    async def run_paired(self, request: PairedRequest) -> TaskResult:
+        """Dispatch the closed paired profile through the application boundary."""
+        if type(request) is not PairedRequest or not request.authorized:
+            raise PolicyError("paired diagnostics require explicit authorization attestation")
+        if self.paired_executor is None:
+            raise RuntimeError("paired execution requires an application-configured peer executor")
+        result = await self.paired_executor(request)
+        if type(result) is not TaskResult:
+            raise RuntimeError("paired executor returned an invalid result")
+        return result
 
 
 __all__ = ["MercuryApplication"]

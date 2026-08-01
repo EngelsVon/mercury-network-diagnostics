@@ -19,6 +19,7 @@ from mercury.paired import (
     encode_tcp_tag,
     encode_udp_tag,
     is_valid_udp_tag,
+    paired_matrix,
 )
 from mercury.planner import (
     PayloadMetadata,
@@ -247,6 +248,28 @@ class UdpProfileTests(unittest.TestCase):
         self.assertFalse(is_valid_udp_tag(lease, payload + b"x"))
         self.assertFalse(is_valid_udp_tag(lease, b"MRP1"))
         self.assertFalse(is_valid_udp_tag(lease, b"x" * 1_401))
+
+
+class MatrixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_matrix_is_cited_and_preserves_directional_phases(self) -> None:
+        lease = _lease()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        history = HistoryStore(Path(temporary.name) / "history.sqlite3")
+        self.addCleanup(history.close)
+        service = TaskService(history)
+
+        async def runner(context: TaskContext) -> None:
+            listener = PairedListenerService(lease, context=context)
+            await listener.start()
+            await listener.stop()
+
+        result = await service.run(lease.plan, runner, task_kind="paired")
+        rows = paired_matrix(result)
+        self.assertEqual([row.layer for row in rows], ["tcp_connect", "udp_exchange"])
+        self.assertEqual({row.direction for row in rows}, {"A→B"})
+        self.assertTrue(all(row.observation_ids for row in rows))
+        self.assertTrue(any("silence is inconclusive" in row.limitations[0] for row in rows))
 
 
 def service_token():

@@ -19,6 +19,7 @@ from mercury.cli import (
     EXIT_USAGE,
     _run_synthetic,
     diagnosis_exit_code,
+    paired_exit_code,
     main,
 )
 from mercury.history import HistoryStore
@@ -57,7 +58,32 @@ def diagnosis_result(health: Health | None = Health.PARTIAL, *, duplicate: bool 
     return result
 
 
+def paired_result(health: Health = Health.PARTIAL) -> TaskResult:
+    result = diagnosis_result(None)
+    observation = result.observations[0]
+    paired = Observation(
+        "paired-observation", observation.probe, observation.disposition,
+        observation.evidence_kind, observation.direction, observation.target,
+        observation.started_at, observation.ended_at, observation.duration_ms,
+        detail={"paired_endpoint": "owned", "paired_correlation": "pair", "paired_phase": "received"},
+    )
+    return TaskResult(
+        result.task_id, "paired", result.direction, result.target, result.state,
+        result.started_at, result.ended_at, result.requested_config, result.effective_config,
+        result.progress, observations=(paired,), conclusions=(Conclusion(
+            "paired-health", "Paired health", "Typed paired evidence.", health,
+            Confidence.LOW, (paired.id,),
+        ),),
+    )
+
+
 class CliTests(unittest.TestCase):
+    def test_paired_exit_requires_one_canonical_health_conclusion(self) -> None:
+        self.assertEqual(paired_exit_code(paired_result(Health.HEALTHY)), EXIT_OK)
+        self.assertEqual(paired_exit_code(paired_result(Health.PARTIAL)), EXIT_PARTIAL)
+        self.assertEqual(paired_exit_code(paired_result(Health.FAILED)), EXIT_FAILED)
+        with self.assertRaisesRegex(RuntimeError, "paired-health"):
+            paired_exit_code(diagnosis_result())
     def test_version_and_model_json(self) -> None:
         code, output, error = invoke("version", "--json")
         self.assertEqual((code, error), (EXIT_OK, ""))
