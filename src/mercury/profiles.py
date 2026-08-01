@@ -155,8 +155,8 @@ async def compile_diagnosis(
     """
     if type(request) is not DiagnosisRequest or type(grant) is not ScopeGrant:
         raise ProfileError("request and grant must be canonical values")
-    if not request.authorized and request.profile != "custom":
-        raise ProfileError("built-in active diagnosis requires explicit authorization")
+    if not request.authorized:
+        raise ProfileError("active diagnosis requires explicit authorization")
     endpoints: tuple[CustomTarget, ...]
     definition = profile_definition(request)
     if definition is None:
@@ -183,20 +183,41 @@ async def compile_diagnosis(
             addresses = resolution.addresses
             specs.append(ProbeSpec(ProbeKind.SYSTEM_DNS, target.canonical, timeout_s=request.timeout_s, cost=_cost()))
             groups.append(ProbeGroupKey(ProbeKind.SYSTEM_DNS, target.canonical))
-        for address in addresses:
-            kwargs = {"target": target.canonical, "address": address, "port": endpoint.port, "transport": Transport.TCP, "timeout_s": request.timeout_s, "cost": _cost()}
+        for slot, address in enumerate(addresses):
+            resolution = (
+                {"source_hostname": target.canonical, "resolution_slot": slot}
+                if target.hostname is not None else {}
+            )
+            kwargs = {"target": target.canonical, "address": address, "port": endpoint.port, "transport": Transport.TCP, "timeout_s": request.timeout_s, "cost": _cost(), **resolution}
             specs.append(ProbeSpec(ProbeKind.TCP_CONNECT, **kwargs))
         groups.append(ProbeGroupKey(ProbeKind.TCP_CONNECT, target.canonical, endpoint.port))
         if endpoint.port == 443:
-            for address in addresses:
-                common = {"target": target.canonical, "address": address, "port": 443, "transport": Transport.TCP, "server_name": target.canonical, "timeout_s": request.timeout_s, "cost": _cost()}
+            for slot, address in enumerate(addresses):
+                resolution = (
+                    {"source_hostname": target.canonical, "resolution_slot": slot}
+                    if target.hostname is not None else {}
+                )
+                common = {"target": target.canonical, "address": address, "port": 443, "transport": Transport.TCP, "server_name": target.canonical, "timeout_s": request.timeout_s, "cost": _cost(), **resolution}
                 specs.append(ProbeSpec(ProbeKind.TLS_HANDSHAKE, **common))
                 specs.append(ProbeSpec(ProbeKind.HTTP_EXCHANGE, http_scheme="https", **common))
             groups.extend((ProbeGroupKey(ProbeKind.TLS_HANDSHAKE, target.canonical, 443, target.canonical), ProbeGroupKey(ProbeKind.HTTP_EXCHANGE, target.canonical, 443, target.canonical, "https")))
         elif endpoint.port == 80:
-            for address in addresses:
-                specs.append(ProbeSpec(ProbeKind.HTTP_EXCHANGE, target=target.canonical, address=address, port=80, transport=Transport.TCP, server_name=target.canonical, http_scheme="http", timeout_s=request.timeout_s, cost=_cost()))
+            for slot, address in enumerate(addresses):
+                resolution = (
+                    {"source_hostname": target.canonical, "resolution_slot": slot}
+                    if target.hostname is not None else {}
+                )
+                specs.append(ProbeSpec(ProbeKind.HTTP_EXCHANGE, target=target.canonical, address=address, port=80, transport=Transport.TCP, server_name=target.canonical, http_scheme="http", timeout_s=request.timeout_s, cost=_cost(), **resolution))
             groups.append(ProbeGroupKey(ProbeKind.HTTP_EXCHANGE, target.canonical, 80, target.canonical, "http"))
+    if definition is not None:
+        raw = parse_target(definition.raw_tcp_target.host)
+        specs.extend((
+            ProbeSpec(ProbeKind.NATIVE_PING, raw.canonical, address=raw.canonical,
+                      timeout_s=request.timeout_s, required=False, cost=_cost()),
+            ProbeSpec(ProbeKind.NATIVE_PATH, raw.canonical, address=raw.canonical,
+                      max_hops=8, timeout_s=request.timeout_s, required=False,
+                      cost=_cost(packets=24, observations=9)),
+        ))
     preview = preview_probe_plan(specs=tuple(specs), grant=grant, profile=profile)
     return CompiledDiagnosis(request, profile, tuple(item.canonical for item in endpoints), authorize_plan(preview), tuple(groups))
 

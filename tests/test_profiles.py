@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import unittest
 
 from mercury.profiles import (
@@ -20,6 +21,25 @@ class ProfileRequestTests(unittest.TestCase):
         self.assertEqual(CHINA_V1.name, "china-v1")
         self.assertEqual(len(BASIC_V1.https_hosts), 3)
         self.assertEqual(len(CHINA_V1.https_hosts), 3)
+
+    def test_builtin_profile_keeps_optional_native_context_out_of_required_groups(self) -> None:
+        async def loopback(hostname, **_):
+            from mercury.platform.common import CommandOutcome
+            from mercury.resolver import ResolutionResult
+            return ResolutionResult(hostname, ("127.0.0.1",), CommandOutcome.SUCCESS)
+
+        compiled = __import__("asyncio").run(compile_diagnosis(
+            DiagnosisRequest(profile="basic", authorized=True),
+            grant=ScopeGrant(
+                networks=(ipaddress.ip_network("1.1.1.1/32"),),
+                hostnames=BASIC_V1.https_hosts, ports=(53, 443), transports=("tcp",),
+                attested=True,
+            ), resolver=loopback,
+        ))
+        kinds = {step.probe_kind for step in compiled.plan.preview.steps}
+        self.assertIn(__import__("mercury.models", fromlist=["ProbeKind"]).ProbeKind.NATIVE_PING, kinds)
+        self.assertIn(__import__("mercury.models", fromlist=["ProbeKind"]).ProbeKind.NATIVE_PATH, kinds)
+        self.assertNotIn(__import__("mercury.models", fromlist=["ProbeKind"]).ProbeKind.NATIVE_PATH, {item.probe_kind for item in compiled.required_groups})
 
     def test_request_rejects_invalid_timeout_and_scope_shapes(self) -> None:
         for timeout in (0, 30.1, float("inf"), True):
