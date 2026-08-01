@@ -179,7 +179,7 @@ inspect history/reports and install a verified cross-platform v1 release.
 Plans:
 
 - [x] 05-01: Implement the stdlib HTTP task API and accessible native HTML/CSS/JS dashboard with polling/cancellation.
-- [ ] 05-02: Implement history browsing, centralized redaction and JSON/self-contained HTML reports.
+- [x] 05-02: Implement history browsing, centralized redaction and JSON/self-contained HTML reports.
 - [ ] 05-03: Complete controlled/cross-platform E2E, clean-install packaging, security/code/Ponytail reviews and user documentation.
 
 ## Progress
@@ -192,7 +192,7 @@ Plans:
 | 2. Local Snapshot and Layered Diagnosis | 4/4 | Complete | 2026-08-01 |
 | 3. Authenticated Paired Differential Diagnostics | 3/3 | Complete | 2026-08-02 |
 | 4. Safe Discovery, Topology Evidence, and Routes | 2/2 | Complete | 2026-08-02 |
-| 5. WebUI, Reports, and Release Hardening | 1/3 | In progress | - |
+| 5. WebUI, Reports, and Release Hardening | 2/3 | In progress | - |
 
 ---
 *Roadmap created: 2026-07-30*  
