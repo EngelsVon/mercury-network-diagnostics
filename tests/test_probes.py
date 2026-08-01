@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import errno
+import ipaddress
+from pathlib import Path
 import ssl
 import unittest
 
 from mercury.models import Disposition, EvidenceKind, ProbeKind
 from mercury.platform.common import CommandOutcome
 from mercury.platform.common import CommandResult
-from mercury.planner import PreparedStep
+from mercury.planner import PreparedStep, ProbeSpec, StepCost, Transport, preview_probe_plan
 from mercury.policy import ScopeGrant
 from mercury.probes import dns_probe, http_probe, tcp_probe, tls_probe
 from mercury.profiles import DiagnosisRequest, compile_diagnosis
@@ -162,6 +165,36 @@ class ConnectorBindingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TlsLoopbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_controlled_loopback_tls_succeeds_only_with_its_explicit_ca(self) -> None:
+        cert_data = Path(__import__("sys").base_prefix) / "Lib" / "test" / "certdata"
+        certificate, server_chain = cert_data / "pycacert.pem", cert_data / "keycert3.pem"
+        self.assertTrue(certificate.is_file() and server_chain.is_file(), "CPython test TLS certificate is unavailable")
+        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.load_cert_chain(server_chain)
+        async def handler(reader, writer):
+            writer.close()
+            await writer.wait_closed()
+        server = await asyncio.start_server(
+            handler, "127.0.0.1", 0, ssl=server_context, ssl_handshake_timeout=1.0,
+        )
+        try:
+            port = server.sockets[0].getsockname()[1]
+            grant = ScopeGrant(networks=(ipaddress.ip_network("127.0.0.0/8"),), hostnames=("localhost",), ports=(port,), transports=("tcp",), attested=True)
+            preview = preview_probe_plan(
+                specs=(ProbeSpec(ProbeKind.TLS_HANDSHAKE, "localhost", address="127.0.0.1", port=port,
+                                 transport=Transport.TCP, source_hostname="localhost", resolution_slot=0,
+                                 server_name="localhost", timeout_s=3.0, cost=StepCost(1, 0, 0, logical_packets=1)),),
+                grant=grant, profile="loopback-test-v1",
+            )
+            prepared = PreparedStep(preview.steps[0], "127.0.0.1")
+            trusted = await tls_probe(prepared, ssl_context_factory=lambda: ssl.create_default_context(cafile=str(certificate)))
+            untrusted = await tls_probe(prepared)
+            self.assertEqual(trusted.evidence_kind, EvidenceKind.TLS_HANDSHAKE)
+            self.assertEqual(untrusted.evidence_kind, EvidenceKind.TLS_VERIFICATION_FAILED)
+        finally:
+            server.close()
+            await server.wait_closed()
+
     async def test_default_tls_context_keeps_hostname_and_certificate_checks(self) -> None:
         prepared = next(step for step in await _compiled_steps() if step.step.probe_kind is ProbeKind.TLS_HANDSHAKE)
         seen = []
