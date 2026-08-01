@@ -819,16 +819,17 @@ def _terminal_result(
     context: TaskContext,
     *,
     state: TaskState,
+    diagnosis_groups: tuple[object, ...] | None = None,
     ended_at: datetime,
 ) -> TaskResult:
     observations = tuple(context.observations)
-    conclusions = (
-        *context.conclusions,
-        *_derive_conclusion(
-            observations,
-            state=state,
-        ),
-    )
+    if diagnosis_groups is None:
+        derived = _derive_conclusion(observations, state=state)
+    else:
+        # Closed service-owned branch: callers cannot substitute a classifier.
+        from .diagnosis import classify_diagnosis
+        derived = (classify_diagnosis(context.plan, diagnosis_groups, observations),)
+    conclusions = (*context.conclusions, *derived)
     result = _make_result(
         task_id=context.task_id,
         task_kind=context.task_kind,
@@ -992,6 +993,8 @@ class TaskService:
         requested_config: dict[str, object] | None = None,
         task_id: str | None = None,
     ) -> str:
+        if task_kind == "diagnose":
+            raise TaskError("diagnose tasks must use submit_diagnosis")
         validation_time = self._wall_clock()
         validate_plan(plan, now=validation_time)
         identifier = task_id or str(uuid.uuid4())
@@ -1048,7 +1051,59 @@ class TaskService:
                 task_kind=task_kind,
                 requested_config=request,
                 token=token,
+                diagnosis_groups=None,
             ),
+            name=f"mercury:{identifier}",
+        )
+        return identifier
+
+    def submit_diagnosis(
+        self,
+        compiled: object,
+        runner: Runner,
+        *,
+        requested_config: dict[str, object] | None = None,
+        task_id: str | None = None,
+    ) -> str:
+        """Submit only a frozen profile compilation through the closed branch."""
+        from .profiles import CompiledDiagnosis
+        if type(compiled) is not CompiledDiagnosis:
+            raise TaskError("diagnose tasks require CompiledDiagnosis")
+        # Dataclass validation rejects noncanonical group members; plan
+        # validation remains the normal trust-boundary check in _submit.
+        return self._submit_diagnosis(
+            compiled.plan, runner, compiled.required_groups,
+            requested_config=requested_config, task_id=task_id,
+        )
+
+    def _submit_diagnosis(
+        self,
+        plan: ProbePlan,
+        runner: Runner,
+        groups: tuple[object, ...],
+        *,
+        requested_config: dict[str, object] | None,
+        task_id: str | None,
+    ) -> str:
+        validation_time = self._wall_clock()
+        validate_plan(plan, now=validation_time)
+        identifier = task_id or str(uuid.uuid4())
+        if identifier in self._tasks or identifier in self._results:
+            raise TaskError(f"duplicate task ID {identifier!r}")
+        request = project_history_request(dict(requested_config or {}))
+        effective = _effective_config(plan)
+        self.history.create_task(
+            task_id=identifier, task_kind="diagnose", request=request, plan=plan.to_wire(),
+            owner_id=self._owner_id,
+            lease_expires_at=validation_time + timedelta(seconds=plan.preview.limits.max_duration_s + LEASE_FINALIZATION_GRACE_SECONDS),
+            created_at=validation_time,
+            accepted_payload={"state": TaskState.PENDING.value, "plan_digest": plan.digest},
+        )
+        token = CancellationToken.create()
+        self._tokens[identifier] = token
+        self._tasks[identifier] = asyncio.create_task(
+            self._execute(identifier, plan, runner, task_kind="diagnose", requested_config=request,
+                          token=token, diagnosis_groups=groups),
             name=f"mercury:{identifier}",
         )
         return identifier
@@ -1116,6 +1171,7 @@ class TaskService:
         task_kind: str,
         requested_config: dict[str, object],
         token: CancellationToken,
+        diagnosis_groups: tuple[object, ...] | None,
     ) -> TaskResult:
         try:
             return await self._execute_inner(
@@ -1125,6 +1181,7 @@ class TaskService:
                 task_kind=task_kind,
                 requested_config=requested_config,
                 token=token,
+                diagnosis_groups=diagnosis_groups,
             )
         finally:
             self._tokens.pop(task_id, None)
@@ -1139,6 +1196,7 @@ class TaskService:
         task_kind: str,
         requested_config: dict[str, object],
         token: CancellationToken,
+        diagnosis_groups: tuple[object, ...] | None,
     ) -> TaskResult:
         started_at = self._wall_clock()
         context = TaskContext(
@@ -1272,7 +1330,8 @@ class TaskService:
                 else TaskState.COMPLETED
             )
             try:
-                result = _terminal_result(context, state=state, ended_at=ended_at)
+                result = _terminal_result(context, state=state, ended_at=ended_at,
+                                          diagnosis_groups=diagnosis_groups)
             except Exception as exc:
                 result = _finalization_failure_result(
                     context,
