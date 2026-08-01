@@ -13,7 +13,7 @@ engine.
 ## Phases
 
 - [x] **Phase 1: Evidence and Safety Foundation** - Establish the package, versioned observations, policy/budgets, task lifecycle and local history.
-- [ ] **Phase 2: Local Snapshot and Layered Diagnosis** - Deliver a useful cross-platform CLI for network facts and multi-layer reachability.
+- [x] **Phase 2: Local Snapshot and Layered Diagnosis** - Deliver a useful Windows/Ubuntu CLI for network facts and multi-layer reachability.
 - [ ] **Phase 3: Authenticated Paired Differential Diagnostics** - Run one bounded cross-layer plan from both Mercury endpoints and explain directional differences.
 - [ ] **Phase 4: Safe Discovery, Topology Evidence, and Routes** - Add passive-first subnet context, bounded TCP discovery, honest route evidence, neighbors and optional LLDP.
 - [ ] **Phase 5: WebUI, Reports, and Release Hardening** - Ship the shared-engine dashboard, reports, compatibility checks, documentation and end-to-end verification.
@@ -80,7 +80,7 @@ Plans:
 - [x] 02-03: Implement immutable basic/China/custom profiles, bounded DNS/TCP/TLS/HTTP/native probes and endpoint-scoped diagnosis.
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 02-04: Add the shared application facade, `status`/`diagnose` projections, stable exits, controlled smoke, installation parity and documentation.
+- [x] 02-04: Add the shared application facade, `status`/`diagnose` projections, stable exits, controlled smoke, installation parity and documentation.
 
 ### Phase 3: Authenticated Paired Differential Diagnostics
 
@@ -189,7 +189,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Evidence and Safety Foundation | 3/3 | Complete | 2026-07-30 |
-| 2. Local Snapshot and Layered Diagnosis | 3/4 | In progress | 2026-08-01 |
+| 2. Local Snapshot and Layered Diagnosis | 4/4 | Complete | 2026-08-01 |
 | 3. Authenticated Paired Differential Diagnostics | 0/3 | Not started | - |
 | 4. Safe Discovery, Topology Evidence, and Routes | 0/2 | Not started | - |
 | 5. WebUI, Reports, and Release Hardening | 0/3 | Not started | - |

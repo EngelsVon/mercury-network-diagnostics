@@ -1,0 +1,79 @@
+{
+  "access_switch": "not_observable",
+  "capabilities": [
+    {
+      "name": "hostname",
+      "source": "socket.gethostname",
+      "state": "available"
+    },
+    {
+      "name": "system",
+      "source": "platform.system",
+      "state": "available"
+    },
+    {
+      "name": "release",
+      "source": "platform.release",
+      "state": "available"
+    },
+    {
+      "name": "machine",
+      "source": "platform.machine",
+      "state": "available"
+    },
+    {
+      "name": "python_version",
+      "source": "platform.python_version",
+      "state": "available"
+    },
+    {
+      "name": "mercury_version",
+      "source": "mercury.__version__",
+      "state": "available"
+    },
+    {
+      "name": "collection_time",
+      "source": "mercury.clock",
+      "state": "available"
+    },
+    {
+      "name": "interface_addresses",
+      "source": "psutil.net_if_addrs",
+      "state": "available"
+    },
+    {
+      "name": "interface_stats",
+      "source": "psutil.net_if_stats",
+      "state": "available"
+    },
+    {
+      "name": "platform_inventory",
+      "source": "mercury.platform",
+      "state": "available"
+    },
+    {
+      "name": "linux_routes_ipv4",
+      "source": "linux.iproute2",
+      "state": "available"
+    },
+    {
+      "name": "linux_routes_ipv6",
+      "source": "linux.iproute2",
+      "state": "available"
+    },
+    {
+      "name": "linux_dns_resolv_conf",
+      "source": "linux.resolv.conf",
+      "state": "available"
+    },
+    {
+      "name": "linux_dns_resolvectl",
+      "source": "linux.resolvectl",
+      "state": "error"
+    }
+  ],
+  "platform": "ubuntu-24.04",
+  "reason": "no_direct_lldp_or_managed_evidence",
+  "state": "completed",
+  "task_kind": "status"
+}
