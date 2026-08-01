@@ -1240,10 +1240,34 @@ def validate_preview(
     preview.scope.assert_current(instant)
     snapshots = {item.hostname: item for item in preview.resolutions}
     hostname_targets = {
-        target.hostname for target in preview.targets if target.hostname is not None
+        step.source_hostname
+        for step in preview.steps
+        if step.source_hostname is not None
     }
     if set(snapshots) != hostname_targets:
         raise ConfirmationError("plan resolution snapshots do not match targets")
+    if any(step.probe_kind not in {ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE} for step in preview.steps):
+        try:
+            rebuilt = preview_probe_plan(
+                specs=tuple(
+                    ProbeSpec(
+                        probe_kind=step.probe_kind, target=step.target, address=step.address,
+                        scope_id=step.scope_id, port=step.port, transport=step.transport,
+                        attempt=step.attempt, source_hostname=step.source_hostname,
+                        resolution_slot=step.resolution_slot, server_name=step.server_name,
+                        http_scheme=step.http_scheme, max_hops=step.max_hops,
+                        timeout_s=step.timeout_s, required=step.required,
+                        payload_metadata=step.payload, cost=step.cost,
+                    ) for step in preview.steps
+                ),
+                grant=preview.scope, profile=preview.profile, limits=preview.limits,
+                now=preview.created_at,
+            )
+        except (BudgetError, ConfirmationError, PolicyError, ValueError) as exc:
+            raise ConfirmationError("sparse plan preview failed canonical recompilation") from exc
+        if rebuilt != preview:
+            raise ConfirmationError("sparse plan preview does not match canonical identity")
+        return rebuilt
     payloads = {step.payload for step in preview.steps}
     if len(payloads) != 1:
         raise ConfirmationError("plan steps disagree about payload metadata")
