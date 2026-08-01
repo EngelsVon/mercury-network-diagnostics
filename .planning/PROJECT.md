@@ -14,7 +14,7 @@ Mercury 的重点不是“某个 IP 能不能 ping 通”这一位结果，而�
 
 ### Validated
 
-(None yet — ship to validate)
+- Phase 4 (2026-08-02): passive IPv4/route/neighbor context, direct-LLDP-only topology evidence, scope-bound TCP discovery, and repeated native route traces were validated with controlled tests. Gateway, neighbor and route-hop data remain explicitly non-switch evidence.
 
 ### Active
 
@@ -88,4 +88,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-07-30 after research and roadmap reconciliation*
+*Last updated: 2026-08-02 after Phase 4 verification*

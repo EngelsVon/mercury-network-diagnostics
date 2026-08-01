@@ -15,7 +15,7 @@ engine.
 - [x] **Phase 1: Evidence and Safety Foundation** - Establish the package, versioned observations, policy/budgets, task lifecycle and local history.
 - [x] **Phase 2: Local Snapshot and Layered Diagnosis** - Deliver a useful Windows/Ubuntu CLI for network facts and multi-layer reachability.
 - [x] **Phase 3: Authenticated Paired Differential Diagnostics** - Run one bounded cross-layer plan from both Mercury endpoints and explain directional differences.
-- [ ] **Phase 4: Safe Discovery, Topology Evidence, and Routes** - Add passive-first subnet context, bounded TCP discovery, honest route evidence, neighbors and optional LLDP.
+- [x] **Phase 4: Safe Discovery, Topology Evidence, and Routes** - Add passive-first subnet context, bounded TCP discovery, honest route evidence, neighbors and optional LLDP.
 - [ ] **Phase 5: WebUI, Reports, and Release Hardening** - Ship the shared-engine dashboard, reports, compatibility checks, documentation and end-to-end verification.
 
 ## Phase Details
@@ -146,8 +146,8 @@ misleading silence/path claims.
 
 Plans:
 
-- [ ] 04-01: Implement passive candidates, ARP/NDP, Wi-Fi AP and optional LLDP evidence plus authorized bounded TCP discovery and full-port safety gate.
-- [ ] 04-02: Implement native repeated route tracing, normalized hop evidence, CLI projections and discovery/trace/topology tests.
+- [x] 04-01: Implement passive candidates, ARP/NDP, Wi-Fi AP and optional LLDP evidence plus authorized bounded TCP discovery and full-port safety gate.
+- [x] 04-02: Implement native repeated route tracing, normalized hop evidence, CLI projections and discovery/trace/topology tests.
 
 ### Phase 5: WebUI, Reports, and Release Hardening
 
@@ -191,7 +191,7 @@ Plans:
 | 1. Evidence and Safety Foundation | 3/3 | Complete | 2026-07-30 |
 | 2. Local Snapshot and Layered Diagnosis | 4/4 | Complete | 2026-08-01 |
 | 3. Authenticated Paired Differential Diagnostics | 3/3 | Complete | 2026-08-02 |
-| 4. Safe Discovery, Topology Evidence, and Routes | 0/2 | Not started | - |
+| 4. Safe Discovery, Topology Evidence, and Routes | 2/2 | Complete | 2026-08-02 |
 | 5. WebUI, Reports, and Release Hardening | 0/3 | Not started | - |
 
 ---

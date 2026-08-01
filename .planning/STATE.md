@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 03 complete; Phase 04 ready for planning
-last_updated: "2026-08-02T02:25:00Z"
-last_activity: 2026-08-02 -- Phase 03 completed with uv verification and a controlled Windows/Ubuntu mTLS smoke
+stopped_at: Phase 04 complete; Phase 05 ready for planning
+last_updated: "2026-08-02T12:00:00Z"
+last_activity: 2026-08-02 -- Phase 04 completed with uv verification, passive discovery and bounded native route traces
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 15
-  completed_plans: 10
-  percent: 67
+  completed_plans: 12
+  percent: 80
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-07-30)
 
 **Core value:** 在用户明确授权的网络范围内，以安全、可解释且可复现的方式定位节点间可达性故障及其网络层原因。  
-**Current focus:** Phase 04 — safe-discovery-topology-and-routes
+**Current focus:** Phase 05 — webui-reports-and-release-hardening
 
 ## Current Position
 
-Phase: 04 (safe-discovery-topology-and-routes) — READY TO PLAN
+Phase: 05 (webui-reports-and-release-hardening) — READY TO PLAN
 
 Plan: not yet planned
-Status: Phase 03 complete; Phase 04 is the next roadmap phase
-Last activity: 2026-08-02 -- controlled strict-mTLS TCP/UDP smoke passed
+Status: Phase 04 complete; Phase 05 is the next roadmap phase
+Last activity: 2026-08-02 -- passive IPv4/route/neighbor context, bounded TCP discovery and repeated native traces verified
 
-Progress: [#######---] 67%
+Progress: [########--] 80%
 
 ## Performance Metrics
 

@@ -25,8 +25,8 @@
 - [ ] **INVT-01**: 用户能查看主机名、操作系统、Mercury/Python 版本、采集时间和本机能力/降级原因。
 - [ ] **INVT-02**: 用户能查看各网卡的名称、状态、IPv4/IPv6 地址与前缀、MAC、MTU和可用时的链路速度。
 - [ ] **INVT-03**: 用户能查看默认网关、路由和 DNS 服务器；某个平台无法结构化读取时会看到明确的 unavailable/error 证据。
-- [ ] **INVT-04**: 用户能查看被动 ARP/NDP 邻居，以及在 `lldpctl -f json` 可用时看到 LLDP 邻居。
-- [ ] **INVT-05**: 用户界面明确区分网关、L2 邻居、首个路由跳、Wi-Fi AP 与 LLDP 基础设施；没有直接证据时显示“无法从本机观测交换机”。
+- [x] **INVT-04**: 用户能查看被动 ARP/NDP 邻居，以及在 `lldpctl -f json` 可用时看到 LLDP 邻居。
+- [x] **INVT-05**: 用户界面明确区分网关、L2 邻居、首个路由跳、Wi-Fi AP 与 LLDP 基础设施；没有直接证据时显示“无法从本机观测交换机”。
 
 ### Layered diagnosis
 
@@ -37,11 +37,11 @@
 
 ### Discovery and route analysis
 
-- [ ] **DISC-01**: 用户无需发送探测包即可先看到从接口、路由和邻居缓存推导出的可见网段与候选主机。
-- [ ] **DISC-02**: 用户可在显式授权 CIDR 中以有界并发扫描版本化常用 TCP 端口 profile，并逐步看到进度。
-- [ ] **DISC-03**: 用户可显式选择任意 TCP 端口范围（包括 1–65535），但任务仍受预算、时间上限和危险确认约束。
-- [ ] **DISC-04**: IPv6 discovery 只使用显式地址和被动邻居，不枚举巨大 IPv6 网段。
-- [ ] **DISC-05**: 用户可追踪到目标的路由，选择可用的 native 模式、重复次数和超时，并保留未响应跳及原始命令证据。
+- [x] **DISC-01**: 用户无需发送探测包即可先看到从接口、路由和邻居缓存推导出的可见网段与候选主机。
+- [x] **DISC-02**: 用户可在显式授权 CIDR 中以有界并发扫描版本化常用 TCP 端口 profile，并逐步看到进度。
+- [x] **DISC-03**: 用户可显式选择任意 TCP 端口范围（包括 1–65535），但任务仍受预算、时间上限和危险确认约束。
+- [x] **DISC-04**: IPv6 discovery 只使用显式地址和被动邻居，不枚举巨大 IPv6 网段。
+- [x] **DISC-05**: 用户可追踪到目标的路由，选择可用的 native 模式、重复次数和超时，并保留未响应跳及原始命令证据。
 
 ### Paired Mercury diagnostics
 
@@ -119,17 +119,17 @@
 | INVT-01 | Phase 2 | Complete |
 | INVT-02 | Phase 2 | Complete |
 | INVT-03 | Phase 2 | Complete |
-| INVT-04 | Phase 4 | Pending |
-| INVT-05 | Phase 4 | Pending |
+| INVT-04 | Phase 4 | Complete |
+| INVT-05 | Phase 4 | Complete |
 | DIAG-01 | Phase 2 | Complete |
 | DIAG-02 | Phase 2 | Complete |
 | DIAG-03 | Phase 2 | Complete |
 | DIAG-04 | Phase 2 | Complete |
-| DISC-01 | Phase 4 | Pending |
-| DISC-02 | Phase 4 | Pending |
-| DISC-03 | Phase 4 | Pending |
-| DISC-04 | Phase 4 | Pending |
-| DISC-05 | Phase 4 | Pending |
+| DISC-01 | Phase 4 | Complete |
+| DISC-02 | Phase 4 | Complete |
+| DISC-03 | Phase 4 | Complete |
+| DISC-04 | Phase 4 | Complete |
+| DISC-05 | Phase 4 | Complete |
 | PEER-01 | Phase 3 | Complete |
 | PEER-02 | Phase 3 | Complete |
 | PEER-03 | Phase 3 | Complete |
