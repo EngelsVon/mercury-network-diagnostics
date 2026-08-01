@@ -20,6 +20,7 @@ from mercury.peer import (
     PeerConfig,
     PeerConfigurationError,
     PeerFrame,
+    load_peer_config,
 )
 
 
@@ -35,6 +36,21 @@ class _FakeServer:
 
 
 class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_strict_file_config_keeps_only_secret_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "peer.json"
+            config_path.write_text(json.dumps({
+                "identity": "loopback-peer", "bind_host": "127.0.0.1",
+                "control_port": 0, "peer_pins": [], "peer_addresses": ["127.0.0.1"],
+                "token_path": "token.txt",
+            }), encoding="utf-8")
+            config = load_peer_config(config_path, unsafe_development=True)
+            self.assertEqual(config.token_path, Path(temporary) / "token.txt")
+            self.assertTrue(config.unsafe_development)
+            config_path.write_text('{"identity":"x"}', encoding="utf-8")
+            with self.assertRaisesRegex(PeerConfigurationError, "fields"):
+                load_peer_config(config_path)
+
     def _config(self, default_token_path: Path, **changes: object) -> PeerConfig:
         values: dict[str, object] = {
             "identity": "loopback-peer",

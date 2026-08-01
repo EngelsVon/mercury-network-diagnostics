@@ -134,6 +134,43 @@ class PeerConfig:
             raise PeerConfigurationError("peer configuration requires a pin")
 
 
+def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerConfig:
+    """Load one strict operator-provisioned peer configuration file.
+
+    Configuration holds only paths to secret material.  It is intentionally
+    decoded at the application boundary and never copied to a task result.
+    """
+    if not isinstance(path, Path) or not path.is_file():
+        raise PeerConfigurationError("peer configuration path is unavailable")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PeerConfigurationError("peer configuration is invalid") from exc
+    if not isinstance(value, dict):
+        raise PeerConfigurationError("peer configuration must be an object")
+    required = {"identity", "bind_host", "control_port", "peer_pins", "peer_addresses"}
+    optional = {"certificate_path", "key_path", "ca_path", "token_path", "server_hostname"}
+    if set(value) - required - optional or required - set(value):
+        raise PeerConfigurationError("peer configuration fields are invalid")
+    def path_value(name: str) -> Path | None:
+        item = value.get(name)
+        if item is None:
+            return None
+        if not isinstance(item, str) or not item or len(item) > 4096:
+            raise PeerConfigurationError("peer configuration path is invalid")
+        return (path.parent / item).resolve() if not Path(item).is_absolute() else Path(item)
+    pins, addresses = value["peer_pins"], value["peer_addresses"]
+    if not isinstance(pins, list) or not isinstance(addresses, list):
+        raise PeerConfigurationError("peer configuration peer lists are invalid")
+    return PeerConfig(
+        identity=value["identity"], bind_host=value["bind_host"], control_port=value["control_port"],
+        certificate_path=path_value("certificate_path"), key_path=path_value("key_path"),
+        ca_path=path_value("ca_path"), token_path=path_value("token_path"),
+        peer_pins=tuple(pins), peer_addresses=tuple(addresses),
+        unsafe_development=unsafe_development, server_hostname=value.get("server_hostname"),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PeerAudit:
     """Categorical audit data safe to expose or persist."""
@@ -629,4 +666,5 @@ __all__ = [
     "PeerProtocolError",
     "create_client_ssl_context",
     "create_server_ssl_context",
+    "load_peer_config",
 ]
