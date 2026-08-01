@@ -39,7 +39,7 @@ class ModelTests(unittest.TestCase):
         decoded = result_from_json(encoded)
         self.assertEqual(result_to_json(decoded), encoded)
         self.assertEqual(decoded, original)
-        self.assertIn('"schema_version":"1.0"', encoded)
+        self.assertIn('"schema_version":"1.1"', encoded)
 
     def test_models_are_deeply_immutable(self) -> None:
         source_observations = [sample_observation()]
@@ -326,18 +326,38 @@ class CodecTests(unittest.TestCase):
 
     def test_unsupported_schema_is_rejected(self) -> None:
         encoded = result_to_json(sample_result()).replace(
-            '"schema_version":"1.0"', '"schema_version":"2.0"'
+            '"schema_version":"1.1"', '"schema_version":"2.0"'
         )
         with self.assertRaisesRegex(CodecError, "unsupported schema"):
             result_from_json(encoded)
 
-    def test_compatible_minor_schema_round_trips(self) -> None:
-        encoded = result_to_json(sample_result()).replace(
-            '"schema_version":"1.0"', '"schema_version":"1.7"'
+    def test_schema_10_and_11_round_trip(self) -> None:
+        for version in ("1.0", "1.1"):
+            with self.subTest(version=version):
+                original = replace(sample_result(), schema_version=version)
+                encoded = result_to_json(original)
+                restored = result_from_json(encoded)
+                self.assertEqual(restored.schema_version, version)
+                self.assertEqual(result_to_json(restored), encoded)
+
+    def test_unknown_schema_minor_is_rejected(self) -> None:
+        for version in ("1.2", "1.7", "2.0"):
+            with self.subTest(version=version), self.assertRaisesRegex(
+                CodecError, "unsupported schema"
+            ):
+                result_from_json(
+                    result_to_json(sample_result()).replace(
+                        '"schema_version":"1.1"', f'"schema_version":"{version}"'
+                    )
+                )
+
+    def test_schema_10_rejects_schema_11_evidence(self) -> None:
+        observation = sample_observation(
+            kind=EvidenceKind.NATIVE_PING_REPLY,
+            disposition=Disposition.POSITIVE,
         )
-        restored = result_from_json(encoded)
-        self.assertEqual(restored.schema_version, "1.7")
-        self.assertIn('"schema_version":"1.7"', result_to_json(restored))
+        with self.assertRaisesRegex(ModelError, "not valid for schema 1.0"):
+            replace(sample_result(observation=observation), schema_version="1.0")
 
 
 if __name__ == "__main__":

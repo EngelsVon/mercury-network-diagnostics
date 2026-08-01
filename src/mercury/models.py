@@ -68,6 +68,27 @@ class EvidenceKind(StrEnum):
     PERMISSION_DENIED = "permission_denied"
     EXECUTION_ERROR = "execution_error"
     CANCELLED = "cancelled"
+    TLS_VERIFICATION_FAILED = "tls_verification_failed"
+    TLS_HANDSHAKE_FAILED = "tls_handshake_failed"
+    NATIVE_PING_REPLY = "native_ping_reply"
+    NATIVE_PING_FAILURE = "native_ping_failure"
+    PATH_HOP = "path_hop"
+    PATH_HOP_UNANSWERED = "path_hop_unanswered"
+    PATH_COMPLETE = "path_complete"
+    PATH_INCOMPLETE = "path_incomplete"
+
+
+class ProbeKind(StrEnum):
+    """Finite probe identities admitted by the Phase 2 execution boundary."""
+
+    LOCAL_SNAPSHOT = "local_snapshot"
+    SYSTEM_DNS = "system_dns"
+    TCP_CONNECT = "tcp_connect"
+    UDP_EXCHANGE = "udp_exchange"
+    TLS_HANDSHAKE = "tls_handshake"
+    HTTP_EXCHANGE = "http_exchange"
+    NATIVE_PING = "native_ping"
+    NATIVE_PATH = "native_path"
 
 
 class Confidence(StrEnum):
@@ -115,7 +136,31 @@ _KIND_DISPOSITIONS: dict[EvidenceKind, frozenset[Disposition]] = {
     EvidenceKind.PERMISSION_DENIED: frozenset({Disposition.UNAVAILABLE}),
     EvidenceKind.EXECUTION_ERROR: frozenset({Disposition.ERROR}),
     EvidenceKind.CANCELLED: frozenset({Disposition.CANCELLED}),
+    EvidenceKind.TLS_VERIFICATION_FAILED: frozenset({Disposition.NEGATIVE}),
+    EvidenceKind.TLS_HANDSHAKE_FAILED: frozenset(
+        {Disposition.NEGATIVE, Disposition.ERROR}
+    ),
+    EvidenceKind.NATIVE_PING_REPLY: frozenset({Disposition.POSITIVE}),
+    EvidenceKind.NATIVE_PING_FAILURE: frozenset(
+        {Disposition.NEGATIVE, Disposition.ERROR}
+    ),
+    EvidenceKind.PATH_HOP: frozenset({Disposition.POSITIVE}),
+    EvidenceKind.PATH_HOP_UNANSWERED: frozenset({Disposition.INCONCLUSIVE}),
+    EvidenceKind.PATH_COMPLETE: frozenset({Disposition.POSITIVE}),
+    EvidenceKind.PATH_INCOMPLETE: frozenset({Disposition.INCONCLUSIVE}),
 }
+
+_SCHEMA_10_EVIDENCE_KINDS = frozenset(
+    kind for kind in EvidenceKind if kind.value not in {
+        "tls_verification_failed", "tls_handshake_failed", "native_ping_reply",
+        "native_ping_failure", "path_hop", "path_hop_unanswered",
+        "path_complete", "path_incomplete",
+    }
+)
+_SCHEMA_EVIDENCE_KINDS: Mapping[str, frozenset[EvidenceKind]] = MappingProxyType({
+    "1.0": _SCHEMA_10_EVIDENCE_KINDS,
+    "1.1": frozenset(EvidenceKind),
+})
 
 
 def utc_now() -> datetime:
@@ -389,8 +434,15 @@ class TaskResult:
         if not is_compatible_model_schema(self.schema_version):
             raise ModelError(
                 f"unsupported schema version {self.schema_version!r}; "
-                f"supported major is {MODEL_SCHEMA_VERSION.partition('.')[0]!r}"
+                "supported versions are '1.0', '1.1'"
             )
+        allowed_kinds = _SCHEMA_EVIDENCE_KINDS[self.schema_version]
+        for observation in self.observations:
+            if observation.evidence_kind not in allowed_kinds:
+                raise ModelError(
+                    f"{observation.evidence_kind.value} is not valid for schema "
+                    f"{self.schema_version}"
+                )
         if self.state in (TaskState.PENDING, TaskState.RUNNING):
             raise ModelError("TaskResult must have a terminal state")
         _validate_datetime(self.started_at, "task started_at")
@@ -444,6 +496,7 @@ __all__ = [
     "ModelError",
     "Observation",
     "Progress",
+    "ProbeKind",
     "TaskResult",
     "TaskState",
     "disposition_for",

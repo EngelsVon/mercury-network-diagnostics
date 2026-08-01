@@ -64,8 +64,16 @@ class FoundationContractTests(unittest.TestCase):
             (EvidenceKind.UDP_APPLICATION_REPLY, Disposition.POSITIVE),
             (EvidenceKind.PEER_OBSERVED_ARRIVAL, Disposition.POSITIVE),
             (EvidenceKind.TLS_HANDSHAKE, Disposition.POSITIVE),
+            (EvidenceKind.TLS_VERIFICATION_FAILED, Disposition.NEGATIVE),
+            (EvidenceKind.TLS_HANDSHAKE_FAILED, Disposition.ERROR),
             (EvidenceKind.HTTP_RESPONSE, Disposition.POSITIVE),
             (EvidenceKind.HTTP_RESPONSE, Disposition.NEGATIVE),
+            (EvidenceKind.NATIVE_PING_REPLY, Disposition.POSITIVE),
+            (EvidenceKind.NATIVE_PING_FAILURE, Disposition.NEGATIVE),
+            (EvidenceKind.PATH_HOP, Disposition.POSITIVE),
+            (EvidenceKind.PATH_HOP_UNANSWERED, Disposition.INCONCLUSIVE),
+            (EvidenceKind.PATH_COMPLETE, Disposition.POSITIVE),
+            (EvidenceKind.PATH_INCOMPLETE, Disposition.INCONCLUSIVE),
             (EvidenceKind.LOCAL_FACT, Disposition.POSITIVE),
             (EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE),
             (EvidenceKind.SILENT, Disposition.INCONCLUSIVE),
@@ -238,7 +246,7 @@ class FoundationContractTests(unittest.TestCase):
             "mercury.__version__",
         )
         self.assertRegex(__version__, r"^\d+\.\d+\.\d+$")
-        self.assertEqual(MODEL_SCHEMA_VERSION, "1.0")
+        self.assertEqual(MODEL_SCHEMA_VERSION, "1.1")
 
 
 if __name__ == "__main__":
