@@ -24,7 +24,7 @@ class _FakeServer:
 
 
 class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
-    def _config(self, token_path: Path, **changes: object) -> PeerConfig:
+    def _config(self, default_token_path: Path, **changes: object) -> PeerConfig:
         values: dict[str, object] = {
             "identity": "loopback-peer",
             "bind_host": "127.0.0.1",
@@ -32,7 +32,7 @@ class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
             "certificate_path": FIXTURE_DIR / "localhost-cert.pem",
             "key_path": FIXTURE_DIR / "localhost-key.pem",
             "ca_path": FIXTURE_DIR / "test-ca.pem",
-            "token_path": token_path,
+            "token_path": default_token_path,
             "peer_pins": ("sha256:" + hashlib.sha256(
                 (FIXTURE_DIR / "peer-client-cert.pem").read_bytes()
             ).hexdigest(),),
@@ -140,4 +140,3 @@ class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(key_value, rendered)
             finally:
                 await agent.stop()
-
