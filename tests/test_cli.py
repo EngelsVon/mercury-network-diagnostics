@@ -103,6 +103,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, output), (EXIT_USAGE, ""))
         self.assertEqual(json.loads(error)["error"]["category"], "input")
 
+    def test_trace_cli_requires_authorization_and_has_no_protocol_knobs(self) -> None:
+        parser = build_parser()
+        trace = parser.parse_args(("trace", "127.0.0.1", "--scope", "127.0.0.0/8", "--hops", "2", "--repeat", "1", "--authorized"))
+        self.assertEqual((trace.command, trace.hops, trace.repeat, trace.authorized), ("trace", 2, 1, True))
+        with self.assertRaises(CliError):
+            parser.parse_args(("trace", "127.0.0.1", "--scope", "127.0.0.0/8", "--protocol", "icmp"))
+        code, output, error = invoke("trace", "127.0.0.1", "--scope", "127.0.0.0/8", "--json")
+        self.assertEqual((code, output), (EXIT_POLICY, ""))
+        self.assertEqual(json.loads(error)["error"]["category"], "policy")
+
     def test_paired_exit_requires_one_canonical_health_conclusion(self) -> None:
         self.assertEqual(paired_exit_code(paired_result(Health.HEALTHY)), EXIT_OK)
         self.assertEqual(paired_exit_code(paired_result(Health.PARTIAL)), EXIT_PARTIAL)

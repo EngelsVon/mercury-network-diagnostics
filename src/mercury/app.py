@@ -24,6 +24,7 @@ from .paired import (
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
 from .tasks import TaskService
+from .trace import TraceRequest, default_trace_grant, run_trace
 
 
 def _default_grant(request: DiagnosisRequest) -> ScopeGrant:
@@ -72,6 +73,8 @@ class MercuryApplication:
         passive_discovery_collector=collect_passive_discovery,
         discovery_executor=run_discovery,
         discovery_grant_factory=default_discovery_grant,
+        trace_executor=run_trace,
+        trace_grant_factory=default_trace_grant,
     ) -> None:
         self.history = history
         self.status_collector = status_collector
@@ -86,6 +89,8 @@ class MercuryApplication:
         self.passive_discovery_collector = passive_discovery_collector
         self.discovery_executor = discovery_executor
         self.discovery_grant_factory = discovery_grant_factory
+        self.trace_executor = trace_executor
+        self.trace_grant_factory = trace_grant_factory
         self._peer_agent: PeerAgent | None = None
 
     async def status(self) -> TaskResult:
@@ -135,6 +140,17 @@ class MercuryApplication:
         )
         if type(result) is not TaskResult:
             raise RuntimeError("discovery executor returned an invalid result")
+        return result
+
+    async def trace(self, request: TraceRequest) -> TaskResult:
+        """Run an authorized, finite native route trace through the facade."""
+        if type(request) is not TraceRequest or not request.authorized:
+            raise PolicyError("native trace requires explicit authorization attestation")
+        result = await self.trace_executor(
+            request, history=self.history, grant=self.trace_grant_factory(request),
+        )
+        if type(result) is not TaskResult:
+            raise RuntimeError("trace executor returned an invalid result")
         return result
 
     async def start_agent(self, config: PeerConfig) -> PeerAgent:

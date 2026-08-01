@@ -19,6 +19,7 @@ from typing import Sequence
 from . import DB_SCHEMA_VERSION, MODEL_SCHEMA_VERSION, __version__
 from .codec import dumps_document, result_to_wire
 from .discovery import DiscoveryRequest
+from .trace import TraceRequest
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
 from .app import MercuryApplication
 from .models import Disposition, EvidenceKind, Health, TaskResult, TaskState
@@ -34,7 +35,7 @@ from .planner import (
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import DiagnosisRequest
 from .paired import PairedRequest
-from .render import render_diagnosis, render_discovery, render_history, render_paired, render_preview, render_result, render_status
+from .render import render_diagnosis, render_discovery, render_history, render_paired, render_preview, render_result, render_status, render_trace
 from .tasks import SyntheticRunner, TaskService
 
 EXIT_OK = 0
@@ -150,6 +151,15 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--authorized", action="store_true")
     discover_parser.add_argument("--confirm", action="append", default=[], help="required digest-bound full-port confirmation")
     _add_json_option(discover_parser)
+
+    trace_parser = subparsers.add_parser("trace", help="run an authorized bounded native route trace")
+    trace_parser.add_argument("target", help="one numeric IP address")
+    trace_parser.add_argument("--scope", required=True, help="authorized CIDR containing the target")
+    trace_parser.add_argument("--hops", type=int, default=8)
+    trace_parser.add_argument("--repeat", type=int, default=3)
+    trace_parser.add_argument("--timeout", type=float, default=1.0, help="per-hop wait in seconds")
+    trace_parser.add_argument("--authorized", action="store_true")
+    _add_json_option(trace_parser)
 
     paired_parser = subparsers.add_parser("paired", help="run the fixed authenticated paired profile")
     paired_parser.add_argument("--config", type=Path, required=True, help="operator-provisioned peer configuration path")
@@ -449,7 +459,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
         return EXIT_OK
-    if args.command in {"status", "diagnose", "discover"}:
+    if args.command in {"status", "diagnose", "discover", "trace"}:
         with HistoryStore(args.data_path) as history:
             application = MercuryApplication(history=history)
             if args.command == "status":
@@ -471,6 +481,13 @@ def _dispatch(args: argparse.Namespace) -> int:
                         confirmations=tuple(args.confirm),
                     )))
                 _emit(result_to_wire(result), render_discovery(result), as_json=as_json)
+                return task_exit_code(result)
+            if args.command == "trace":
+                result = asyncio.run(application.trace(TraceRequest(
+                    target=args.target, scope=args.scope, max_hops=args.hops,
+                    repeats=args.repeat, timeout_s=args.timeout, authorized=args.authorized,
+                )))
+                _emit(result_to_wire(result), render_trace(result), as_json=as_json)
                 return task_exit_code(result)
             request = DiagnosisRequest(
                 profile="custom" if args.target else args.profile,

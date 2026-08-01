@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from .history import HistoryRecord
-from .models import TaskResult
+from .models import EvidenceKind, TaskResult
 from .paired import paired_matrix
 from .planner import PlanPreview, confirmation_phrase
 
@@ -104,6 +104,20 @@ def render_discovery(result: TaskResult) -> str:
     return render_result(result)
 
 
+def render_trace(result: TaskResult) -> str:
+    """Show each observed repeat without collapsing it into one asserted route."""
+    lines = ["Native route trace (observed responses; not a certain route)"]
+    for item in result.observations:
+        if item.evidence_kind is EvidenceKind.PATH_HOP:
+            lines.append(f"  repeat {item.attempt} hop {item.detail.get('hop')}: {', '.join(item.detail.get('addresses', ())) or 'response without parsed address'}")
+        elif item.evidence_kind is EvidenceKind.PATH_HOP_UNANSWERED:
+            lines.append(f"  repeat {item.attempt} hop {item.detail.get('hop')}: unanswered")
+        elif item.evidence_kind in {EvidenceKind.PATH_COMPLETE, EvidenceKind.PATH_INCOMPLETE, EvidenceKind.TIMEOUT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}:
+            lines.append(f"  repeat {item.attempt}: {item.evidence_kind.value}")
+    lines.append("Limitation: gateway, first hop and neighbor cache do not identify an access switch.")
+    return "\n".join(lines)
+
+
 def render_paired(result: TaskResult) -> str:
     """Project the fixed paired matrix; it performs no network work."""
     health = [item for item in result.conclusions if item.id == "paired-health"]
@@ -168,4 +182,4 @@ def render_history(records: Iterable[HistoryRecord]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["render_diagnosis", "render_discovery", "render_history", "render_paired", "render_preview", "render_result", "render_status"]
+__all__ = ["render_diagnosis", "render_discovery", "render_history", "render_paired", "render_preview", "render_result", "render_status", "render_trace"]
