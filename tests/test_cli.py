@@ -7,17 +7,26 @@ import json
 import tempfile
 import unittest
 from argparse import Namespace
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from mercury.cli import (
     EXIT_OK,
     EXIT_PARTIAL,
     EXIT_POLICY,
+    EXIT_FAILED,
     EXIT_USAGE,
     _run_synthetic,
+    diagnosis_exit_code,
     main,
 )
 from mercury.history import HistoryStore
+from mercury.models import (
+    Confidence, Conclusion, Direction, Disposition, EffectiveConfig, EvidenceKind, Health, Observation, Progress,
+    TaskResult, TaskState,
+)
+from mercury.codec import result_to_wire
 
 
 def invoke(*arguments: str) -> tuple[int, str, str]:
@@ -26,6 +35,26 @@ def invoke(*arguments: str) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         code = main(list(arguments))
     return code, stdout.getvalue(), stderr.getvalue()
+
+
+def diagnosis_result(health: Health | None = Health.PARTIAL, *, duplicate: bool = False) -> TaskResult:
+    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    observation = Observation(
+        "diagnosis-observation", "tcp_connect", Disposition.POSITIVE,
+        EvidenceKind.TCP_CONNECTED, Direction.OUTBOUND, "127.0.0.1", now, now, 0,
+    )
+    conclusions = () if health is None else (Conclusion(
+        "diagnosis-health", "Selected endpoint diagnosis health", "Endpoint-scoped.",
+        health, Confidence.LOW, (observation.id,),
+    ),)
+    result = TaskResult(
+        "diagnosis-test", "diagnose", Direction.LOCAL, "127.0.0.1", TaskState.COMPLETED,
+        now, now, {}, EffectiveConfig("custom-v1", ("127.0.0.1",), True, "test", {}),
+        Progress(0, 0, 0), observations=(observation,), conclusions=conclusions,
+    )
+    if duplicate:
+        object.__setattr__(result, "conclusions", conclusions * 2)
+    return result
 
 
 class CliTests(unittest.TestCase):
@@ -131,6 +160,52 @@ class CliTests(unittest.TestCase):
         code, output, error = invoke("plan")
         self.assertEqual((code, output), (EXIT_USAGE, ""))
         self.assertTrue(error.startswith("mercury: input:"))
+
+    def test_diagnose_requires_authorization_before_any_runner_work(self) -> None:
+        code, output, error = invoke("diagnose", "--target", "127.0.0.1:443", "--json")
+        self.assertEqual((code, output), (EXIT_POLICY, ""))
+        self.assertEqual(json.loads(error)["error"]["category"], "policy")
+
+    def test_diagnose_timeout_boundaries_are_input_errors_without_network(self) -> None:
+        received = []
+
+        class FakeApplication:
+            def __init__(self, *, history):
+                self.history = history
+            async def diagnose(self, request):
+                received.append(request)
+                return diagnosis_result(Health.PARTIAL)
+
+        for value, expected in (("0.1", EXIT_PARTIAL), ("30.0", EXIT_PARTIAL), ("0.099", EXIT_USAGE),
+                                ("30.001", EXIT_USAGE), ("nan", EXIT_USAGE), ("inf", EXIT_USAGE), ("-inf", EXIT_USAGE)):
+            with self.subTest(value=value):
+                with patch("mercury.cli.MercuryApplication", FakeApplication):
+                    code, _, _ = invoke("diagnose", "--target", "127.0.0.1:443", "--authorized", "--timeout", value)
+                self.assertEqual(code, expected)
+        self.assertEqual([item.timeout_s for item in received], [0.1, 30.0])
+
+    def test_diagnosis_exit_contract_maps_only_health_conclusion(self) -> None:
+        self.assertEqual(diagnosis_exit_code(diagnosis_result(Health.HEALTHY)), EXIT_OK)
+        self.assertEqual(diagnosis_exit_code(diagnosis_result(Health.FAILED)), EXIT_FAILED)
+        self.assertEqual(diagnosis_exit_code(diagnosis_result(Health.PARTIAL)), EXIT_PARTIAL)
+        for result in (diagnosis_result(None), diagnosis_result(Health.PARTIAL, duplicate=True)):
+            with self.subTest(result=result.conclusions):
+                with self.assertRaisesRegex(RuntimeError, "diagnosis-health conclusion contract violated"):
+                    diagnosis_exit_code(result)
+
+    def test_status_json_projects_the_exact_facade_result(self) -> None:
+        result = diagnosis_result(Health.PARTIAL)
+
+        class FakeApplication:
+            def __init__(self, *, history):
+                self.history = history
+            async def status(self):
+                return result
+
+        with patch("mercury.cli.MercuryApplication", FakeApplication):
+            code, output, error = invoke("status", "--json")
+        self.assertEqual((code, error), (EXIT_OK, ""))
+        self.assertEqual(json.loads(output), result_to_wire(result))
 
 
 class CliCancellationTests(unittest.IsolatedAsyncioTestCase):
