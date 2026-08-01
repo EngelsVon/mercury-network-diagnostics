@@ -38,9 +38,16 @@ def _observation(identifier: str, kind: EvidenceKind, disposition: Disposition, 
 class HealthClassifierTests(unittest.TestCase):
     def test_explicit_failure_and_lifecycle_partial_are_distinct(self) -> None:
         compiled = asyncio.run(_compiled())
-        tcp = _observation("tcp-refused", EvidenceKind.TCP_REFUSED, Disposition.NEGATIVE, ProbeKind.TCP_CONNECT,
-                           detail={"planned_target": "127.0.0.1", "port": 443, "server_name": None, "http_scheme": None})
-        result = classify_diagnosis(compiled.plan, compiled.required_groups, (tcp,))
+        failures = {
+            ProbeKind.TCP_CONNECT: EvidenceKind.TCP_REFUSED,
+            ProbeKind.TLS_HANDSHAKE: EvidenceKind.TLS_VERIFICATION_FAILED,
+            ProbeKind.HTTP_EXCHANGE: EvidenceKind.EXECUTION_ERROR,
+        }
+        observations = tuple(_observation(
+            f"failure-{index}", failures[group.probe_kind], Disposition.NEGATIVE if group.probe_kind is not ProbeKind.HTTP_EXCHANGE else Disposition.ERROR,
+            group.probe_kind, detail={"planned_target": group.target, "port": group.port, "server_name": group.server_name, "http_scheme": group.http_scheme},
+        ) for index, group in enumerate(compiled.required_groups))
+        result = classify_diagnosis(compiled.plan, compiled.required_groups, observations)
         self.assertEqual(result.health, Health.FAILED)
         self.assertEqual(result.confidence, Confidence.HIGH)
         lifecycle = Observation(
@@ -48,7 +55,7 @@ class HealthClassifierTests(unittest.TestCase):
             evidence_kind=EvidenceKind.CANCELLED, direction=Direction.LOCAL, target="task",
             started_at=utc_now(), ended_at=utc_now(), duration_ms=0,
         )
-        result = classify_diagnosis(compiled.plan, compiled.required_groups, (tcp, lifecycle))
+        result = classify_diagnosis(compiled.plan, compiled.required_groups, (*observations, lifecycle))
         self.assertEqual(result.health, Health.PARTIAL)
         self.assertNotIn("Internet", result.summary)
 
@@ -60,6 +67,19 @@ class HealthClassifierTests(unittest.TestCase):
         self.assertEqual(result.health, Health.PARTIAL)
         self.assertEqual(result.id, "diagnosis-health")
         self.assertLessEqual(len(result.observation_ids), 16)
+
+    def test_planning_dns_failure_with_intended_missing_layers_is_partial(self) -> None:
+        async def missing(hostname, **_):
+            from mercury.platform.common import CommandOutcome
+            from mercury.resolver import ResolutionResult
+            return ResolutionResult(hostname, (), CommandOutcome.NONZERO, "NameNotFound")
+        compiled = asyncio.run(compile_diagnosis(
+            DiagnosisRequest(profile="custom", targets=("missing.test:443",), authorized=True),
+            grant=ScopeGrant(hostnames=("missing.test",), ports=(443,), transports=("tcp",), attested=True, networks=()), resolver=missing,
+        ))
+        dns = _observation("dns", EvidenceKind.DNS_FAILURE, Disposition.NEGATIVE, ProbeKind.SYSTEM_DNS,
+                           target="missing.test", detail={"planned_target": "missing.test", "port": None, "server_name": None, "http_scheme": None})
+        self.assertEqual(classify_diagnosis(compiled.plan, compiled.required_groups, (dns,)).health, Health.PARTIAL)
 
     def test_local_interface_address_and_matching_route_enable_healthy(self) -> None:
         compiled = asyncio.run(_compiled())

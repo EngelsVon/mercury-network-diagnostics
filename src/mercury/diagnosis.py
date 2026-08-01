@@ -74,6 +74,7 @@ def classify_diagnosis(
     else:
         required = tuple(group for group in required_groups if group.probe_kind is not ProbeKind.LOCAL_SNAPSHOT)
         grouped = [tuple(item for item in ordered if _group_matches(group, item)) for group in required]
+        missing = any(not group for group in grouped)
         positives = [item for group in grouped for item in group if item.disposition is Disposition.POSITIVE]
         explicit = [item for group in grouped for item in group if item.disposition in {Disposition.NEGATIVE, Disposition.ERROR}]
         all_positive = bool(required) and all(
@@ -82,7 +83,7 @@ def classify_diagnosis(
         )
         if _local_prerequisites(ordered) and all_positive:
             health, confidence, summary = Health.HEALTHY, Confidence.HIGH, "Required local and selected endpoint layers produced direct positive evidence."
-        elif not positives and explicit:
+        elif not missing and not positives and explicit:
             health, confidence, summary = Health.FAILED, Confidence.HIGH, "Selected endpoint layers contain explicit negative or execution-error evidence without a direct reachability positive."
         else:
             health, confidence, summary = Health.PARTIAL, Confidence.LOW, "Selected endpoint evidence is mixed, incomplete, unavailable, or inconclusive."
