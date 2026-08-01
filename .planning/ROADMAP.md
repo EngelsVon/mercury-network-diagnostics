@@ -116,7 +116,7 @@ beyond this bounded v1, not completion of the requested implementation.
 
 Plans:
 
-- [ ] 03-01: Threat-model and implement versioned framed mTLS/token peer control, identity/capability negotiation, replay limits and audit.
+- [x] 03-01: Threat-model and implement versioned framed mTLS/token peer control, identity/capability negotiation, replay limits and audit.
 - [ ] 03-02: Implement expiring authenticated TCP/UDP data-plane listeners, source-bound reverse roles and finite payload profiles.
 - [ ] 03-03: Implement the role-swapped cross-layer plan, differential matrix, CLI and peer security/controlled E2E tests.
 
