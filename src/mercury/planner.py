@@ -201,11 +201,11 @@ class StepCost:
     generated_datagrams: int
     application_bytes: int
     logical_packets: int = 0
-    max_observations: int = 1
+    max_observations: int = 2
     max_capabilities: int = 0
     max_conclusions: int = 0
     max_errors: int = 0
-    max_output_bytes: int = 512
+    max_output_bytes: int = 16_384
 
     def __post_init__(self) -> None:
         if type(self.logical_attempts) is not int or self.logical_attempts != 1:
@@ -1140,7 +1140,9 @@ def preview_plan(
         )
     # accepted + running + cancellation request + terminal evidence + terminal
     events = logical_attempts + 5
-    output_bytes = sum(step.cost.max_output_bytes for step in steps) + 4_096
+    # Phase 1's public Cartesian preview keeps its established compact
+    # reservation; sparse Phase 2 plans use result_envelope_upper_bound().
+    output_bytes = logical_attempts * 512 + 4_096
     estimate = WorkEstimate(
         hosts=host_count,
         ports=len(port_tuple),

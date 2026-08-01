@@ -14,6 +14,7 @@ from .codec import (
     capability_to_wire,
     conclusion_to_wire,
     observation_to_wire,
+    dumps_document,
     result_to_json,
 )
 from .history import (
@@ -35,6 +36,7 @@ from .models import (
     Health,
     Observation,
     Progress,
+    ProbeKind,
     TaskResult,
     TaskState,
     utc_now,
@@ -66,27 +68,36 @@ _RESERVED_TASK_OBSERVATION_IDS = frozenset(
 _RESERVED_STEP_DETAIL_KEYS = frozenset(
     {
         "plan_step_id",
+        "probe_kind",
         "planned_target",
+        "planned_address",
         "port",
         "transport",
+        "scope_id",
+        "source_hostname",
+        "resolution_slot",
+        "server_name",
+        "http_scheme",
+        "max_hops",
+        "timeout_s",
+        "required",
+        "payload_metadata",
+        "cost",
         "dns_changed",
+        "preflight_rejected",
+        "rejection_code",
     }
 )
-_TCP_ONLY_EVIDENCE = frozenset(
-    {
-        EvidenceKind.TCP_CONNECTED,
-        EvidenceKind.TCP_REFUSED,
-        EvidenceKind.TCP_RESET,
-        EvidenceKind.TLS_HANDSHAKE,
-        EvidenceKind.HTTP_RESPONSE,
-    }
-)
-_UDP_ONLY_EVIDENCE = frozenset(
-    {
-        EvidenceKind.UDP_APPLICATION_REPLY,
-        EvidenceKind.SILENT,
-    }
-)
+_ALLOWED_EVIDENCE = {
+    ProbeKind.LOCAL_SNAPSHOT: frozenset({EvidenceKind.LOCAL_FACT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.SYSTEM_DNS: frozenset({EvidenceKind.DNS_ANSWER, EvidenceKind.DNS_FAILURE, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.TCP_CONNECT: frozenset({EvidenceKind.TCP_CONNECTED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.UDP_EXCHANGE: frozenset({EvidenceKind.UDP_APPLICATION_REPLY, EvidenceKind.ICMP_UNREACHABLE, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.TLS_HANDSHAKE: frozenset({EvidenceKind.TLS_HANDSHAKE, EvidenceKind.TLS_VERIFICATION_FAILED, EvidenceKind.TLS_HANDSHAKE_FAILED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.HTTP_EXCHANGE: frozenset({EvidenceKind.HTTP_RESPONSE, EvidenceKind.TLS_VERIFICATION_FAILED, EvidenceKind.TLS_HANDSHAKE_FAILED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.NATIVE_PING: frozenset({EvidenceKind.NATIVE_PING_REPLY, EvidenceKind.NATIVE_PING_FAILURE, EvidenceKind.ICMP_UNREACHABLE, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.NATIVE_PATH: frozenset({EvidenceKind.PATH_HOP, EvidenceKind.PATH_HOP_UNANSWERED, EvidenceKind.PATH_COMPLETE, EvidenceKind.PATH_INCOMPLETE, EvidenceKind.TIMEOUT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
+}
 
 
 def _effective_config(plan: ProbePlan) -> EffectiveConfig:
@@ -300,17 +311,6 @@ def _recovered_task_result(
             "task owner lease expired; volatile partial evidence was unavailable",
         ),
     )
-    maximum = limits.get("max_output_bytes")
-    if type(maximum) is int and _result_bytes(result) > maximum:
-        return _output_budget_result(
-            task_id=record.task_id,
-            task_kind=record.task_kind,
-            started_at=record.created_at,
-            ended_at=instant,
-            requested_config=dict(record.request),
-            effective_config=effective,
-            progress=Progress(admitted=0, completed=0, total=total),
-        )
     return result
 
 
@@ -386,6 +386,7 @@ class TaskContext:
         self.completed = 0
         self.generated_datagrams = 0
         self.application_bytes = 0
+        self.logical_packets = 0
         # accepted + running already exist; reserve one cancellation event.
         self._event_count = 3
         self._next_global_start = self.monotonic()
@@ -395,6 +396,10 @@ class TaskContext:
         self._prepared_steps: dict[str, PreparedStep] = {}
         self._observed_steps: set[str] = set()
         self._completed_steps: set[str] = set()
+        self._step_counts = {
+            step.id: {"observations": 0, "capabilities": 0, "conclusions": 0, "errors": 0, "output_bytes": 0}
+            for step in plan.preview.steps
+        }
         self._admission_lock = asyncio.Lock()
 
     @property
@@ -488,7 +493,7 @@ class TaskContext:
             if payload is not None:
                 preflight_kwargs["payload"] = payload
             prepared = self.plan.preflight_step(step_id, **preflight_kwargs)
-            target_key = prepared.address
+            target_key = prepared.address or prepared.step.target
             now = self.monotonic()
             next_target = self._next_target_start.get(target_key, now)
             start_at = max(now, self._next_global_start, next_target)
@@ -509,14 +514,18 @@ class TaskContext:
             next_bytes = (
                 self.application_bytes + prepared.step.cost.application_bytes
             )
+            next_packets = self.logical_packets + prepared.step.cost.logical_packets
             if next_datagrams > self.plan.preview.estimate.generated_datagrams:
                 raise TaskError("step admission exceeded the datagram reservation")
             if next_bytes > self.plan.preview.estimate.application_bytes:
                 raise TaskError(
                     "step admission exceeded the application-byte reservation"
                 )
+            if next_packets > self.plan.preview.estimate.logical_packets:
+                raise TaskError("step admission exceeded the logical-packet reservation")
             self.generated_datagrams = next_datagrams
             self.application_bytes = next_bytes
+            self.logical_packets = next_packets
             self._admitted_steps.add(step_id)
             self._prepared_steps[step_id] = prepared
             self.admitted += 1
@@ -549,20 +558,22 @@ class TaskContext:
             raise TaskError("runner attached evidence to an unadmitted plan step")
         if step_id in self._completed_steps:
             raise TaskError("runner attached evidence to a completed plan step")
-        if observation.target != prepared.address:
+        expected_target = prepared.address or prepared.step.target
+        if observation.target != expected_target:
             raise TaskError("runner evidence target does not match its admitted step")
         if observation.attempt != prepared.step.attempt:
             raise TaskError("runner evidence attempt does not match its admitted step")
-        if (
-            prepared.step.transport is Transport.UDP
-            and observation.evidence_kind in _TCP_ONLY_EVIDENCE
-        ) or (
-            prepared.step.transport is Transport.TCP
-            and observation.evidence_kind in _UDP_ONLY_EVIDENCE
-        ):
-            raise TaskError(
-                "runner evidence kind does not match its admitted transport"
-            )
+        if observation.probe != prepared.step.probe_kind.value:
+            raise TaskError("runner evidence probe does not match its admitted step")
+        expected_direction = (
+            Direction.LOCAL
+            if prepared.step.probe_kind is ProbeKind.LOCAL_SNAPSHOT
+            else Direction.OUTBOUND
+        )
+        if observation.direction is not expected_direction:
+            raise TaskError("runner evidence direction does not match its admitted step")
+        if observation.evidence_kind not in _ALLOWED_EVIDENCE[prepared.step.probe_kind]:
+            raise TaskError("runner evidence kind does not match its admitted probe")
         conflicting = _RESERVED_STEP_DETAIL_KEYS.intersection(observation.detail)
         if conflicting:
             raise TaskError(
@@ -575,14 +586,34 @@ class TaskContext:
         detail.update(
             {
                 "plan_step_id": step_id,
+                "probe_kind": prepared.step.probe_kind.value,
                 "planned_target": prepared.step.target,
+                "planned_address": prepared.step.address,
                 "port": prepared.step.port,
-                "transport": prepared.step.transport.value,
+                "transport": prepared.step.transport.value if prepared.step.transport else None,
+                "scope_id": prepared.step.scope_id,
+                "source_hostname": prepared.step.source_hostname,
+                "resolution_slot": prepared.step.resolution_slot,
+                "server_name": prepared.step.server_name,
+                "http_scheme": prepared.step.http_scheme,
+                "max_hops": prepared.step.max_hops,
+                "timeout_s": prepared.step.timeout_s,
+                "required": prepared.step.required,
+                "payload_metadata": prepared.step.payload.to_wire(),
+                "cost": prepared.step.cost.to_wire(),
                 "dns_changed": prepared.dns_changed,
             }
         )
         bound_observation = replace(observation, detail=detail)
+        counts = self._step_counts[step_id]
+        contribution = len(dumps_document(observation_to_wire(bound_observation)).encode("utf-8"))
+        if counts["observations"] >= prepared.step.cost.max_observations:
+            raise TaskError("step observation reservation exhausted")
+        if counts["output_bytes"] + contribution > prepared.step.cost.max_output_bytes:
+            raise TaskError("step output reservation exhausted")
         self._append_observation(bound_observation)
+        counts["observations"] += 1
+        counts["output_bytes"] += contribution
         self._observed_steps.add(step_id)
 
     def _record_task_observation(self, observation: Observation) -> None:
@@ -607,6 +638,10 @@ class TaskContext:
                 "observation_id": observation.id,
                 "disposition": observation.disposition.value,
                 "evidence_kind": observation.evidence_kind.value,
+                "probe_kind": observation.probe,
+                "plan_step_id": observation.detail.get("plan_step_id"),
+                "preflight_rejected": observation.detail.get("preflight_rejected"),
+                "rejection_code": observation.detail.get("rejection_code"),
                 "observation_count": len(self._observations),
                 "total": self.total,
             },
@@ -663,6 +698,16 @@ class SyntheticRunner:
         self.delay_s = delay_s
 
     async def __call__(self, context: TaskContext) -> None:
+        kinds = {
+            ProbeKind.LOCAL_SNAPSHOT: EvidenceKind.LOCAL_FACT,
+            ProbeKind.SYSTEM_DNS: EvidenceKind.DNS_ANSWER,
+            ProbeKind.TCP_CONNECT: EvidenceKind.TCP_CONNECTED,
+            ProbeKind.UDP_EXCHANGE: EvidenceKind.UDP_APPLICATION_REPLY,
+            ProbeKind.TLS_HANDSHAKE: EvidenceKind.TLS_HANDSHAKE,
+            ProbeKind.HTTP_EXCHANGE: EvidenceKind.HTTP_RESPONSE,
+            ProbeKind.NATIVE_PING: EvidenceKind.NATIVE_PING_REPLY,
+            ProbeKind.NATIVE_PATH: EvidenceKind.PATH_COMPLETE,
+        }
         for index, step in enumerate(context.plan.preview.steps, 1):
             prepared = await context.admit(step.id)
             started_at = context.wall_clock()
@@ -673,11 +718,11 @@ class SyntheticRunner:
             context.record(
                 Observation(
                     id=f"{context.task_id}:obs:{index}",
-                    probe="synthetic",
+                    probe=prepared.step.probe_kind.value,
                     disposition=Disposition.POSITIVE,
-                    evidence_kind=EvidenceKind.LOCAL_FACT,
-                    direction=Direction.LOCAL,
-                    target=prepared.address,
+                    evidence_kind=kinds[prepared.step.probe_kind],
+                    direction=(Direction.LOCAL if prepared.step.probe_kind is ProbeKind.LOCAL_SNAPSHOT else Direction.OUTBOUND),
+                    target=prepared.address or prepared.step.target,
                     started_at=started_at,
                     ended_at=ended_at,
                     duration_ms=max(0.0, (ended_mono - started_mono) * 1000),

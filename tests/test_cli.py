@@ -33,7 +33,7 @@ class CliTests(unittest.TestCase):
         code, output, error = invoke("version", "--json")
         self.assertEqual((code, error), (EXIT_OK, ""))
         payload = json.loads(output)
-        self.assertEqual(payload["model_schema"], "1.0")
+        self.assertEqual(payload["model_schema"], "1.1")
         self.assertIn("python", payload)
 
         code, output, _ = invoke("model", "--json")

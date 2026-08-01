@@ -49,10 +49,10 @@ def record_fixture(context: TaskContext, index: int, step_id: str) -> None:
     context.record(
         Observation(
             id=f"{context.task_id}:custom:{index}",
-            probe="custom-test",
+            probe=step.probe_kind.value,
             disposition=Disposition.POSITIVE,
-            evidence_kind=EvidenceKind.LOCAL_FACT,
-            direction=Direction.LOCAL,
+            evidence_kind=EvidenceKind.TCP_CONNECTED,
+            direction=Direction.OUTBOUND,
             target=step.address,
             started_at=instant,
             ended_at=instant,
@@ -164,6 +164,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
         expired_at = created_at + timedelta(minutes=1)
         live_until = created_at + timedelta(hours=1)
+        self.history._clock = lambda: created_at + timedelta(minutes=2)
         for task_id, lease_expires_at in (
             ("expired-owner", expired_at),
             ("live-owner", live_until),
@@ -247,7 +248,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             task_id="broken",
         )
         self.assertEqual(result.state, TaskState.FAILED)
-        self.assertEqual(result.observations[0].evidence_kind, EvidenceKind.LOCAL_FACT)
+        self.assertEqual(result.observations[0].evidence_kind, EvidenceKind.TCP_CONNECTED)
         self.assertEqual(
             result.observations[-1].evidence_kind, EvidenceKind.EXECUTION_ERROR
         )
@@ -388,10 +389,10 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             instant = context.wall_clock()
             observation = Observation(
                 id="bound-observation",
-                probe="custom-test",
+                probe=prepared.step.probe_kind.value,
                 disposition=Disposition.POSITIVE,
-                evidence_kind=EvidenceKind.LOCAL_FACT,
-                direction=Direction.LOCAL,
+                evidence_kind=EvidenceKind.TCP_CONNECTED,
+                direction=Direction.OUTBOUND,
                 target=prepared.address,
                 started_at=instant,
                 ended_at=instant,
@@ -434,6 +435,29 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.observations[0].detail["transport"], "tcp")
         self.assertFalse(result.observations[0].detail["dns_changed"])
 
+    async def test_runner_cannot_forge_probe_kind_or_reserved_identity(self) -> None:
+        async def forged(context: TaskContext) -> None:
+            step = context.plan.preview.steps[0]
+            prepared = await context.admit(step.id)
+            instant = context.wall_clock()
+            valid = Observation(
+                id="forged-probe", probe=step.probe_kind.value,
+                disposition=Disposition.POSITIVE, evidence_kind=EvidenceKind.TCP_CONNECTED,
+                direction=Direction.OUTBOUND, target=prepared.address,
+                started_at=instant, ended_at=instant, duration_ms=0.0,
+                attempt=step.attempt, source="tests",
+            )
+            with self.assertRaisesRegex(TaskError, "probe"):
+                context.record(replace(valid, probe="native_ping"), step_id=step.id)
+            with self.assertRaisesRegex(TaskError, "reserved"):
+                context.record(replace(valid, detail={"planned_address": "127.0.0.2"}), step_id=step.id)
+            context.record(valid, step_id=step.id)
+            context.complete_attempt(step.id)
+
+        result = await self.service.run(synthetic_plan(1), forged, task_kind="synthetic")
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        self.assertEqual(result.observations[0].detail["probe_kind"], "tcp_connect")
+
     async def test_step_evidence_transport_and_reserved_fields_are_bound(
         self,
     ) -> None:
@@ -450,10 +474,10 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
             instant = context.wall_clock()
             base = Observation(
                 id="udp-bound-observation",
-                probe="custom-test",
+                probe=prepared.step.probe_kind.value,
                 disposition=Disposition.POSITIVE,
-                evidence_kind=EvidenceKind.LOCAL_FACT,
-                direction=Direction.LOCAL,
+                evidence_kind=EvidenceKind.UDP_APPLICATION_REPLY,
+                direction=Direction.OUTBOUND,
                 target=prepared.address,
                 started_at=instant,
                 ended_at=instant,
@@ -461,7 +485,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
                 attempt=step.attempt,
                 source="tests",
             )
-            with self.assertRaisesRegex(TaskError, "transport"):
+            with self.assertRaisesRegex(TaskError, "probe"):
                 context.record(
                     replace(
                         base,
@@ -648,10 +672,10 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
                 context.record(
                     Observation(
                         id=f"event-boundary-{index}",
-                        probe="custom-test",
+                        probe=step.probe_kind.value,
                         disposition=Disposition.POSITIVE,
-                        evidence_kind=EvidenceKind.LOCAL_FACT,
-                        direction=Direction.LOCAL,
+                        evidence_kind=EvidenceKind.TCP_CONNECTED,
+                        direction=Direction.OUTBOUND,
                         target=step.address,
                         started_at=instant,
                         ended_at=instant,
@@ -661,14 +685,14 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     step_id=step.id,
                 )
-            with self.assertRaisesRegex(TaskError, "event budget"):
+            with self.assertRaisesRegex(TaskError, "(event budget|reservation)"):
                 context.record(
                     Observation(
                         id="event-overflow",
-                        probe="custom-test",
+                        probe=step.probe_kind.value,
                         disposition=Disposition.POSITIVE,
-                        evidence_kind=EvidenceKind.LOCAL_FACT,
-                        direction=Direction.LOCAL,
+                        evidence_kind=EvidenceKind.TCP_CONNECTED,
+                        direction=Direction.OUTBOUND,
                         target=step.address,
                         started_at=instant,
                         ended_at=instant,
@@ -775,7 +799,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.state, TaskState.FAILED)
         kinds = {item.evidence_kind for item in result.observations}
-        self.assertIn(EvidenceKind.LOCAL_FACT, kinds)
+        self.assertIn(EvidenceKind.TCP_CONNECTED, kinds)
         self.assertIn(EvidenceKind.EXECUTION_ERROR, kinds)
         self.assertTrue(
             any("finalization failed" in item for item in result.errors)
@@ -807,7 +831,7 @@ class TaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.state, TaskState.FAILED)
         self.assertEqual(attempts, 2)
         self.assertIn(
-            EvidenceKind.LOCAL_FACT,
+            EvidenceKind.TCP_CONNECTED,
             {item.evidence_kind for item in result.observations},
         )
         self.assertIn(

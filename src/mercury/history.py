@@ -106,6 +106,10 @@ _EVENT_KEYS = frozenset(
         "dns_changed",
         "hostname",
         "addresses",
+        "probe_kind",
+        "plan_step_id",
+        "preflight_rejected",
+        "rejection_code",
     }
 )
 
