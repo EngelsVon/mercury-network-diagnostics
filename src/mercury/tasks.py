@@ -41,7 +41,7 @@ from .models import (
     TaskState,
     utc_now,
 )
-from .planner import PreparedStep, ProbePlan, Transport, validate_plan
+from .planner import PreparedStep, ProbePlan, validate_plan
 from .policy import Resolver
 
 
@@ -1091,7 +1091,6 @@ class TaskService:
         if identifier in self._tasks or identifier in self._results:
             raise TaskError(f"duplicate task ID {identifier!r}")
         request = project_history_request(dict(requested_config or {}))
-        effective = _effective_config(plan)
         self.history.create_task(
             task_id=identifier, task_kind="diagnose", request=request, plan=plan.to_wire(),
             owner_id=self._owner_id,

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import replace
 
 from .inventory import collect_status
 from .models import Confidence, Conclusion, Direction, Disposition, EvidenceKind, Health, Observation, ProbeKind, TaskResult

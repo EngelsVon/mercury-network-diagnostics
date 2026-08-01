@@ -13,6 +13,7 @@ from typing import Iterable, Mapping
 from . import MODEL_SCHEMA_VERSION
 from .codec import dumps_document
 from .policy import (
+    PolicyError,
     ResolutionSnapshot,
     Resolver,
     ScopeGrant,
