@@ -84,6 +84,26 @@ def render_diagnosis(result: TaskResult) -> str:
     return "\n".join(lines)
 
 
+def render_discovery(result: TaskResult) -> str:
+    """Project candidates without promoting routes or neighbors into switches."""
+    if result.task_kind == "discover_passive":
+        lines = ["Passive discovery (no active packets)"]
+        for item in result.observations:
+            if item.probe == "connected_ipv4_network":
+                lines.append(f"  IPv4 network: {item.detail.get('network')} on {item.detail.get('interface_name')}")
+            elif item.probe == "neighbor_cache":
+                lines.append(f"  Neighbor cache: {item.detail.get('address')} on {item.detail.get('interface_name')}")
+            elif item.probe == "wifi_access_point":
+                lines.append(f"  Wi-Fi AP: SSID={item.detail.get('ssid')} BSSID={item.detail.get('bssid')}")
+            elif item.probe == "direct_lldp_neighbor":
+                lines.append(f"  Direct LLDP: chassis={item.detail.get('chassis_id')} port={item.detail.get('port_id')}")
+        lines.extend(f"Capability: {item.name} = {item.state.value}" for item in result.capabilities)
+        if not any(item.probe == "direct_lldp_neighbor" for item in result.observations):
+            lines.append("Topology limitation: access switch is not observable without direct LLDP evidence.")
+        return "\n".join(lines)
+    return render_result(result)
+
+
 def render_paired(result: TaskResult) -> str:
     """Project the fixed paired matrix; it performs no network work."""
     health = [item for item in result.conclusions if item.id == "paired-health"]
@@ -148,4 +168,4 @@ def render_history(records: Iterable[HistoryRecord]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["render_diagnosis", "render_history", "render_paired", "render_preview", "render_result", "render_status"]
+__all__ = ["render_diagnosis", "render_discovery", "render_history", "render_paired", "render_preview", "render_result", "render_status"]

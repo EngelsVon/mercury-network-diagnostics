@@ -760,6 +760,7 @@ def _compile_steps(
     repeats: int,
     payload: PayloadMetadata,
     datagrams_per_udp_attempt: int,
+    timeout_s: float = 3.0,
 ) -> tuple[ProbeStep, ...]:
     snapshots = {item.hostname: item for item in resolutions}
     concrete: list[tuple[Target, str, str | None, int | None]] = []
@@ -820,6 +821,7 @@ def _compile_steps(
                         "resolution_slot": resolution_slot,
                         "payload_metadata": step_payload.to_wire(),
                         "cost": cost.to_wire(),
+                        "timeout_s": timeout_s,
                     }
                     steps.append(
                         ProbeStep(
@@ -839,6 +841,7 @@ def _compile_steps(
                             resolution_slot=resolution_slot,
                             payload=step_payload,
                             cost=cost,
+                            timeout_s=timeout_s,
                         )
                     )
     return tuple(steps)
@@ -988,6 +991,7 @@ def preview_plan(
     udp_payload: bytes | None = None,
     payload_sha256: str | None = None,
     payload_profile: str | None = None,
+    timeout_s: float = 3.0,
 ) -> PlanPreview:
     instant = now or datetime.now(timezone.utc)
     if (
@@ -1000,6 +1004,9 @@ def preview_plan(
         raise BudgetError("grant must be ScopeGrant")
     if type(limits) is not BudgetLimits:
         raise BudgetError("limits must be BudgetLimits")
+    if type(timeout_s) not in (int, float) or not math.isfinite(float(timeout_s)) or not 0.1 <= float(timeout_s) <= 30.0:
+        raise BudgetError("timeout_s must be finite within 0.1..30")
+    timeout_s = float(timeout_s)
     targets = normalize_targets(target_values)
     authorize_targets(targets, grant, now=instant)
     limits.assert_within(ABSOLUTE_CEILINGS)
@@ -1124,6 +1131,7 @@ def preview_plan(
         repeats=repeats,
         payload=payload,
         datagrams_per_udp_attempt=datagrams_per_udp_attempt,
+        timeout_s=timeout_s,
     )
     if len(steps) != logical_attempts:
         raise BudgetError("compiled step count does not match reserved attempts")
@@ -1280,6 +1288,9 @@ def validate_preview(
     if len(payloads) != 1:
         raise ConfirmationError("plan steps disagree about payload metadata")
     payload = next(iter(payloads))
+    step_timeouts = {step.timeout_s for step in preview.steps}
+    if len(step_timeouts) != 1:
+        raise ConfirmationError("legacy plan steps disagree about timeout")
 
     def snapshot_resolver(hostname: str) -> tuple[str, ...]:
         return snapshots[hostname].addresses
@@ -1300,6 +1311,7 @@ def validate_preview(
             custom_udp_payload=payload.custom,
             payload_sha256=payload.sha256,
             payload_profile=None if payload.custom else payload.profile,
+            timeout_s=next(iter(step_timeouts)),
         )
     except (BudgetError, ConfirmationError, KeyError, ValueError) as exc:
         raise ConfirmationError("plan preview failed canonical recompilation") from exc

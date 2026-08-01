@@ -18,6 +18,7 @@ from typing import Sequence
 
 from . import DB_SCHEMA_VERSION, MODEL_SCHEMA_VERSION, __version__
 from .codec import dumps_document, result_to_wire
+from .discovery import DiscoveryRequest
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
 from .app import MercuryApplication
 from .models import Disposition, EvidenceKind, Health, TaskResult, TaskState
@@ -33,7 +34,7 @@ from .planner import (
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import DiagnosisRequest
 from .paired import PairedRequest
-from .render import render_diagnosis, render_history, render_paired, render_preview, render_result, render_status
+from .render import render_diagnosis, render_discovery, render_history, render_paired, render_preview, render_result, render_status
 from .tasks import SyntheticRunner, TaskService
 
 EXIT_OK = 0
@@ -138,6 +139,17 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose_parser.add_argument("--timeout", type=float, default=3.0)
     diagnose_parser.add_argument("--authorized", action="store_true")
     _add_json_option(diagnose_parser)
+
+    discover_parser = subparsers.add_parser("discover", help="collect passive candidates or run authorized bounded TCP discovery")
+    discover_parser.add_argument("--passive", action="store_true", help="read local IPv4 networks and passive topology evidence only")
+    discover_parser.add_argument("--network", help="one IPv4 CIDR to test")
+    discover_parser.add_argument("--scope", help="authorized IPv4 CIDR containing --network")
+    discover_parser.add_argument("--profile", choices=("common", "custom", "full"), default="common")
+    discover_parser.add_argument("--ports", help="comma-separated ports; required only with --profile custom")
+    discover_parser.add_argument("--timeout", type=float, default=1.0)
+    discover_parser.add_argument("--authorized", action="store_true")
+    discover_parser.add_argument("--confirm", action="append", default=[], help="required digest-bound full-port confirmation")
+    _add_json_option(discover_parser)
 
     paired_parser = subparsers.add_parser("paired", help="run the fixed authenticated paired profile")
     paired_parser.add_argument("--config", type=Path, required=True, help="operator-provisioned peer configuration path")
@@ -392,6 +404,14 @@ def paired_exit_code(result: TaskResult) -> int:
     return exit_code
 
 
+def task_exit_code(result: TaskResult) -> int:
+    return {
+        TaskState.COMPLETED: EXIT_OK,
+        TaskState.CANCELLED: EXIT_PARTIAL,
+        TaskState.FAILED: EXIT_FAILED,
+    }.get(result.state, EXIT_INTERNAL)
+
+
 async def _run_agent(args: argparse.Namespace, history: HistoryStore) -> tuple[object, str]:
     application = MercuryApplication(history=history)
     agent = await application.start_agent_from_file(
@@ -429,13 +449,29 @@ def _dispatch(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
         return EXIT_OK
-    if args.command in {"status", "diagnose"}:
+    if args.command in {"status", "diagnose", "discover"}:
         with HistoryStore(args.data_path) as history:
             application = MercuryApplication(history=history)
             if args.command == "status":
                 result = asyncio.run(application.status())
                 _emit(result_to_wire(result), render_status(result), as_json=as_json)
                 return EXIT_OK
+            if args.command == "discover":
+                if args.passive:
+                    if any((args.network, args.scope, args.ports, args.authorized, args.confirm)):
+                        raise CliError("--passive cannot be combined with active discovery options")
+                    result = asyncio.run(application.discover_passive())
+                else:
+                    if not args.network or not args.scope:
+                        raise CliError("active discovery requires --network and --scope; use --passive for packet-free context")
+                    ports = _parse_ports(args.ports) if args.ports else ()
+                    result = asyncio.run(application.discover(DiscoveryRequest(
+                        network=args.network, scope=args.scope, profile=args.profile,
+                        ports=ports, timeout_s=args.timeout, authorized=args.authorized,
+                        confirmations=tuple(args.confirm),
+                    )))
+                _emit(result_to_wire(result), render_discovery(result), as_json=as_json)
+                return task_exit_code(result)
             request = DiagnosisRequest(
                 profile="custom" if args.target else args.profile,
                 targets=tuple(args.target), timeout_s=args.timeout,
@@ -560,5 +596,6 @@ __all__ = [
     "build_parser",
     "diagnosis_exit_code",
     "paired_exit_code",
+    "task_exit_code",
     "main",
 ]

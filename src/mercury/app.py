@@ -9,6 +9,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .diagnosis import DiagnosisRunner
+from .discovery import (
+    DiscoveryRequest, collect_passive_discovery, default_discovery_grant,
+    run_discovery,
+)
 from .history import HistoryStore
 from .inventory import collect_status
 from .models import TaskResult
@@ -65,6 +69,9 @@ class MercuryApplication:
         paired_executor: Callable[[PairedRequest], Awaitable[TaskResult]] | None = None,
         paired_runner: AuthenticatedPairedRunner | None = None,
         paired_peer_service: PairedPeerService | None = None,
+        passive_discovery_collector=collect_passive_discovery,
+        discovery_executor=run_discovery,
+        discovery_grant_factory=default_discovery_grant,
     ) -> None:
         self.history = history
         self.status_collector = status_collector
@@ -76,6 +83,9 @@ class MercuryApplication:
         self.paired_executor = paired_executor
         self.paired_runner = paired_runner
         self.paired_peer_service = paired_peer_service
+        self.passive_discovery_collector = passive_discovery_collector
+        self.discovery_executor = discovery_executor
+        self.discovery_grant_factory = discovery_grant_factory
         self._peer_agent: PeerAgent | None = None
 
     async def status(self) -> TaskResult:
@@ -107,6 +117,24 @@ class MercuryApplication:
             result = await asyncio.shield(service.wait(task_id))
         if not isinstance(result, TaskResult):
             raise RuntimeError("diagnosis service returned an invalid result")
+        return result
+
+    async def discover_passive(self) -> TaskResult:
+        """Collect local candidates without transmitting a network probe."""
+        result = await self.passive_discovery_collector()
+        if type(result) is not TaskResult:
+            raise RuntimeError("passive discovery collector returned an invalid result")
+        return result
+
+    async def discover(self, request: DiscoveryRequest) -> TaskResult:
+        """Run the fixed TCP-only discovery service through this shared facade."""
+        if type(request) is not DiscoveryRequest or not request.authorized:
+            raise PolicyError("active discovery requires explicit authorization attestation")
+        result = await self.discovery_executor(
+            request, history=self.history, grant=self.discovery_grant_factory(request),
+        )
+        if type(result) is not TaskResult:
+            raise RuntimeError("discovery executor returned an invalid result")
         return result
 
     async def start_agent(self, config: PeerConfig) -> PeerAgent:

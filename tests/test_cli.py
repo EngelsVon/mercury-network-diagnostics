@@ -89,6 +89,20 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(CliError):
             parser.parse_args(("paired", "--config", "peer.json", "--identity", "peer", "--address", "127.0.0.1", "--port", "1"))
 
+    def test_discovery_parser_exposes_only_passive_or_fixed_tcp_controls(self) -> None:
+        parser = build_parser()
+        active = parser.parse_args(("discover", "--network", "127.0.0.1/32", "--scope", "127.0.0.0/8", "--profile", "custom", "--ports", "443", "--authorized"))
+        self.assertEqual((active.command, active.profile, active.ports, active.authorized), ("discover", "custom", "443", True))
+        passive = parser.parse_args(("discover", "--passive"))
+        self.assertTrue(passive.passive)
+        with self.assertRaises(CliError):
+            parser.parse_args(("discover", "--network", "127.0.0.1/32", "--scope", "127.0.0.0/8", "--payload-bytes", "1"))
+
+    def test_passive_discovery_rejects_active_flags_before_facade_work(self) -> None:
+        code, output, error = invoke("discover", "--passive", "--authorized", "--json")
+        self.assertEqual((code, output), (EXIT_USAGE, ""))
+        self.assertEqual(json.loads(error)["error"]["category"], "input")
+
     def test_paired_exit_requires_one_canonical_health_conclusion(self) -> None:
         self.assertEqual(paired_exit_code(paired_result(Health.HEALTHY)), EXIT_OK)
         self.assertEqual(paired_exit_code(paired_result(Health.PARTIAL)), EXIT_PARTIAL)
