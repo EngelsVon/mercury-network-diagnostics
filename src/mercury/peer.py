@@ -22,6 +22,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Protocol
 
+from .codec import CodecError, result_from_wire
+
 
 MAX_FRAME_BYTES = 16 * 1024
 MAX_CONTROL_OPERATION_SECONDS = 10.0
@@ -248,7 +250,14 @@ def _loads_frame(payload: bytes) -> dict[str, object]:
         raise PeerProtocolError("peer frame is malformed") from exc
     if not isinstance(value, dict):
         raise PeerProtocolError("peer frame must be an object")
-    _validate_json(value)
+    body = value.get("body")
+    if value.get("operation") == "read-result" and isinstance(body, dict) and set(body) == {"result"}:
+        # The canonical result has its own bounded codec validation below.
+        shallow = dict(value)
+        shallow["body"] = {"result": None}
+        _validate_json(shallow)
+    else:
+        _validate_json(value)
     return value
 
 
@@ -292,7 +301,12 @@ class PeerFrame:
         if not isinstance(self.body, Mapping):
             raise PeerProtocolError("peer frame body must be an object")
         body = dict(self.body)
-        _validate_json(body)
+        # A read-result response contains a canonical TaskResult document.  It
+        # is validated by the model codec below, rather than by the much
+        # smaller control-frame object/nesting limits.  No request body may
+        # carry a target, port, payload, scope, or runner.
+        if not (self.operation == "read-result" and set(body) == {"result"}):
+            _validate_json(body)
         if self.operation == "capabilities":
             if set(body) - {"capabilities"}:
                 raise PeerProtocolError("peer capability body is invalid")
@@ -301,8 +315,28 @@ class PeerFrame:
                 raise PeerProtocolError("peer capability body is invalid")
             if any(not isinstance(item, str) or len(item) > 64 for item in capabilities):
                 raise PeerProtocolError("peer capability body is invalid")
-        elif body:
-            raise PeerProtocolError("peer operation body is invalid")
+        elif self.operation == "submit":
+            if body not in (
+                {"manifest": "paired-v1", "role": "A-to-B"},
+                {"manifest": "paired-v1", "role": "B-to-A"},
+                {"status": "accepted"},
+            ):
+                raise PeerProtocolError("peer paired submit body is invalid")
+        elif self.operation == "read-result":
+            if not body:
+                pass
+            elif set(body) == {"status"} and body["status"] == "pending":
+                pass
+            elif set(body) == {"result"}:
+                try:
+                    result_from_wire(body["result"])
+                except (CodecError, TypeError, ValueError) as exc:
+                    raise PeerProtocolError("peer paired result body is invalid") from exc
+            else:
+                raise PeerProtocolError("peer paired result body is invalid")
+        elif self.operation == "cancel":
+            if body not in ({}, {"status": "cancelled"}):
+                raise PeerProtocolError("peer cancel body is invalid")
         object.__setattr__(self, "body", MappingProxyType(body))
 
     def to_wire(self) -> dict[str, object]:

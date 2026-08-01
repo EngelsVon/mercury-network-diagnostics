@@ -13,7 +13,7 @@ from .history import HistoryStore
 from .inventory import collect_status
 from .models import TaskResult
 from .peer import PeerAgent, PeerConfig, load_peer_config
-from .paired import PairedRequest
+from .paired import AuthenticatedPairedRunner, PairedPeerService, PairedRequest
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
 from .tasks import TaskService
@@ -60,6 +60,8 @@ class MercuryApplication:
         service_factory=TaskService,
         peer_agent_factory=PeerAgent,
         paired_executor: Callable[[PairedRequest], Awaitable[TaskResult]] | None = None,
+        paired_runner: AuthenticatedPairedRunner | None = None,
+        paired_peer_service: PairedPeerService | None = None,
     ) -> None:
         self.history = history
         self.status_collector = status_collector
@@ -69,6 +71,8 @@ class MercuryApplication:
         self.service_factory = service_factory
         self.peer_agent_factory = peer_agent_factory
         self.paired_executor = paired_executor
+        self.paired_runner = paired_runner
+        self.paired_peer_service = paired_peer_service
         self._peer_agent: PeerAgent | None = None
 
     async def status(self) -> TaskResult:
@@ -106,7 +110,10 @@ class MercuryApplication:
         """Start the application-owned peer-control listener once."""
         if self._peer_agent is not None:
             raise RuntimeError("peer agent is already running")
-        agent = self.peer_agent_factory(config)
+        if self.paired_peer_service is None:
+            agent = self.peer_agent_factory(config)
+        else:
+            agent = self.peer_agent_factory(config, handlers=self.paired_peer_service.handlers)
         if not isinstance(agent, PeerAgent):
             raise RuntimeError("peer agent factory returned an invalid agent")
         await agent.start()
@@ -132,9 +139,12 @@ class MercuryApplication:
         """Dispatch the closed paired profile through the application boundary."""
         if type(request) is not PairedRequest or not request.authorized:
             raise PolicyError("paired diagnostics require explicit authorization attestation")
-        if self.paired_executor is None:
-            raise RuntimeError("paired execution requires an application-configured peer executor")
-        result = await self.paired_executor(request)
+        if self.paired_runner is not None:
+            result = await self.paired_runner.run(request)
+        elif self.paired_executor is not None:
+            result = await self.paired_executor(request)
+        else:
+            raise RuntimeError("paired execution requires an application-configured authenticated runner")
         if type(result) is not TaskResult:
             raise RuntimeError("paired executor returned an invalid result")
         return result

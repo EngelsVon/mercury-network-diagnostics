@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import secrets
 import struct
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
+from .codec import result_from_wire, result_to_wire
 from .models import (
     Confidence,
     Conclusion,
@@ -26,11 +28,17 @@ from .models import (
     utc_now,
 )
 from .planner import ProbePlan, ProbeStep, Transport, validate_plan
+from .peer import PEER_PROTOCOL_VERSION, PeerClient, PeerFrame
 from .tasks import TaskContext
 
 _TCP_REPLY = b"MRP1A"
 _MAX_PAYLOAD = 1_400
 _MATRIX_ORDER = {"local_snapshot": 0, "system_dns": 1, "native_path": 2, "tcp_connect": 3, "udp_exchange": 4, "tls_handshake": 5, "http_exchange": 6}
+_PAIRED_MANIFEST = "paired-v1"
+_ROLE_A_TO_B = "A-to-B"
+_ROLE_B_TO_A = "B-to-A"
+
+RoleExecutor = Callable[[str, str], Awaitable[TaskResult]]
 
 
 class PairedError(RuntimeError):
@@ -114,6 +122,187 @@ class PairedRunner:
             observation_ids=tuple(item.id for item in observations),
             limitations=limitations,
         ))
+
+
+class PairedPeerService:
+    """Closed server-side control handlers for one fixed paired manifest.
+
+    A received submit contains only a manifest and a role label.  The local
+    role executor owns compilation, scope/DNS revalidation, task admission and
+    listener use; the authenticated peer never supplies any of those values.
+    """
+
+    def __init__(self, role_executor: RoleExecutor) -> None:
+        self._role_executor = role_executor
+        self._results: dict[str, TaskResult] = {}
+
+    @property
+    def handlers(self) -> dict[str, Callable[[PeerFrame], Awaitable[dict[str, object]]]]:
+        return {
+            "capabilities": self.capabilities,
+            "submit": self.submit,
+            "read-result": self.read_result,
+            "cancel": self.cancel,
+        }
+
+    async def capabilities(self, _frame: PeerFrame) -> dict[str, object]:
+        return {"capabilities": [_PAIRED_MANIFEST]}
+
+    async def submit(self, frame: PeerFrame) -> dict[str, object]:
+        body = frame.body
+        if body.get("manifest") != _PAIRED_MANIFEST or body.get("role") not in {_ROLE_A_TO_B, _ROLE_B_TO_A}:
+            raise PairedError("paired manifest was not admitted")
+        result = await self._role_executor(str(body["role"]), frame.correlation_id)
+        if type(result) is not TaskResult or result.task_kind != "paired":
+            raise PairedError("paired role executor returned an invalid result")
+        self._results[frame.correlation_id] = result
+        return {"status": "accepted"}
+
+    async def read_result(self, frame: PeerFrame) -> dict[str, object]:
+        result = self._results.get(frame.correlation_id)
+        return {"status": "pending"} if result is None else {"result": result_to_wire(result)}
+
+    async def cancel(self, frame: PeerFrame) -> dict[str, object]:
+        self._results.pop(frame.correlation_id, None)
+        return {"status": "cancelled"}
+
+
+class AuthenticatedPairedRunner:
+    """Run both fixed roles through authenticated control and canonical output.
+
+    The caller and peer each receive only their own fixed role label.  Their
+    executors must independently admit the locally compiled work; this class
+    only coordinates the already-closed protocol and joins its evidence.
+    """
+
+    def __init__(self, client: PeerClient, local_role_executor: RoleExecutor) -> None:
+        self._client = client
+        self._local_role_executor = local_role_executor
+
+    async def run(self, request: PairedRequest) -> TaskResult:
+        if type(request) is not PairedRequest or not request.authorized:
+            raise PairedError("paired request requires explicit authorization")
+        correlation = secrets.token_urlsafe(18)
+        expires_at = utc_now() + timedelta(seconds=request.timeout_s)
+        capability = await self._request("capabilities", correlation, expires_at, {})
+        capabilities = capability.body.get("capabilities")
+        if not isinstance(capabilities, (list, tuple)) or _PAIRED_MANIFEST not in capabilities:
+            raise PairedError("configured peer does not admit the fixed paired manifest")
+
+        # Local admission is deliberately not inferred from peer capability or
+        # cost claims.  It runs before remote submission and returns a canonical
+        # local result that is later labelled, never reconstructed from frames.
+        local = await self._local_role_executor(_ROLE_A_TO_B, correlation)
+        if type(local) is not TaskResult or local.task_kind != "paired":
+            raise PairedError("local paired role executor returned an invalid result")
+        submitted = await self._request(
+            "submit", correlation, expires_at,
+            {"manifest": _PAIRED_MANIFEST, "role": _ROLE_B_TO_A},
+        )
+        if submitted.body != {"status": "accepted"}:
+            raise PairedError("configured peer did not admit the paired role")
+        remote = await self._request("read-result", correlation, expires_at, {})
+        if set(remote.body) != {"result"}:
+            raise PairedError("configured peer did not return a terminal paired result")
+        remote_result = result_from_wire(remote.body["result"])
+        if remote_result.task_kind != "paired":
+            raise PairedError("configured peer returned an invalid paired result")
+        return _combine_role_results(request, local, remote_result, correlation)
+
+    async def _request(
+        self,
+        operation: str,
+        correlation: str,
+        expires_at: datetime,
+        body: dict[str, object],
+    ) -> PeerFrame:
+        now = utc_now()
+        return await self._client.request(PeerFrame(
+            version=PEER_PROTOCOL_VERSION,
+            operation=operation,
+            correlation_id=correlation,
+            identity=self._client.config.identity,
+            issued_at=now,
+            expires_at=expires_at,
+            nonce=secrets.token_urlsafe(16),
+            body=body,
+        ))
+
+
+def _combine_role_results(
+    request: PairedRequest,
+    local: TaskResult,
+    remote: TaskResult,
+    correlation: str,
+) -> TaskResult:
+    """Return one terminal document with both endpoint-labelled fact sets."""
+    observations = (
+        *_label_role_observations(local.observations, "A", _ROLE_A_TO_B, correlation),
+        *_label_role_observations(remote.observations, "B", _ROLE_B_TO_A, correlation),
+    )
+    if not observations:
+        raise PairedError("paired roles produced no observations")
+    health = _paired_health(observations)
+    started_at = min(local.started_at, remote.started_at)
+    ended_at = max(local.ended_at, remote.ended_at)
+    states = {local.state, remote.state}
+    state = next(item for item in (local.state, remote.state) if item.value == "failed") if any(
+        item.value == "failed" for item in states
+    ) else next(item for item in (local.state, remote.state) if item.value == "cancelled") if any(
+        item.value == "cancelled" for item in states
+    ) else local.state
+    if state.value not in {"completed", "failed", "cancelled"}:
+        raise PairedError("paired role returned a non-terminal result")
+    conclusion = Conclusion(
+        id="paired-health",
+        title="Paired directional health",
+        summary={
+            Health.HEALTHY: "Both independently admitted fixed roles produced positive evidence.",
+            Health.FAILED: "A paired role recorded a direct negative outcome.",
+            Health.PARTIAL: "Paired evidence is incomplete; silence and timeout do not identify a cause.",
+        }[health],
+        health=health,
+        confidence=Confidence.HIGH if health is not Health.PARTIAL else Confidence.LOW,
+        observation_ids=tuple(item.id for item in observations),
+        limitations=() if health is not Health.PARTIAL else (
+            "Observed asymmetry does not by itself identify a firewall, loss, route, gateway, or switch.",
+        ),
+    )
+    return TaskResult(
+        task_id=f"paired-{correlation}", task_kind="paired", direction=Direction.OUTBOUND,
+        target=request.address, state=state, started_at=started_at, ended_at=ended_at,
+        requested_config={"paired_manifest": _PAIRED_MANIFEST, "peer_identity": request.identity, "network_io": True},
+        effective_config=replace(local.effective_config, profile=_PAIRED_MANIFEST),
+        progress=replace(local.progress, admitted=local.progress.admitted + remote.progress.admitted,
+                         completed=local.progress.completed + remote.progress.completed,
+                         total=local.progress.total + remote.progress.total),
+        observations=observations, conclusions=(conclusion,),
+        capabilities=(*local.capabilities, *remote.capabilities),
+        errors=(*local.errors, *remote.errors),
+    )
+
+
+def _label_role_observations(
+    observations: tuple[Observation, ...], endpoint: str, role: str, correlation: str,
+) -> tuple[Observation, ...]:
+    labelled: list[Observation] = []
+    for index, observation in enumerate(observations):
+        detail = dict(observation.detail)
+        detail.update({"paired_endpoint": endpoint, "paired_phase": role, "paired_correlation": correlation})
+        direction = Direction.OUTBOUND if role == _ROLE_A_TO_B else Direction.INBOUND
+        labelled.append(replace(
+            observation, id=f"{endpoint}-{index}-{observation.id}", direction=direction, detail=detail,
+        ))
+    return tuple(labelled)
+
+
+def _paired_health(observations: tuple[Observation, ...]) -> Health:
+    dispositions = {item.disposition for item in observations}
+    if Disposition.NEGATIVE in dispositions:
+        return Health.FAILED
+    if dispositions == {Disposition.POSITIVE}:
+        return Health.HEALTHY
+    return Health.PARTIAL
 
 
 def paired_matrix(result: TaskResult) -> tuple[PairedMatrixRow, ...]:
@@ -499,7 +688,7 @@ class _LeaseDatagram(asyncio.DatagramProtocol):
 
 
 __all__ = [
-    "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
+    "AuthenticatedPairedRunner", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
     "PairedMatrixRow", "PairedRequest", "PairedRunner", "paired_matrix",
-    "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
+    "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

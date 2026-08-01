@@ -9,19 +9,27 @@ from datetime import timedelta
 from pathlib import Path
 
 from mercury.codec import result_from_json, result_to_json
+from mercury.app import MercuryApplication
 from mercury.history import HistoryStore
-from mercury.models import Direction, Disposition, EvidenceKind, Observation, TaskState, utc_now
+from mercury.models import (
+    Direction, Disposition, EffectiveConfig, EvidenceKind,
+    Health, Observation, Progress, TaskResult, TaskState, utc_now,
+)
 from mercury.paired import (
+    AuthenticatedPairedRunner,
     PairedEndpoint,
     PairedError,
     PairedLease,
     PairedListenerService,
+    PairedPeerService,
+    PairedRequest,
     PairedRunner,
     encode_tcp_tag,
     encode_udp_tag,
     is_valid_udp_tag,
     paired_matrix,
 )
+from mercury.peer import PeerClient, PeerConfig
 from mercury.planner import (
     PayloadMetadata,
     ProbeKind,
@@ -84,6 +92,22 @@ def _lease(*, tcp_port: int | None = None, udp_port: int | None = None) -> Paire
         expires_at=utc_now() + timedelta(seconds=30),
         udp_nonce=nonce,
         udp_tag=tag,
+    )
+
+
+def _role_result(endpoint: str, disposition: Disposition, kind: EvidenceKind) -> TaskResult:
+    now = utc_now()
+    observation = Observation(
+        id=f"{endpoint}-observation", probe="tcp_connect", disposition=disposition,
+        evidence_kind=kind, direction=Direction.OUTBOUND, target="127.0.0.1",
+        started_at=now, ended_at=now, duration_ms=0.0, source="tests.paired",
+    )
+    return TaskResult(
+        task_id=f"{endpoint}-task", task_kind="paired", direction=Direction.OUTBOUND,
+        target="127.0.0.1", state=TaskState.COMPLETED, started_at=now, ended_at=now,
+        requested_config={"paired_manifest": "paired-v1"},
+        effective_config=EffectiveConfig("paired-v1", ("127.0.0.1",), True, "test", {}),
+        progress=Progress(1, 1, 1), observations=(observation,),
     )
 
 
@@ -275,6 +299,71 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row.observation_ids for row in rows))
         self.assertTrue(any("silence is inconclusive" in row.limitations[0] for row in rows))
         self.assertEqual(result.conclusions[-2].id, "paired-health")
+
+
+class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authenticated_control_runs_independently_admitted_role_swap(self) -> None:
+        """D-12 local proof; two-machine smoke remains explicit and opt-in only."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        token_path = Path(temporary.name) / "token"
+        token_path.write_text("controlled-loopback-token", encoding="utf-8")
+        base = PeerConfig(
+            identity="loopback-peer", bind_host="127.0.0.1", control_port=0,
+            certificate_path=None, key_path=None, ca_path=None, token_path=token_path,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+        )
+        remote_roles: list[str] = []
+
+        async def remote_role(role: str, _correlation: str) -> TaskResult:
+            remote_roles.append(role)
+            return _role_result("remote", Disposition.INCONCLUSIVE, EvidenceKind.SILENT)
+
+        remote_history = HistoryStore(":memory:")
+        self.addCleanup(remote_history.close)
+        remote_app = MercuryApplication(
+            history=remote_history, paired_peer_service=PairedPeerService(remote_role),
+        )
+        agent = await remote_app.start_agent(base)
+        try:
+            server = agent.server
+            assert server is not None
+            port = server.sockets[0].getsockname()[1]
+            local_roles: list[str] = []
+
+            async def local_role(role: str, _correlation: str) -> TaskResult:
+                local_roles.append(role)
+                return _role_result("local", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED)
+
+            runner = AuthenticatedPairedRunner(
+                PeerClient(replace(base, control_port=port)), local_role,
+            )
+            local_history = HistoryStore(":memory:")
+            self.addCleanup(local_history.close)
+            result = await MercuryApplication(history=local_history, paired_runner=runner).run_paired(PairedRequest(
+                identity="loopback-peer", address="127.0.0.1", config_path="peer.json",
+                timeout_s=3.0, authorized=True, unsafe_development=True,
+            ))
+        finally:
+            await remote_app.stop_agent()
+        self.assertEqual(local_roles, ["A-to-B"])
+        self.assertEqual(remote_roles, ["B-to-A"])
+        self.assertEqual(result.conclusions[0].health, Health.PARTIAL)
+        rows = paired_matrix(result)
+        self.assertEqual([row.direction for row in rows], ["A→B", "B→A"])
+        self.assertTrue(all(row.observation_ids for row in rows))
+
+    async def test_peer_submit_cannot_carry_scan_selectors(self) -> None:
+        # The frame validation is the peer boundary: submission has no target,
+        # CIDR, port, payload, scope, resolver, or runner fields to admit.
+        with self.assertRaisesRegex(Exception, "submit body"):
+            from mercury.peer import PeerFrame
+            PeerFrame(
+                version=1, operation="submit", correlation_id="pair-control-1",
+                identity="loopback-peer", issued_at=utc_now(),
+                expires_at=utc_now() + timedelta(seconds=10), nonce="nonce-12345678",
+                body={"manifest": "paired-v1", "role": "B-to-A", "port": 443},
+            )
 
 
 def service_token():
