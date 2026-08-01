@@ -1,0 +1,54 @@
+name: Phase 2 passive status gate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  installed-passive-status:
+    name: passive status (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build and install the wheel in an ordinary-user virtual environment
+        shell: bash
+        run: |
+          python -m pip wheel . --no-deps --wheel-dir wheelhouse
+          python -m venv .phase2-venv
+          VENV_PY=.phase2-venv/bin/python; [ -x "$VENV_PY" ] || VENV_PY=.phase2-venv/Scripts/python.exe
+          "$VENV_PY" -m pip install psutil
+          "$VENV_PY" -m pip install --no-index --no-deps wheelhouse/*.whl
+      - name: Collect and sanitize passive status evidence
+        shell: bash
+        run: |
+          VENV_PY=.phase2-venv/bin/python; [ -x "$VENV_PY" ] || VENV_PY=.phase2-venv/Scripts/python.exe
+          "$VENV_PY" -m mercury status --json > status-raw.json
+          "$VENV_PY" - <<'PY'
+          import json
+          from pathlib import Path
+
+          raw = json.loads(Path("status-raw.json").read_text(encoding="utf-8"))
+          assert raw["task_kind"] == "status"
+          assert raw["state"] == "completed"
+          switch = [item for item in raw["observations"] if item["detail"].get("reason") == "no_direct_lldp_or_managed_evidence"]
+          assert switch, "missing access-switch limitation evidence"
+          Path("phase2-status-artifact.json").write_text(json.dumps({
+              "task_kind": raw["task_kind"],
+              "state": raw["state"],
+              "capabilities": [{"name": item["name"], "state": item["state"], "source": item["source"]} for item in raw["capabilities"]],
+              "access_switch": "not_observable",
+              "reason": "no_direct_lldp_or_managed_evidence",
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase2-passive-status-${{ matrix.os }}
+          path: phase2-status-artifact.json
