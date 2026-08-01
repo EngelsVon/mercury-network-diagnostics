@@ -77,6 +77,19 @@ class CustomTargetTests(unittest.TestCase):
         self.assertEqual(compiled.canonical_targets, ("127.0.0.1:443",))
         self.assertEqual({step.probe_kind.value for step in compiled.plan.preview.steps}, {"local_snapshot", "tcp_connect", "tls_handshake", "http_exchange"})
 
+    def test_planning_dns_failure_retains_intended_missing_layer_groups(self) -> None:
+        async def missing(hostname, **_):
+            from mercury.platform.common import CommandOutcome
+            from mercury.resolver import ResolutionResult
+            return ResolutionResult(hostname, (), CommandOutcome.NONZERO, "NameNotFound")
+        compiled = __import__("asyncio").run(compile_diagnosis(
+            DiagnosisRequest(profile="custom", targets=("missing.test:443",), authorized=True),
+            grant=ScopeGrant(hostnames=("missing.test",), ports=(443,), transports=("tcp",), attested=True, networks=()),
+            resolver=missing,
+        ))
+        self.assertEqual({step.probe_kind.value for step in compiled.plan.preview.steps}, {"local_snapshot", "system_dns"})
+        self.assertEqual({group.probe_kind.value for group in compiled.required_groups}, {"system_dns", "tcp_connect", "tls_handshake", "http_exchange"})
+
 
 if __name__ == "__main__":
     unittest.main()

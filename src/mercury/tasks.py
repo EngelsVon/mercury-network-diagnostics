@@ -1095,6 +1095,7 @@ class TaskService:
             raise TaskError("diagnose tasks require CompiledDiagnosis")
         # Dataclass validation rejects noncanonical group members; plan
         # validation remains the normal trust-boundary check in _submit.
+        compiled.validate()
         return self._submit_diagnosis(
             compiled.plan, runner, compiled.required_groups,
             requested_config=requested_config, task_id=task_id,

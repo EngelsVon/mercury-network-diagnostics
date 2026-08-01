@@ -20,6 +20,7 @@ from .planner import (
     DEFAULT_LIMITS,
     authorize_plan,
     preview_probe_plan,
+    validate_plan,
 )
 from .policy import PolicyError, TargetKind, parse_target
 from .policy import ScopeGrant
@@ -131,10 +132,25 @@ class CompiledDiagnosis:
             raise ProfileError("compiled diagnosis has invalid request or plan")
         if any(type(item) is not ProbeGroupKey for item in self.required_groups):
             raise ProfileError("compiled diagnosis groups must be ProbeGroupKey values")
-        if self.request.profile == "custom":
-            expected = tuple(item.canonical for item in canonical_custom_targets(self.request.targets))
-            if self.canonical_targets != expected:
-                raise ProfileError("compiled diagnosis targets do not match request")
+        definition = profile_definition(self.request)
+        endpoints = (
+            canonical_custom_targets(self.request.targets)
+            if definition is None
+            else (definition.raw_tcp_target,) + tuple(CustomTarget(host, 443) for host in definition.https_hosts)
+        )
+        expected_profile = "custom-v1" if definition is None else definition.name
+        if self.effective_profile != expected_profile:
+            raise ProfileError("compiled diagnosis profile does not match request")
+        if self.canonical_targets != tuple(item.canonical for item in endpoints):
+            raise ProfileError("compiled diagnosis targets do not match request")
+        if self.required_groups != _required_groups(endpoints):
+            raise ProfileError("compiled diagnosis groups do not match request")
+
+    def validate(self) -> "CompiledDiagnosis":
+        """Recheck the frozen companion before the closed service submission."""
+        self.__post_init__()
+        validate_plan(self.plan)
+        return self
 
 
 def _cost(*, packets: int = 1, observations: int = 1) -> StepCost:
@@ -148,6 +164,23 @@ def _local_snapshot_cost() -> StepCost:
         max_capabilities=32, max_conclusions=16, max_errors=16,
         max_output_bytes=12 * 1024 * 1024,
     )
+
+
+def _required_groups(endpoints: tuple[CustomTarget, ...]) -> tuple[ProbeGroupKey, ...]:
+    groups: list[ProbeGroupKey] = []
+    for endpoint in endpoints:
+        target = parse_target(endpoint.host)
+        if target.hostname is not None:
+            groups.append(ProbeGroupKey(ProbeKind.SYSTEM_DNS, target.canonical))
+        groups.append(ProbeGroupKey(ProbeKind.TCP_CONNECT, target.canonical, endpoint.port))
+        if endpoint.port == 443:
+            groups.extend((
+                ProbeGroupKey(ProbeKind.TLS_HANDSHAKE, target.canonical, 443, target.canonical),
+                ProbeGroupKey(ProbeKind.HTTP_EXCHANGE, target.canonical, 443, target.canonical, "https"),
+            ))
+        elif endpoint.port == 80:
+            groups.append(ProbeGroupKey(ProbeKind.HTTP_EXCHANGE, target.canonical, 80, target.canonical, "http"))
+    return tuple(groups)
 
 
 async def compile_diagnosis(
@@ -178,7 +211,6 @@ async def compile_diagnosis(
     specs: list[ProbeSpec] = [ProbeSpec(
         ProbeKind.LOCAL_SNAPSHOT, "local", cost=_local_snapshot_cost(),
     )]
-    groups: list[ProbeGroupKey] = []
     for endpoint in endpoints:
         target = parse_target(endpoint.host)
         addresses: tuple[str, ...]
@@ -190,11 +222,9 @@ async def compile_diagnosis(
             )
             if not resolution.addresses:
                 specs.append(ProbeSpec(ProbeKind.SYSTEM_DNS, target.canonical, timeout_s=request.timeout_s, cost=_cost()))
-                groups.append(ProbeGroupKey(ProbeKind.SYSTEM_DNS, target.canonical))
                 continue
             addresses = resolution.addresses
             specs.append(ProbeSpec(ProbeKind.SYSTEM_DNS, target.canonical, timeout_s=request.timeout_s, cost=_cost()))
-            groups.append(ProbeGroupKey(ProbeKind.SYSTEM_DNS, target.canonical))
         for slot, address in enumerate(addresses):
             resolution = (
                 {"source_hostname": target.canonical, "resolution_slot": slot}
@@ -202,7 +232,6 @@ async def compile_diagnosis(
             )
             kwargs = {"target": target.canonical, "address": address, "port": endpoint.port, "transport": Transport.TCP, "timeout_s": request.timeout_s, "cost": _cost(), **resolution}
             specs.append(ProbeSpec(ProbeKind.TCP_CONNECT, **kwargs))
-        groups.append(ProbeGroupKey(ProbeKind.TCP_CONNECT, target.canonical, endpoint.port))
         if endpoint.port == 443:
             for slot, address in enumerate(addresses):
                 resolution = (
@@ -212,7 +241,6 @@ async def compile_diagnosis(
                 common = {"target": target.canonical, "address": address, "port": 443, "transport": Transport.TCP, "server_name": target.canonical, "timeout_s": request.timeout_s, "cost": _cost(), **resolution}
                 specs.append(ProbeSpec(ProbeKind.TLS_HANDSHAKE, **common))
                 specs.append(ProbeSpec(ProbeKind.HTTP_EXCHANGE, http_scheme="https", **common))
-            groups.extend((ProbeGroupKey(ProbeKind.TLS_HANDSHAKE, target.canonical, 443, target.canonical), ProbeGroupKey(ProbeKind.HTTP_EXCHANGE, target.canonical, 443, target.canonical, "https")))
         elif endpoint.port == 80:
             for slot, address in enumerate(addresses):
                 resolution = (
@@ -220,7 +248,6 @@ async def compile_diagnosis(
                     if target.hostname is not None else {}
                 )
                 specs.append(ProbeSpec(ProbeKind.HTTP_EXCHANGE, target=target.canonical, address=address, port=80, transport=Transport.TCP, server_name=target.canonical, http_scheme="http", timeout_s=request.timeout_s, cost=_cost(), **resolution))
-            groups.append(ProbeGroupKey(ProbeKind.HTTP_EXCHANGE, target.canonical, 80, target.canonical, "http"))
     if definition is not None:
         raw = parse_target(definition.raw_tcp_target.host)
         specs.extend((
@@ -234,7 +261,10 @@ async def compile_diagnosis(
     preview = preview_probe_plan(
         specs=tuple(specs), grant=grant, profile=profile, limits=diagnosis_limits,
     )
-    return CompiledDiagnosis(request, profile, tuple(item.canonical for item in endpoints), authorize_plan(preview), tuple(groups))
+    return CompiledDiagnosis(
+        request, profile, tuple(item.canonical for item in endpoints), authorize_plan(preview),
+        _required_groups(endpoints),
+    )
 
 
 def parse_custom_target(value: str) -> CustomTarget:
