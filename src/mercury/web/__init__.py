@@ -547,6 +547,9 @@ class MercuryRequestHandler(BaseHTTPRequestHandler):
 
 def serve_web(config: WebConfig, *, history_path: str | Path | None = None, app_factory: Callable[..., MercuryApplication] = MercuryApplication) -> None:
     server = MercuryWebServer(config, history_path=history_path, app_factory=app_factory)
+    bound_host, bound_port = server.server_address[:2]
+    display_host = f"[{bound_host}]" if ":" in bound_host else bound_host
+    print(f"Mercury WebUI listening on {server.scheme}://{display_host}:{bound_port}", flush=True)
     try:
         server.serve_forever(poll_interval=0.2)
     finally:

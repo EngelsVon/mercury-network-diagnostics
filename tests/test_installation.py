@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import venv
+import zipfile
 from pathlib import Path
 
 
@@ -74,6 +75,14 @@ class InstalledEntryPointTests(unittest.TestCase):
             )
             wheels = tuple(wheelhouse.glob("*.whl"))
             self.assertEqual(len(wheels), 1)
+            with zipfile.ZipFile(wheels[0]) as archive:
+                contents = set(archive.namelist())
+            self.assertTrue({
+                "mercury/web/__init__.py",
+                "mercury/web/static/index.html",
+                "mercury/web/static/app.js",
+                "mercury/web/static/style.css",
+            }.issubset(contents))
 
             environment_path = root / "venv"
             venv.EnvBuilder(with_pip=True, system_site_packages=True).create(environment_path)
@@ -133,6 +142,8 @@ class InstalledEntryPointTests(unittest.TestCase):
                 ("model", "--json"),
                 ("status", "--help"),
                 ("diagnose", "--help"),
+                ("agent", "--help"),
+                ("web", "--help"),
                 ("--json", "plan"),
                 ("--json", "plan", "192.0.2.10", "--ports", "443"),
             )
@@ -182,6 +193,23 @@ class InstalledEntryPointTests(unittest.TestCase):
                 payload.pop("digest")
                 payload["scope"].pop("expires_at")
             self.assertEqual(script_payload, module_payload)
+
+
+class DocumentationTests(unittest.TestCase):
+    def test_readme_documents_supported_platforms_and_safe_uv_paths(self) -> None:
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        for text in (
+            "uv run --no-sync python -m mercury web",
+            "Windows and Ubuntu",
+            "macOS and other platforms",
+            "--authorized",
+            "--token-file",
+            "--retain-sensitive",
+            "Operator release smoke",
+            "does not scan unowned",
+        ):
+            with self.subTest(text=text):
+                self.assertIn(text, readme)
 
 
 if __name__ == "__main__":
