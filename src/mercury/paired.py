@@ -28,7 +28,7 @@ from .models import (
     utc_now,
 )
 from .planner import ProbePlan, ProbeStep, Transport, validate_plan
-from .peer import PEER_PROTOCOL_VERSION, PeerClient, PeerFrame
+from .peer import PEER_PROTOCOL_VERSION, PeerClient, PeerError, PeerFrame
 from .tasks import TaskContext
 
 _TCP_REPLY = b"MRP1A"
@@ -135,6 +135,7 @@ class PairedPeerService:
     def __init__(self, role_executor: RoleExecutor) -> None:
         self._role_executor = role_executor
         self._results: dict[str, TaskResult] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
     def handlers(self) -> dict[str, Callable[[PeerFrame], Awaitable[dict[str, object]]]]:
@@ -152,17 +153,40 @@ class PairedPeerService:
         body = frame.body
         if body.get("manifest") != _PAIRED_MANIFEST or body.get("role") not in {_ROLE_A_TO_B, _ROLE_B_TO_A}:
             raise PairedError("paired manifest was not admitted")
-        result = await self._role_executor(str(body["role"]), frame.correlation_id)
-        if type(result) is not TaskResult or result.task_kind != "paired":
-            raise PairedError("paired role executor returned an invalid result")
-        self._results[frame.correlation_id] = result
+        if frame.correlation_id in self._tasks or frame.correlation_id in self._results:
+            raise PairedError("paired correlation is already active")
+        task = asyncio.create_task(
+            self._run_role(str(body["role"]), frame.correlation_id),
+            name=f"mercury:paired:{frame.correlation_id}",
+        )
+        self._tasks[frame.correlation_id] = task
         return {"status": "accepted"}
 
+    async def _run_role(self, role: str, correlation: str) -> None:
+        result = await self._role_executor(role, correlation)
+        if type(result) is not TaskResult or result.task_kind != "paired":
+            raise PairedError("paired role executor returned an invalid result")
+        self._results[correlation] = result
+
     async def read_result(self, frame: PeerFrame) -> dict[str, object]:
+        task = self._tasks.get(frame.correlation_id)
+        if task is not None:
+            if not task.done():
+                return {"status": "pending"}
+            try:
+                task.result()
+            except (PairedError, asyncio.CancelledError) as exc:
+                raise PairedError("paired role did not complete") from exc
+            except Exception as exc:
+                raise PairedError("paired role execution failed") from exc
+            self._tasks.pop(frame.correlation_id, None)
         result = self._results.get(frame.correlation_id)
         return {"status": "pending"} if result is None else {"result": result_to_wire(result)}
 
     async def cancel(self, frame: PeerFrame) -> dict[str, object]:
+        task = self._tasks.pop(frame.correlation_id, None)
+        if task is not None:
+            task.cancel()
         self._results.pop(frame.correlation_id, None)
         return {"status": "cancelled"}
 
@@ -186,30 +210,48 @@ class AuthenticatedPairedRunner:
         # with '_' or '-', which the strict control grammar rightly rejects.
         correlation = "p" + secrets.token_urlsafe(18)
         expires_at = utc_now() + timedelta(seconds=request.timeout_s)
-        capability = await self._request("capabilities", correlation, expires_at, {})
-        capabilities = capability.body.get("capabilities")
-        if not isinstance(capabilities, (list, tuple)) or _PAIRED_MANIFEST not in capabilities:
-            raise PairedError("configured peer does not admit the fixed paired manifest")
+        submitted = False
+        try:
+            async with asyncio.timeout(request.timeout_s):
+                capability = await self._request("capabilities", correlation, expires_at, {})
+                capabilities = capability.body.get("capabilities")
+                if not isinstance(capabilities, (list, tuple)) or _PAIRED_MANIFEST not in capabilities:
+                    raise PairedError("configured peer does not admit the fixed paired manifest")
+                # Submit first: the remote B-to-A role can bind its finite
+                # listeners before local A-to-B sends the fixed probes.
+                submitted_frame = await self._request(
+                    "submit", correlation, expires_at,
+                    {"manifest": _PAIRED_MANIFEST, "role": _ROLE_B_TO_A},
+                )
+                if submitted_frame.body != {"status": "accepted"}:
+                    raise PairedError("configured peer did not admit the paired role")
+                submitted = True
+                local = await self._local_role_executor(_ROLE_A_TO_B, correlation)
+                if type(local) is not TaskResult or local.task_kind != "paired":
+                    raise PairedError("local paired role executor returned an invalid result")
+                remote_result = await self._read_remote_result(correlation, expires_at)
+                return _combine_role_results(request, local, remote_result, correlation)
+        except TimeoutError as exc:
+            raise PairedError("paired execution exceeded its finite deadline") from exc
+        finally:
+            if submitted:
+                try:
+                    await asyncio.shield(self._request("cancel", correlation, expires_at, {}))
+                except (PeerError, OSError):
+                    pass
 
-        # Local admission is deliberately not inferred from peer capability or
-        # cost claims.  It runs before remote submission and returns a canonical
-        # local result that is later labelled, never reconstructed from frames.
-        local = await self._local_role_executor(_ROLE_A_TO_B, correlation)
-        if type(local) is not TaskResult or local.task_kind != "paired":
-            raise PairedError("local paired role executor returned an invalid result")
-        submitted = await self._request(
-            "submit", correlation, expires_at,
-            {"manifest": _PAIRED_MANIFEST, "role": _ROLE_B_TO_A},
-        )
-        if submitted.body != {"status": "accepted"}:
-            raise PairedError("configured peer did not admit the paired role")
-        remote = await self._request("read-result", correlation, expires_at, {})
-        if set(remote.body) != {"result"}:
-            raise PairedError("configured peer did not return a terminal paired result")
-        remote_result = result_from_wire(remote.body["result"])
-        if remote_result.task_kind != "paired":
-            raise PairedError("configured peer returned an invalid paired result")
-        return _combine_role_results(request, local, remote_result, correlation)
+    async def _read_remote_result(self, correlation: str, expires_at: datetime) -> TaskResult:
+        while True:
+            remote = await self._request("read-result", correlation, expires_at, {})
+            if set(remote.body) == {"status"} and remote.body["status"] == "pending":
+                await asyncio.sleep(0.01)
+                continue
+            if set(remote.body) != {"result"}:
+                raise PairedError("configured peer returned an invalid paired result state")
+            remote_result = result_from_wire(remote.body["result"])
+            if remote_result.task_kind != "paired":
+                raise PairedError("configured peer returned an invalid paired result")
+            return remote_result
 
     async def _request(
         self,

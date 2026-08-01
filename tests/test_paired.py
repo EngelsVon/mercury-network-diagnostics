@@ -320,9 +320,13 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
             peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
         )
         remote_roles: list[str] = []
+        remote_started = asyncio.Event()
+        allow_remote_result = asyncio.Event()
 
         async def remote_role(role: str, _correlation: str) -> TaskResult:
             remote_roles.append(role)
+            remote_started.set()
+            await allow_remote_result.wait()
             return _role_result("remote", Disposition.INCONCLUSIVE, EvidenceKind.SILENT)
 
         remote_history = HistoryStore(":memory:")
@@ -339,6 +343,10 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
 
             async def local_role(role: str, _correlation: str) -> TaskResult:
                 local_roles.append(role)
+                # A real remote B-to-A role must bind before local A-to-B
+                # starts.  This catches a sequential submit implementation.
+                await asyncio.wait_for(remote_started.wait(), 1)
+                allow_remote_result.set()
                 return _role_result("local", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED)
 
             runner = AuthenticatedPairedRunner(
