@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from mercury.models import (
 )
 from mercury.paired import (
     AuthenticatedPairedRunner,
+    ConfiguredPairedExecutor,
     PairedEndpoint,
     PairedError,
     PairedLease,
@@ -29,7 +31,7 @@ from mercury.paired import (
     is_valid_udp_tag,
     paired_matrix,
 )
-from mercury.peer import PeerClient, PeerConfig
+from mercury.peer import PeerClient, PeerConfig, PeerConfigurationError
 from mercury.planner import (
     PayloadMetadata,
     ProbeKind,
@@ -121,6 +123,16 @@ class _UdpClient(asyncio.DatagramProtocol):
 
 
 class PlanAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    def test_paired_runtime_requires_one_fixed_configured_peer_address(self) -> None:
+        with self.assertRaisesRegex(PeerConfigurationError, "one fixed peer address"):
+            PeerConfig(
+                identity="owned-pair", bind_host="127.0.0.1", control_port=0,
+                certificate_path=None, key_path=None, ca_path=None, token_path=None,
+                peer_pins=(), peer_addresses=("127.0.0.1", "127.0.0.2"),
+                unsafe_development=True, paired_tcp_port=46001,
+                paired_udp_port=46002, paired_timeout_s=1.0,
+            )
+
     def test_lease_accepts_only_exact_plan_endpoint_and_reservations(self) -> None:
         lease = _lease()
         self.assertEqual(lease.endpoint.address, lease.authenticated_source)
@@ -302,6 +314,52 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_runtime_performs_fixed_loopback_tcp_udp_profile(self) -> None:
+        """The bare runtime composes only configured data-plane endpoints."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        token_path = Path(temporary.name) / "token"
+        token_path.write_text("controlled-loopback-token", encoding="utf-8")
+        tcp_port, udp_port = _port(socket.SOCK_STREAM), _port(socket.SOCK_DGRAM)
+        remote_config = PeerConfig(
+            identity="loopback-pair", bind_host="127.0.0.1", control_port=0,
+            certificate_path=None, key_path=None, ca_path=None, token_path=token_path,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+            paired_tcp_port=tcp_port, paired_udp_port=udp_port, paired_timeout_s=1.0,
+        )
+        remote_history = HistoryStore(":memory:")
+        self.addCleanup(remote_history.close)
+        remote_app = MercuryApplication(
+            history=remote_history,
+            paired_peer_service=PairedPeerService(
+                ConfiguredPairedExecutor(remote_config, remote_history)
+            ),
+        )
+        agent = await remote_app.start_agent(remote_config)
+        try:
+            server = agent.server
+            assert server is not None
+            control_port = server.sockets[0].getsockname()[1]
+            local_history = HistoryStore(":memory:")
+            self.addCleanup(local_history.close)
+            config_path = Path(temporary.name) / "peer.json"
+            config_path.write_text(json.dumps({
+                "identity": "loopback-pair", "bind_host": "127.0.0.1",
+                "control_port": control_port, "peer_pins": [],
+                "peer_addresses": ["127.0.0.1"], "token_path": "token",
+                "paired": {"tcp_port": tcp_port, "udp_port": udp_port, "timeout_s": 1.0},
+            }), encoding="utf-8")
+            result = await MercuryApplication(history=local_history).run_paired(PairedRequest(
+                identity="loopback-pair", address="127.0.0.1", config_path=str(config_path),
+                timeout_s=1.0, authorized=True, unsafe_development=True,
+            ))
+        finally:
+            await remote_app.stop_agent()
+        kinds = {item.evidence_kind for item in result.observations}
+        self.assertIn(EvidenceKind.TCP_CONNECTED, kinds)
+        self.assertIn(EvidenceKind.UDP_APPLICATION_REPLY, kinds)
+        self.assertIn(EvidenceKind.PEER_OBSERVED_ARRIVAL, kinds)
+
     async def test_authenticated_control_runs_independently_admitted_role_swap(self) -> None:
         """D-12 local proof.
 

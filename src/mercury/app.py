@@ -12,8 +12,11 @@ from .diagnosis import DiagnosisRunner
 from .history import HistoryStore
 from .inventory import collect_status
 from .models import TaskResult
-from .peer import PeerAgent, PeerConfig, load_peer_config
-from .paired import AuthenticatedPairedRunner, PairedPeerService, PairedRequest
+from .peer import PeerAgent, PeerClient, PeerConfig, load_peer_config
+from .paired import (
+    AuthenticatedPairedRunner, ConfiguredPairedExecutor, PairedPeerService,
+    PairedRequest,
+)
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
 from .tasks import TaskService
@@ -124,9 +127,12 @@ class MercuryApplication:
         self, path: Path, *, unsafe_development: bool = False,
     ) -> PeerAgent:
         """Load operator-provisioned paths and start the shared control agent."""
-        return await self.start_agent(
-            load_peer_config(path, unsafe_development=unsafe_development)
-        )
+        config = load_peer_config(path, unsafe_development=unsafe_development)
+        if self.paired_peer_service is None and config.paired_enabled:
+            self.paired_peer_service = PairedPeerService(
+                ConfiguredPairedExecutor(config, self.history)
+            )
+        return await self.start_agent(config)
 
     async def stop_agent(self) -> None:
         """Stop the application-owned listener without exposing transport to the CLI."""
@@ -144,7 +150,21 @@ class MercuryApplication:
         elif self.paired_executor is not None:
             result = await self.paired_executor(request)
         else:
-            raise RuntimeError("paired execution requires an application-configured authenticated runner")
+            config = load_peer_config(
+                Path(request.config_path), unsafe_development=request.unsafe_development,
+            )
+            if not config.paired_enabled:
+                raise PolicyError("paired configuration does not define the fixed pair profile")
+            if request.identity != config.identity or request.address != config.peer_addresses[0]:
+                raise PolicyError("paired request does not match its operator-provisioned peer configuration")
+            assert config.paired_timeout_s is not None
+            if request.timeout_s > config.paired_timeout_s:
+                raise PolicyError("paired request timeout exceeds configured finite profile")
+            runner = AuthenticatedPairedRunner(
+                PeerClient(config),
+                ConfiguredPairedExecutor(config, self.history),
+            )
+            result = await runner.run(request)
         if type(result) is not TaskResult:
             raise RuntimeError("paired executor returned an invalid result")
         return result

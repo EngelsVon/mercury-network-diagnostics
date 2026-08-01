@@ -74,6 +74,9 @@ class PeerConfig:
     peer_addresses: tuple[str, ...]
     unsafe_development: bool = False
     server_hostname: str | None = None
+    paired_tcp_port: int | None = None
+    paired_udp_port: int | None = None
+    paired_timeout_s: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, str) or not _IDENTITY.fullmatch(self.identity):
@@ -94,6 +97,21 @@ class PeerConfig:
         for pin in self.peer_pins:
             if not isinstance(pin, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", pin):
                 raise PeerConfigurationError("peer certificate pin is invalid")
+        paired = (self.paired_tcp_port, self.paired_udp_port, self.paired_timeout_s)
+        if any(value is not None for value in paired):
+            if any(value is None for value in paired):
+                raise PeerConfigurationError("paired configuration is incomplete")
+            if len(self.peer_addresses) != 1:
+                raise PeerConfigurationError("paired configuration requires one fixed peer address")
+            if any(isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
+                   for port in (self.paired_tcp_port, self.paired_udp_port)):
+                raise PeerConfigurationError("paired ports are invalid")
+            if self.paired_tcp_port == self.paired_udp_port:
+                raise PeerConfigurationError("paired TCP and UDP ports must differ")
+            if (type(self.paired_timeout_s) not in (int, float)
+                    or not math.isfinite(float(self.paired_timeout_s))
+                    or not 0.1 <= float(self.paired_timeout_s) <= 30.0):
+                raise PeerConfigurationError("paired timeout is invalid")
         if self.unsafe_development:
             if not bound.is_loopback:
                 raise PeerConfigurationError("unsafe development is loopback-only")
@@ -119,6 +137,10 @@ class PeerConfig:
     @property
     def bind_is_loopback(self) -> bool:
         return ipaddress.ip_address(self.bind_host).is_loopback
+
+    @property
+    def paired_enabled(self) -> bool:
+        return self.paired_tcp_port is not None
 
     def validate_for_start(self) -> None:
         """Check all trusted files before constructing a listener."""
@@ -151,7 +173,10 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
     if not isinstance(value, dict):
         raise PeerConfigurationError("peer configuration must be an object")
     required = {"identity", "bind_host", "control_port", "peer_pins", "peer_addresses"}
-    optional = {"certificate_path", "key_path", "ca_path", "token_path", "server_hostname"}
+    optional = {
+        "certificate_path", "key_path", "ca_path", "token_path", "server_hostname",
+        "paired",
+    }
     if set(value) - required - optional or required - set(value):
         raise PeerConfigurationError("peer configuration fields are invalid")
     def path_value(name: str) -> Path | None:
@@ -164,12 +189,21 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
     pins, addresses = value["peer_pins"], value["peer_addresses"]
     if not isinstance(pins, list) or not isinstance(addresses, list):
         raise PeerConfigurationError("peer configuration peer lists are invalid")
+    paired = value.get("paired")
+    if paired is not None and (
+        not isinstance(paired, dict)
+        or set(paired) != {"tcp_port", "udp_port", "timeout_s"}
+    ):
+        raise PeerConfigurationError("paired configuration fields are invalid")
     return PeerConfig(
         identity=value["identity"], bind_host=value["bind_host"], control_port=value["control_port"],
         certificate_path=path_value("certificate_path"), key_path=path_value("key_path"),
         ca_path=path_value("ca_path"), token_path=path_value("token_path"),
         peer_pins=tuple(pins), peer_addresses=tuple(addresses),
         unsafe_development=unsafe_development, server_hostname=value.get("server_hostname"),
+        paired_tcp_port=None if paired is None else paired["tcp_port"],
+        paired_udp_port=None if paired is None else paired["udp_port"],
+        paired_timeout_s=None if paired is None else paired["timeout_s"],
     )
 
 

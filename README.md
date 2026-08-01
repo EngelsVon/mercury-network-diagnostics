@@ -59,6 +59,35 @@ states `Access switch: not observable` until direct LLDP or managed evidence
 exists. Other platforms, including macOS, return explicit unsupported capability
 evidence and are not supported release targets.
 
+## Authenticated paired diagnostics
+
+Paired diagnostics use two reciprocal, operator-provisioned configurations. The
+CLI never accepts a data-plane target, CIDR, port, or payload. Each file fixes
+one peer address, a TCP port, a UDP port, and a finite profile timeout; the two
+endpoints use the same pair identity and ports, with their own local bind and
+peer address reversed.
+
+```json
+{
+  "identity": "campus-pair-01",
+  "bind_host": "192.0.2.10",
+  "control_port": 9443,
+  "peer_addresses": ["192.0.2.20"],
+  "peer_pins": ["sha256:<configured-peer-certificate-fingerprint>"],
+  "certificate_path": "server-cert.pem",
+  "key_path": "server-key.pem",
+  "ca_path": "trusted-client-ca.pem",
+  "token_path": "pair-token",
+  "paired": {"tcp_port": 45001, "udp_port": 45002, "timeout_s": 3.0}
+}
+```
+
+Secret values stay in the referenced files, never in the configuration or CLI.
+Start the agent on both endpoints, then invoke `mercury paired --config ...
+--identity campus-pair-01 --address <configured-peer-IP> --timeout 3
+--authorized`. Non-loopback operation requires mTLS, a configured certificate
+pin, and a token. `--unsafe-development` is loopback-only.
+
 ## Safety and limitations
 
 - Active work is normalized, authorized, admitted, rate-limited, and bounded
@@ -69,5 +98,5 @@ evidence and are not supported release targets.
   Mercury never makes a universal Internet or root-cause claim.
 - Tests use fakes and loopback only. They never resolve or connect to built-in
   public profile targets.
-- SQLite history rejects credentials and secret material. Peer mode, discovery,
-  WebUI, reports, and release hardening remain future work.
+- SQLite history rejects credentials and secret material. Discovery, WebUI,
+  reports, and release hardening remain future work.
