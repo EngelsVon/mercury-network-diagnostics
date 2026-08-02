@@ -27,8 +27,8 @@ from .models import (
     Progress, TaskResult, TaskState, utc_now,
 )
 from .planner import (
-    ABSOLUTE_CEILINGS, DEFAULT_LIMITS, BudgetLimits, PlanPreview, ProbePlan,
-    confirmation_phrase, authorize_plan, preview_plan,
+    ABSOLUTE_CEILINGS, DEFAULT_LIMITS, BudgetLimits, InternalMappingRequest, PlanPreview, ProbePlan,
+    confirmation_phrase, authorize_internal_mapping, authorize_plan, preview_plan,
 )
 from .policy import PolicyError, ScopeGrant, TargetKind, parse_target
 from .probes import run_protocol_probe
@@ -380,6 +380,34 @@ class DiscoveryRunner:
     async def __call__(self, context: TaskContext) -> None:
         for step in context.plan.preview.steps:
             await self.protocol_dispatcher(context, step.id)
+
+
+class MappingRunner(DiscoveryRunner):
+    """Run only the already-admitted port-capable mapping plan steps."""
+
+
+async def run_internal_mapping(
+    request: InternalMappingRequest, *, history: HistoryStore, service_factory=TaskService,
+) -> TaskResult:
+    plan = authorize_internal_mapping(request)
+    service = service_factory(history)
+    task_id = service.submit(
+        plan, MappingRunner(), task_kind="internal_mapping",
+        requested_config={
+            "cidrs": list(request.cidrs), "profiles": [profile.value for profile in request.profiles],
+            "ports": list(request.ports), "rate": request.rate, "concurrency": request.concurrency,
+            "duration_s": request.duration_s, "duration_semantics": "zero means no operator early cutoff within immutable ceilings",
+            "network_io": True,
+        },
+    )
+    try:
+        result = await service.wait(task_id)
+    except asyncio.CancelledError:
+        service.cancel(task_id)
+        result = await asyncio.shield(service.wait(task_id))
+    if type(result) is not TaskResult:
+        raise RuntimeError("internal mapping task returned an invalid result")
+    return result
 
 
 async def run_discovery(

@@ -11,7 +11,7 @@ from pathlib import Path
 from .diagnosis import DiagnosisRunner
 from .discovery import (
     DiscoveryRequest, collect_passive_discovery, default_discovery_grant,
-    run_discovery,
+    run_discovery, run_internal_mapping,
 )
 from .history import HistoryStore
 from .inventory import collect_status
@@ -138,6 +138,11 @@ class MercuryApplication:
         if type(request) is not InternalMappingRequest or not request.authorized:
             raise PolicyError("internal mapping requires explicit authorization attestation")
         return authorize_internal_mapping(request)
+
+    async def map_internal(self, request: InternalMappingRequest) -> TaskResult:
+        if type(request) is not InternalMappingRequest or not request.authorized:
+            raise PolicyError("internal mapping requires explicit authorization attestation")
+        return await run_internal_mapping(request, history=self.history)
 
     async def discover(self, request: DiscoveryRequest) -> TaskResult:
         """Run the fixed TCP-only discovery service through this shared facade."""
