@@ -24,13 +24,14 @@ from .web import WebConfig, serve_web
 from .reports import ReportError, html_report, json_report
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
 from .app import MercuryApplication
-from .models import Disposition, EvidenceKind, Health, TaskResult, TaskState
+from .models import CoverageProfile, Disposition, EvidenceKind, Health, TaskResult, TaskState
 from .planner import (
     ABSOLUTE_CEILINGS,
     DEFAULT_LIMITS,
     BudgetError,
     ConfirmationError,
     confirmation_phrase,
+    InternalMappingRequest,
     authorize_plan,
     preview_plan,
 )
@@ -153,6 +154,16 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--authorized", action="store_true")
     discover_parser.add_argument("--confirm", action="append", default=[], help="required digest-bound full-port confirmation")
     _add_json_option(discover_parser)
+
+    mapping_parser = subparsers.add_parser("mapping", help="run an authorized bounded private multi-range mapping")
+    mapping_parser.add_argument("--cidr", action="append", required=True, help="private IPv4 CIDR; repeat for multiple ranges")
+    mapping_parser.add_argument("--profiles", required=True, help="comma-separated fixed coverage profiles")
+    mapping_parser.add_argument("--ports", required=True, help="comma-separated selected ports")
+    mapping_parser.add_argument("--rate", type=int, default=10)
+    mapping_parser.add_argument("--concurrency", type=int, default=1)
+    mapping_parser.add_argument("--duration", type=int, default=0, help="seconds; 0 means no operator early cutoff within hard ceilings")
+    mapping_parser.add_argument("--authorized", action="store_true")
+    _add_json_option(mapping_parser)
 
     trace_parser = subparsers.add_parser("trace", help="run an authorized bounded native route trace")
     trace_parser.add_argument("target", help="one numeric IP address")
@@ -477,7 +488,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
         return EXIT_OK
-    if args.command in {"status", "diagnose", "discover", "trace"}:
+    if args.command in {"status", "diagnose", "discover", "trace", "mapping"}:
         with HistoryStore(args.data_path) as history:
             application = MercuryApplication(history=history)
             if args.command == "status":
@@ -506,6 +517,18 @@ def _dispatch(args: argparse.Namespace) -> int:
                     repeats=args.repeat, timeout_s=args.timeout, authorized=args.authorized,
                 )))
                 _emit(result_to_wire(result), render_trace(result), as_json=as_json)
+                return task_exit_code(result)
+            if args.command == "mapping":
+                try:
+                    profiles = tuple(CoverageProfile(value.strip()) for value in args.profiles.split(",") if value.strip())
+                except ValueError as exc:
+                    raise CliError("--profiles contains an unsupported coverage profile") from exc
+                result = asyncio.run(application.map_internal(InternalMappingRequest(
+                    cidrs=tuple(args.cidr), profiles=profiles, ports=_parse_ports(args.ports),
+                    rate=args.rate, concurrency=args.concurrency, duration_s=args.duration,
+                    authorized=args.authorized,
+                )))
+                _emit(result_to_wire(result), render_result(result), as_json=as_json)
                 return task_exit_code(result)
             request = DiagnosisRequest(
                 profile="custom" if args.target else args.profile,
