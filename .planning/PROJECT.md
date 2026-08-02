@@ -1,92 +1,96 @@
-# Mercury（墨丘利）
+# Mercury
 
 ## What This Is
 
-Mercury 是面向网络管理员、校园网/企业内网运维人员和高级用户的分布式网络诊断工具。每台设备可运行 Mercury CLI；WebUI 发行物内置同一套 CLI 与诊断引擎，用统一、可解释的视图呈现本机网络、邻居与网关、互联网可达性、内网网段发现、路由路径，以及两个经授权 Mercury 节点之间的端口与协议可达性差异。
+Mercury is a local-first internal-network analysis and mapping tool for administrators diagnosing whether ACL or isolation changes still leave an internal host, port, or bounded protocol profile reachable. It will retain its versioned evidence model and shared CLI/Web service layer while moving its active target policy from general authorized diagnostics to a strictly private-network-only product.
 
-Mercury 的重点不是“某个 IP 能不能 ping 通”这一位结果，而是帮助用户回答“哪一层、哪一跳、哪个方向、哪个协议或端口出了问题”，并保存足够证据让问题可以复现和比较。
+The product is for operators investigating their own internal network during a controlled outage, segmentation change, or port-leak investigation. Its output must state what was observed for each direction and attempt; a timeout or silence is never proof that a port is closed.
 
 ## Core Value
 
-在用户明确授权的网络范围内，以安全、可解释且可复现的方式定位节点间可达性故障及其网络层原因。
+Within an explicitly declared private-network scope, show reproducible evidence of the internal reachability that remains, including the uncertainty that prevents a definitive claim.
 
 ## Requirements
 
 ### Validated
 
-- Phase 4 (2026-08-02): passive IPv4/route/neighbor context, direct-LLDP-only topology evidence, scope-bound TCP discovery, and repeated native route traces were validated with controlled tests. Gateway, neighbor and route-hop data remain explicitly non-switch evidence.
-- Phase 5 (2026-08-02): accessible same-origin WebUI, facade-backed history comparison, default-redacted reports, clean wheel installation and controlled Windows/Ubuntu release procedures were validated. macOS and other platforms remain explicit v1 unsupported targets.
+- ✅ **BASE-01**: Passive local interface, route, DNS, neighbour, Wi-Fi, and direct-LLDP collection is available with typed capability evidence.
+- ✅ **BASE-02**: The common task engine compiles immutable plans, admits exact steps, supports cancellation, and records versioned observations.
+- ✅ **BASE-03**: CLI and Web UI call the same `MercuryApplication` service boundary; browser code does not probe the network.
+- ✅ **BASE-04**: Local SQLite history and reports reject secret material and redact identifiers by default.
+- ✅ **BASE-05**: Non-loopback peer control uses TLS, token authentication, certificate pinning, and a closed paired operation profile.
+- ✅ **SCOPE-01..03**: Active destinations, resolved answers, profiles, peer configuration, CLI/Web guidance, and service entry points enforce the explicit private-only admission rule. *(Validated in Phase 1, 2026-08-02.)*
 
 ### Active
 
-- [ ] CLI 可展示操作系统、主机、DNS、路由、网卡、地址、MTU、默认网关等本机网络快照。
-- [ ] 在能力允许时识别直连邻居、网关及交换基础设施，并明确区分“观测到”“推断出”和“无法得知”。
-- [ ] 通过多目标、多协议探针区分本地链路、DNS、默认路由、公共 IP 和常用外网服务的可达性。
-- [ ] 在用户限定的授权范围内发现本机可见网段、活跃主机和基础服务，支持超时、并发、速率及目标上限。
-- [ ] 分析到目标的路由路径、逐跳时延和路径变化，并对平台权限或 ICMP 过滤导致的不确定性作出解释。
-- [ ] 两个 Mercury 端可通过显式配对进行双向协作测试，覆盖常用 TCP/UDP 端口和可扩展的应用层探针。
-- [ ] 提供经强提醒和显式确认才可启用的高级矩阵测试，用采样/分片/预算机制避免无意执行 65,535 端口乘全部协议的爆炸式扫描。
-- [ ] WebUI 内置 CLI/诊断引擎，提供实时任务进度、网络状态摘要、拓扑/路径视图、结果详情和历史对比。
-- [ ] 任务、探针、观测、置信度、错误和事件使用版本化结构化模型，可输出 JSON 并生成可分享的脱敏报告。
-- [ ] 默认只绑定 loopback、具有认证和最小权限控制；所有主动探测均保留授权范围与审计记录。
-- [ ] 支持 Windows 和 Ubuntu 的普通用户模式，并对需要原始套接字、抓包或系统命令权限的能力进行降级说明；macOS 及其他平台明确报告为 unsupported，不属于 v1 发布目标。
-- [ ] 具备单元、集成、端到端和受控网络命名空间/容器测试，能验证成功、丢包、拒绝、超时、DNS 劫持及不对称路径等场景。
+- [ ] Provide one private mapping request that accepts multiple internal CIDRs, finite transport/port profiles, rate, concurrency, and duration parameters.
+- [ ] Use paired, correlation-bound Mercury receivers to witness inbound TCP, UDP, DNS, ICMP (where the platform can observe it), TLS, HTTP, SSH-banner, and local-link ARP/ND coverage profiles in both directions.
+- [ ] Produce a tunnel-exposure coverage matrix that flags every tested carrier with positive arrival or reply evidence and lists every unavailable, skipped, and non-applicable profile.
+- [ ] Optionally use the locally installed Nmap executable through a fixed, policy-derived adapter, never an arbitrary Nmap command line.
+- [ ] Expose the same mapping service through CLI and Web UI while preserving peer trust controls, local evidence history, cancellation, redaction, and hard ceilings.
+- [ ] Replace the deleted project plan with requirements, roadmap, phase state, and a codebase map that make the product pivot executable.
 
 ### Out of Scope
 
-- 未经授权的互联网或第三方网络扫描 — Mercury 是诊断工具，不是公共攻击面扫描器。
-- 默认穷举全端口、全协议、任意载荷组合 — 状态空间没有有限意义，风险和时间成本远超诊断价值。
-- 声称在无 LLDP/CDP/SNMP/管理面信息时可靠识别二层交换机 — 普通终端通常无法仅从 IP 层确定交换设备。
-- 绕过网络访问控制、封锁或认证 — 只观测与报告可达性，不提供规避机制。
-- 通用漏洞利用、口令爆破、流量窃听或内容解密 — 与可达性诊断无关且会显著扩大双重用途风险。
-- 在 v1 建设集中式多租户 SaaS 控制平面 — 首版聚焦本地 CLI/WebUI 与显式配对的点到点诊断。
+- Public-IP, Internet, or arbitrary DNS-name scanning — Mercury is restricted to local private ranges so the tool cannot be used as a general Internet scanner.
+- Unattested or unscoped active work — a minimal explicit operator attestation and canonical target scope remain mandatory at the trust boundary.
+- Unlimited time, rate, concurrency, host, port, event, byte, or output work — immutable aggregate ceilings protect the host and network even when the requested duration is `0`.
+- Generic Nmap argv, NSE scripts, target-file imports, proxy/decoy options, raw packet crafting, or a remote scan relay — these would bypass Mercury's internal-only policy and evidence accounting.
+- A claim that all possible tunnel mechanisms are absent — packet payloads and state sequences are unbounded, so the product must report the finite coverage matrix rather than a false universal negative.
+- Credential, password, or login brute forcing — authentication probing is unrelated to reachability evidence and risks account harm.
 
 ## Context
 
-- 用户希望解决校园网断网、DNS/特定端口仍放行、同一网络不同设备结果不一致等“表面断网、实际部分可达”的隐蔽问题。
-- 参考项目为 [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)；需先验证其架构、交互和代码模式是否适合复用，而不是机械复制。
-- 同类问题已有 ping、traceroute、mtr、nmap、arp/neighbor、LLDP 客户端、NetBird/Tailscale diagnostics、OpenSpeedTest 等碎片化工具；Mercury 的候选价值在于跨平台整合、双端协作、方向性测试和可解释结果。
-- 项目是 greenfield；已选 CPython 3.11+、标准库加 psutil 的模块化单体，peer 使用固定证书指纹的 mTLS 加独立 token，WebUI 使用同一内核与原生静态资源。
-- “尽可能多地扫出来”解释为在显式授权范围和资源预算内采用多来源被动发现加渐进式主动探测，而不是无边界扫描。
+- The existing product already has a strong evidence model: TCP refusal, timeout, UDP application reply, ICMP unreachable, silent, unsupported, permission denied, and execution error are distinct values.
+- `src/mercury/discovery.py` currently offers one IPv4 CIDR and TCP-only profiles; `src/mercury/policy.py` currently permits public addresses when attested.
+- The current README states that Mercury is not a scanner and includes public-profile examples. Both the implementation and documentation need a coordinated product-pivot migration.
+- Nmap is installed at `D:\\Nmap\\nmap.exe` on this development system, but it is not currently a project dependency or integration.
+- The user supplied a private peer test endpoint, but it is not recorded in project files and must not be contacted by automated tests or by this planning task.
 
 ## Constraints
 
-- **安全**: 默认被动/低影响；主动扫描需要显式目标范围，危险模式需要二次确认、硬预算和审计。
-- **真实性**: 不把推断包装成事实；每条结论附来源、时间、方向和置信度。
-- **可移植性**: Windows 与 Ubuntu 均须有可用的非特权基线，特权能力必须可选降级；macOS 及其他平台明确报告 unsupported，不作为 v1 承诺。
-- **网络语义**: TCP connect 成功、拒绝、超时，UDP 响应/ICMP 不可达/静默必须分开表达；“静默”不等于“开放”。
-- **隐私**: 本地历史可保留诊断所需的原始网络证据，但必须使用当前用户专属存储并永不持久化 token/私钥/配对密钥；导出默认脱敏公网 IP、MAC、主机名和载荷。
-- **资源**: 扫描有主机/端口/尝试/包/字节、全局与每目标速率、并发、持续时间、事件和输出大小上限，可取消且不得阻塞 UI。
-- **交付**: WebUI 与 CLI 共享同一诊断内核和数据模型；禁止维护两套行为不一致的实现。
-- **许可**: 复用 Ponytail 或其他项目代码前必须核对许可证和归属要求。
+- **Internal-only policy**: Active targets, CIDRs, scope grants, and post-resolution addresses must be loopback, RFC1918 IPv4, IPv6 ULA, or scoped IPv6 link-local — public and documentation ranges must fail before I/O.
+- **Authorization boundary**: Retain a minimal explicit local attestation and declared containment check for non-loopback active work — repository instructions forbid dropping trust-boundary validation.
+- **Resource safety**: Retain immutable aggregate host, port, attempt, rate, concurrency, duration, event, logical-byte, and output ceilings — repository instructions forbid unbounded scans.
+- **Evidence integrity**: Preserve direction, timing, provenance, confidence, and distinct protocol outcomes — a reachability inference must not be rendered as fact.
+- **Coverage assessment**: A positive peer-correlated arrival is a candidate carrier for tunnelling; a negative conclusion is limited to the emitted coverage matrix and must show its gaps.
+- **Peer security**: Preserve non-loopback mTLS, token, pinning, replay protection, and the fixed peer-operation surface — a peer must not become an arbitrary scan proxy.
+- **Stack**: CPython 3.11+, standard library plus `psutil`, `unittest`, semantic HTML/CSS/native JavaScript — no new framework or scanner package.
+- **Native Nmap**: Treat Nmap as an optional OS capability whose fixed argv is created only from an admitted Mercury plan — no arbitrary operator flags or scripts.
+- **Test safety**: Tests use fakes, fixtures, or loopback only — no test contacts the supplied peer or scans any real non-loopback target.
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| 采用 NARROW-GO 产品范围 | 唯一可验证差异是双端角色互换的分层证据，而不是扫描器广度 | ✓ Accepted |
-| 采用安全分层的探测模式 | 网络扫描具有双重用途，默认行为必须可控 | ✓ Accepted |
-| WebUI 和 CLI 共用核心 | 避免行为漂移与重复维护 | ✓ Accepted |
-| 使用证据与置信度模型 | 二层设备、UDP 和受过滤路由无法总是确定判断 | ✓ Accepted |
-| “极端测试”采用有限预算矩阵 | “所有包种”不可枚举，诊断应围绕假设而非笛卡尔积暴力搜索 | ✓ Accepted |
-| 双端控制采用 mTLS + token | 证书标识节点，token 独立授权；接收端仍重新校验范围与预算 | ✓ Accepted |
+| Reposition Mercury as an internal-network mapping tool | The target use case is ACL/isolation leak detection, not public endpoint diagnosis | Adopted in Phase 1 |
+| Enforce private-only scope at the canonical policy layer | All presenters and future native adapters then receive the same rejection behavior | Adopted in Phase 1 |
+| Keep a minimum attestation, audit trail, and immutable ceilings | These are mandatory repository trust and safety invariants; private address space alone does not establish authority | Pending |
+| Interpret requested duration `0` as “no operator-selected early cutoff” within hard ceilings | Preserves scan-to-completion intent without offering an unbounded operation | Pending |
+| Implement a peer-correlated coverage matrix | TCP, UDP, DNS, ICMP, TLS, HTTP, SSH-banner, local ARP/ND, and fixed native Nmap profiles need receiver-side evidence and directional results | Pending |
+| Treat positive coverage as a tunnel-carrier finding, not a proof of a deployed tunnel | A confirmed carrier establishes bypass potential; no finite test proves every conceivable packet sequence absent | Pending |
+| Make Nmap optional and policy-derived | The installed native binary can add value without becoming a generic command-execution bypass | Pending |
+| Preserve peer mTLS and fixed peer destination rules | Peer-to-peer communication needs authenticated trust and must not enable third-party scanning | Pending |
 
 ## Evolution
 
 This document evolves at phase transitions and milestone boundaries.
 
-**After each phase transition**:
-1. Requirements invalidated? Move to Out of Scope with reason.
-2. Requirements validated? Move to Validated with phase reference.
-3. New requirements emerged? Add to Active.
-4. Decisions to log? Add to Key Decisions.
-5. “What This Is” still accurate? Update if drifted.
+**After each phase transition:**
 
-**After each milestone**:
-1. Full review of all sections.
-2. Core Value check — still the right priority?
-3. Audit Out of Scope — reasons still valid?
-4. Update Context with current state.
+1. Move validated requirements to the Validated list with their phase reference.
+2. Move rejected requirements to Out of Scope with a reason.
+3. Add newly discovered requirements to Active.
+4. Record significant implementation decisions in Key Decisions.
+5. Confirm that What This Is still accurately describes the shipped product.
+
+**After each milestone:**
+
+1. Review all requirements and evidence semantics.
+2. Recheck the private-network-only boundary against every active entry point.
+3. Audit exclusions to prevent a generic scanner or remote relay from creeping back in.
+4. Refresh Context with supported platform, Nmap capability, and operator feedback findings.
 
 ---
-*Last updated: 2026-08-02 after Phase 5 verification*
+
+*Last updated: 2026-08-02 after Phase 1 private-scope migration*

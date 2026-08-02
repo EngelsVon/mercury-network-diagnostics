@@ -1,101 +1,54 @@
----
-gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: complete
-stopped_at: Phase 05 complete; v1 roadmap complete
-last_updated: "2026-08-02T06:00:00Z"
-last_activity: 2026-08-02 -- Phase 05 release, clean-install and documentation verification passed with uv
-progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 15
-  completed_plans: 15
-  percent: 100
----
-
 # Project State
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-07-30)
+See: `.planning/PROJECT.md` (updated 2026-08-02)
 
-**Core value:** 在用户明确授权的网络范围内，以安全、可解释且可复现的方式定位节点间可达性故障及其网络层原因。  
-**Current focus:** v1 milestone verification complete
+**Core value:** Within an explicitly declared private-network scope, identify every tested transport or application carrier that can convey a correlated message between two configured endpoints, and show the exact coverage gaps.
+
+**Current focus:** Phase 2 — Peer Receivers and Coverage Matrix (implement configured receiver leases and directional correlations).
 
 ## Current Position
 
-Phase: 05 (webui-reports-and-release-hardening) — COMPLETE
+- The prior `.planning/` content was intentionally deleted by the user and has not been restored.
+- A fresh codebase map was created at `.planning/codebase/` from the current source tree.
+- Existing code is a completed evidence-first diagnostic product with TCP-only active discovery, bounded plans, local history, Web UI, and mutually authenticated paired diagnostics.
+- The requested internal-coverage pivot has been captured as five unstarted phases, twenty-six v1 requirements, and one executable plan per phase.
+- The peer-receiver and tunnel-exposure contract is recorded in .planning/TUNNEL-COVERAGE.md.
+- Phase 1 is complete: every active entry point now admits only the explicit private-address allowlist, including post-resolution rechecks; public profiles and examples were removed.
 
-Plan: 03 of 03
-Status: v1 roadmap complete; Phase 05 verification passed
-Last activity: 2026-08-02 -- clean wheel installation, controlled suite, release documentation and static asset packaging verified
+## Constraints to Preserve
 
-Progress: [##########] 100%
+- The product must reject public targets at canonical policy boundaries, including DNS resolution/rechecks and native-tool invocation.
+- Active work still requires a minimal explicit attestation, canonical containment, and immutable aggregate ceilings.
+- Duration `0` does not mean unlimited; it means no extra operator-selected early cutoff within the hard maximum duration and other ceilings.
+- Every profile is a finite recorded coverage item. A positive carrier is actionable; a negative result is scoped to the matrix and never claims universal absence of tunnelling.
+- Generic Nmap argv, arbitrary peer destination control, and credential brute forcing remain excluded.
+- Peer mTLS/token/pinning/replay controls and non-loopback Web TLS/token controls remain mandatory.
+- Tests must never use the supplied peer endpoint or any real non-loopback scan target.
 
-## Performance Metrics
+## Environment Notes
 
-**Velocity:**
+- Current branch: `master`.
+- The worktree contains the user's deletion of the former planning tree; it is intentionally left uncommitted.
+- Python: 3.13.5.
+- Nmap executable discovered locally: `D:\\Nmap\\nmap.exe`; no code currently invokes it.
+- Runtime dependency policy: `psutil` only.
 
-- Total plans completed: 15
-- Average duration: not separately tracked (combined Phase 1 execution)
-- Total execution time: approximately 2.8 hours
+## Phase Status
 
-**By Phase:**
+| Phase | Name | Status | Requirements |
+|-------|------|--------|--------------|
+| 1 | Private-Scope Policy Migration | Complete (2026-08-02) | SCOPE-01..03 |
+| 2 | Peer Receivers and Coverage Matrix | Planned | COVER-01..08 |
+| 3 | Multi-Range Internal Mapping Engine | Planned | MAP-01..04 |
+| 4 | Native Coverage and Operator Surfaces | Planned | NMAP-01..03, SURF-01..02, PEER-01, HIST-01 |
+| 5 | Verification, Documentation, and Release Migration | Planned | QUAL-01..03, DOC-01 |
 
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| Phase 1 | 3 | approximately 2.8 hours | combined execution |
+## Next Action
 
-**Recent Trend:** Phase 03 completed with strict mTLS, token and pinned peer
-control, finite source-bound TCP/UDP leases, and a Windows/Ubuntu controlled
-smoke that produced TCP/UDP arrival and reply evidence.
+Execute `.planning/phases/02-peer-receivers-and-coverage-matrix/02-01-PLAN.md` next. Then execute Phases 3 through 5 strictly in roadmap order; configured peer receivers are delivered before the coverage assessment is exposed.
 
-## Accumulated Context
+---
 
-### Decisions
-
-Full decisions live in `.planning/PROJECT.md`.
-
-- Research: NARROW-GO — differentiation is evidence + paired directionality, not scanner breadth.
-- Stack: Python standard library plus psutil; no Web framework/frontend build/ORM/task broker.
-- Ponytail: full ladder remains active; minimalism never removes safety or runnable checks.
-- Protocol: peer control uses operator-provisioned mTLS, certificate pins and a
-  separate token; remote Web uses TLS/token; neither may become a scan oracle.
-
-- Roadmap: the paired cross-layer differential slice precedes discovery/LLDP,
-  which remains a bounded context feature rather than the product thesis.
-
-- Phase 1: a successful task must complete every immutable step with at least
-  one observation bound to authoritative step/target/port/transport metadata.
-
-- Phase 1: persisted requests use exact per-field projections; credential text
-  and raw custom content fail before SQLite.
-
-- Phase 2: every active step has a digest-bound `ProbeKind`; runner evidence
-  is core-bound to its approved step identity and per-step reservation.
-
-### Pending Todos
-
-None yet.
-
-### Blockers/Concerns
-
-- Validate Windows/Ubuntu route, DNS and neighbor adapters with real fixtures; macOS is not a v1 release target.
-- Validate two-machine certificate setup before calling peer mode easy.
-- Validate product value with real campus/enterprise incidents before adding breadth.
-
-## Deferred Items
-
-| Category | Item | Status | Deferred At |
-|----------|------|--------|-------------|
-| Integration | Nmap/iperf3 evidence import | v2 | Research |
-| Distribution | Signed standalone executables | v2 | Research |
-| Operations | Metrics/fleet controller | v2+ | Research |
-
-## Session Continuity
-
-Last session: 2026-08-01T14:08:17.964Z
-Stopped at: Phase 03 context gathered; research and planning in progress
-
-Resume file: .planning/phases/03-authenticated-paired-differential-diagnostics/03-CONTEXT.md
+*Last updated: 2026-08-02 after completing Phase 1 private-scope migration*

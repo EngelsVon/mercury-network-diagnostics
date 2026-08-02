@@ -1,199 +1,132 @@
-# Roadmap: Mercury（墨丘利）
+# Roadmap: Mercury Internal Coverage Assessment
 
 ## Overview
 
-Mercury v1 is built from evidence and safety outward. It first establishes one
-versioned result/task model and unavoidable scope budgets, then ships a useful
-local snapshot/diagnosis CLI. The product-defining authenticated, role-swapped
-two-endpoint diagnosis comes next. Only after that core works does Mercury add
-bounded discovery, LLDP/neighbor context and route analysis, followed by the
-WebUI, reports, packaging and cross-platform release verification over the same
-engine.
+This roadmap builds a two-endpoint internal coverage assessment: Mercury sends tagged, finite protocol profiles from each endpoint, configured peer receivers witness arrival where possible, and results identify every tested carrier that may carry traffic across an expected isolation boundary. Phases are ordered so no new packet sender, peer receiver, or native Nmap adapter exists before canonical private-scope enforcement.
 
-## Phases
+The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires reporting positive carrier findings and profile-specific gaps rather than asserting a universal absence of tunnels.
 
-- [x] **Phase 1: Evidence and Safety Foundation** - Establish the package, versioned observations, policy/budgets, task lifecycle and local history.
-- [x] **Phase 2: Local Snapshot and Layered Diagnosis** - Deliver a useful Windows/Ubuntu CLI for network facts and multi-layer reachability.
-- [x] **Phase 3: Authenticated Paired Differential Diagnostics** - Run one bounded cross-layer plan from both Mercury endpoints and explain directional differences.
-- [x] **Phase 4: Safe Discovery, Topology Evidence, and Routes** - Add passive-first subnet context, bounded TCP discovery, honest route evidence, neighbors and optional LLDP.
-- [x] **Phase 5: WebUI, Reports, and Release Hardening** - Ship the shared-engine dashboard, reports, compatibility checks, documentation and end-to-end verification.
+## Phase 1: Private-Scope Policy Migration
 
-## Phase Details
+**Status:** Complete (2026-08-02)
 
-### Phase 1: Evidence and Safety Foundation
+**Goal:** Every active entry point refuses public and scope-escaping destinations before any network or native command activity, while retaining minimal operator attestation and canonical scope validation.
 
-**Goal**: Every later frontend and active probe uses a versioned,
-confidence-aware result model and an immutable authorized budget.  
-**Depends on**: Nothing  
-**Requirements**: EVID-01, EVID-02, EVID-03, EVID-04, SAFE-01, SAFE-02, SAFE-03, SAFE-04, HIST-01, TEST-01  
-**UI hint**: no  
-**Success Criteria**:
+**Requirements:** SCOPE-01, SCOPE-02, SCOPE-03
 
-1. A developer can install/run one `mercury` entry point and receive a versioned JSON
-   task/result containing observations, conclusions and capabilities.
-2. An active request outside its normalized authorized scope or hard host/port/
-   attempt/packet/byte/rate/concurrency/duration/event/output ceiling is
-   rejected before network I/O.
-3. A long synthetic task can be cancelled and persists a valid partial result
-   to bounded local SQLite history.
-4. Table-driven standard-library tests distinguish success, refusal, timeout,
-   silence, unsupported, permission and error states.
+**Success criteria:**
 
-**Plans**: 3 plans
+1. Literal addresses and CIDRs outside loopback, RFC1918 IPv4, IPv6 ULA, or scoped IPv6 link-local are rejected by the canonical policy before I/O.
+2. Hostname resolution and DNS rechecks fail closed if any answer is public or outside the declared internal scope.
+3. Diagnosis, discovery, trace, CLI plan, Web task parsing, and peer-config validation all share the private-only admission rule.
+4. Public built-in profiles, CLI help, and test assumptions are removed or converted to private/loopback-safe equivalents.
+5. Existing mTLS/token/pinning, attestation, and immutable plan validation remain covered by regression tests.
 
-Plans:
+**Plans:** 1 complete
+**UI hint:** no
 
-- [x] 01-01: Create the lean Python package, result/capability models, JSON codec and SQLite history.
-- [x] 01-02: Implement target canonicalization, scope authorization, cost preview, hard budgets and cancellable task execution.
-- [x] 01-03: Add baseline model/policy/history/task tests and installation/version commands.
+## Phase 2: Peer Receivers and Coverage Matrix
 
-### Phase 2: Local Snapshot and Layered Diagnosis
+**Goal:** Give both configured Mercury endpoints a correlation-bound receive/acknowledgement surface for the supported coverage profiles and produce directional carrier evidence.
 
-**Goal**: A user can explain local network context and partial Internet
-reachability from CLI/JSON without false topology or protocol certainty.  
-**Depends on**: Phase 1  
-**Requirements**: INVT-01, INVT-02, INVT-03, DIAG-01, DIAG-02, DIAG-03, DIAG-04  
-**UI hint**: no  
-**Success Criteria**:
+**Requirements:** COVER-01, COVER-02, COVER-03, COVER-04, COVER-05, COVER-06, COVER-07, COVER-08
 
-1. On Windows and Ubuntu, `mercury status` reports host, interfaces, routes,
-   DNS and explicit capability/degradation evidence.
-2. Gateway and locally observed facts retain their provenance; the output
-   explicitly says an access switch is not observable until Phase 4 supplies
-   direct neighbor/LLDP evidence.
-3. `mercury diagnose` separately reports DNS, TCP, TLS, HTTP and native-ping
-   observations for multiple default/configured targets with timing and errors.
-4. Human output and JSON project the same result and exit healthy/partial/failed
-   consistently.
-5. A minimal native path adapter yields bounded hop evidence for reuse by the
-   paired plan; Phase 4 adds repeated-route UX and topology enrichment.
+**Success criteria:**
 
-**Plans**: 4 plans
+1. The exact supported profile matrix is implemented and serialized: TCP, UDP, DNS over UDP/TCP, ICMP echo, TLS, HTTP, SSH banner, local ARP/ND, and optional native profiles.
+2. Each endpoint provisions only configured receiver profiles through the existing trusted peer control and records tagged arrival/acknowledgement evidence without accepting a third-party destination.
+3. The coverage assessment runs each eligible profile in both directions and correlates sender and peer evidence using one short-lived lease/correlation identifier.
+4. TCP, UDP, DNS, TLS, HTTP, SSH, and ICMP results preserve protocol-specific negative, silent, unavailable, and permission outcomes rather than collapsing them into reachability.
+5. ARP/ND is reported as local-link-only and automatically non-applicable to a cross-subnet remote pair.
+6. The final result lists candidate carriers and every coverage gap; it never claims all possible tunnels have been excluded.
 
-Plans:
+**Plans:** 1 ready
+**UI hint:** no
 
-**Wave 1**
-- [x] 02-01: Implement psutil inventory and minimal Windows/Ubuntu route and DNS adapters; report macOS and other platforms as explicitly unsupported.
-- [x] 02-02: Upgrade the canonical schema, sparse probe identity, exact admission/binding, per-step budgets, history projection and terminal finalization.
+## Phase 3: Multi-Range Internal Mapping Engine
 
-**Wave 2** *(blocked on Wave 1 completion)*
-- [x] 02-03: Implement immutable basic/China/custom profiles, bounded DNS/TCP/TLS/HTTP/native probes and endpoint-scoped diagnosis.
+**Goal:** Compile and execute one bounded multi-range mapping or coverage plan through the existing task lifecycle.
 
-**Wave 3** *(blocked on Wave 2 completion)*
-- [x] 02-04: Add the shared application facade, `status`/`diagnose` projections, stable exits, controlled smoke, installation parity and documentation.
+**Requirements:** MAP-01, MAP-02, MAP-03, MAP-04
 
-### Phase 3: Authenticated Paired Differential Diagnostics
+**Success criteria:**
 
-**Goal**: Two explicitly configured Mercury endpoints can execute the same
-bounded cross-layer plan with swapped roles and explain endpoint/direction/
-protocol differences without exposing a generic scan oracle.  
-**Depends on**: Phase 2  
-**Requirements**: SAFE-05, PEER-01, PEER-02, PEER-03, PEER-04, PEER-05, PEER-06  
-**UI hint**: no  
-**Success Criteria**:
+1. A request accepts multiple canonical private IPv4 CIDRs, configured peer endpoint pairs, selected finite profiles, and produces exactly one immutable aggregate plan.
+2. The plan binds ranges, directions, receiver leases, ports, payload metadata, rate, concurrency, duration, and aggregate ceilings before I/O begins.
+3. The effective result exposes logical attempt-start rate, concurrency, host/port/attempt/event/output ceilings, and clear accounting units.
+4. A requested duration of 0 means no extra operator-selected early cutoff but still ends at immutable ceilings with terminal evidence explaining the reason.
+5. Cancellation and persistence leave a valid bounded result and do not permit a runner to exceed admitted steps.
 
-1. A non-loopback agent refuses startup without a server certificate/key,
-   trusted pinned client certificate and token unless an explicit audited
-   unsafe-development override is supplied.
-2. Authenticated peers negotiate protocol/capabilities and independently
-   authorize one immutable, expiring plan; bad credentials, replay, oversized
-   frames, budget escalation and arbitrary third-party targets are rejected.
-3. The paired plan collects both local snapshots and role-swapped DNS, peer
-   path, TCP/UDP, and allowlisted TLS/HTTP evidence. Nonce-tagged
-   sent/arrived/replied/received observations preserve UDP silence as
-   inconclusive.
-4. CLI/JSON presents an A→B/B→A layer matrix with evidence-linked explanations
-   and source-bound reverse checks rather than a list of disconnected probes.
+**Plans:** 1 ready
+**UI hint:** no
 
-**Technical continuation gate:** Phase 3 verification must demonstrate
-controlled DNS difference, TCP refusal, TCP timeout/drop, UDP reply, UDP
-silence, and asymmetric direction without false certainty or scope escape.
-Failure stops autonomous execution before Phase 4. The five-operator product
-preference gate remains external field validation and blocks scope expansion
-beyond this bounded v1, not completion of the requested implementation.
+## Phase 4: Native Coverage and Operator Surfaces
 
-**Plans**: 3 plans
+**Goal:** Add optional Nmap-native profiles and expose all mapping/coverage functionality through the shared CLI, Web UI, peer, and history boundaries.
 
-Plans:
+**Requirements:** NMAP-01, NMAP-02, NMAP-03, SURF-01, SURF-02, PEER-01, HIST-01
 
-- [x] 03-01: Threat-model and implement versioned framed mTLS/token peer control, identity/capability negotiation, replay limits and audit.
-- [x] 03-02: Implement expiring authenticated TCP/UDP data-plane listeners, source-bound reverse roles and finite payload profiles.
-- [x] 03-03: Implement the role-swapped cross-layer plan, differential matrix, CLI and peer security/controlled E2E tests.
+**Success criteria:**
 
-### Phase 4: Safe Discovery, Topology Evidence, and Routes
+1. Missing Nmap or missing native privilege produces typed capability evidence; available Nmap runs only a fixed TCP connect/SYN, UDP, or SCTP-init profile derived from a private admitted plan.
+2. Fixed, bounded Nmap XML becomes versioned native-provenance observations without a generic argument pass-through or target-source escape.
+3. CLI and Web UI create the same typed mapping/coverage requests through MercuryApplication and never perform I/O themselves.
+4. The Web UI shows profile coverage, peer-receiver capability, per-direction progress, candidate carriers, evidence provenance, and explicit assessment gaps accessibly.
+5. Peer mTLS/token/pinning/replay controls remain intact, and history/report output retains provenance while preserving existing secret filtering and redaction.
 
-**Goal**: Users can enrich a proven diagnosis with authorized local candidates,
-direct topology evidence and sampled routes without surprise scans or
-misleading silence/path claims.  
-**Depends on**: Phase 3  
-**Requirements**: INVT-04, INVT-05, DISC-01, DISC-02, DISC-03, DISC-04, DISC-05  
-**UI hint**: no  
-**Success Criteria**:
+**Plans:** 1 ready
+**UI hint:** yes
 
-1. `mercury discover --passive` derives visible IPv4 networks and neighbor
-   candidates without active packets and refuses IPv6 enumeration.
-2. An authorized CIDR scan uses a bounded common/custom/full TCP port plan,
-   shows progress, obeys cancellation and retains connect/refuse/timeout
-   evidence; full mode requires its independent confirmation.
-3. `mercury trace` repeats available native modes with timeouts and retains raw,
-   missing-hop and alternate-path evidence without declaring a single certain
-   route.
-4. Gateway, passive ARP/NDP neighbor, first route hop, Wi-Fi AP and LLDP
-   infrastructure remain distinct; without direct LLDP evidence the access
-   switch is reported as not observable.
+## Phase 5: Verification, Documentation, and Release Migration
 
-**Plans**: 2 plans
+**Goal:** Demonstrate the private-only boundary and the exact coverage contract with controlled tests and accurate operator guidance.
 
-Plans:
+**Requirements:** QUAL-01, QUAL-02, QUAL-03, DOC-01
 
-- [x] 04-01: Implement passive candidates, ARP/NDP, Wi-Fi AP and optional LLDP evidence plus authorized bounded TCP discovery and full-port safety gate.
-- [x] 04-02: Implement native repeated route tracing, normalized hop evidence, CLI projections and discovery/trace/topology tests.
+**Success criteria:**
 
-### Phase 5: WebUI, Reports, and Release Hardening
+1. The full controlled suite verifies private-scope rejection before I/O, mapping ceilings, cancellation, sender/receiver correlation, and every supported profile's outcome semantics.
+2. Fixture tests verify Nmap argv/XML behavior and CLI/Web/peer/history integration without launching a real non-loopback scan.
+3. Packaging, compilation, and supported-platform-safe smoke commands pass.
+4. README, CLI, and Web copy enumerate the actual coverage matrix, receiver prerequisites, ARP/ND cross-subnet boundary, native capability gaps, and the scoped meaning of a negative result.
 
-**Goal**: Users can operate the proven engine from an accessible local WebUI,
-inspect history/reports and install a verified cross-platform v1 release.  
-**Depends on**: Phase 4  
-**Requirements**: WEB-01, WEB-02, WEB-03, WEB-04, HIST-02, HIST-03, PACK-01, PACK-02, TEST-02, TEST-03, DOCS-01  
-**UI hint**: yes  
-**Success Criteria**:
+**Plans:** 1 ready
+**UI hint:** yes
 
-1. `mercury web` serves an accessible, same-origin-protected loopback dashboard
-   (Host/Origin/session/CSRF/CSP/body limits) that displays current
-   facts and the A↔B matrix, and submits/polls/cancels diagnose, paired,
-   authorized discovery and route tasks through the same services as the CLI.
-2. CLI/WebUI history opens completed/partial tasks, compares two compatible
-   runs, and exports default-redacted JSON or self-contained HTML without
-   leaking tokens.
-3. Ordinary-user smoke tests pass on Windows/Ubuntu with explicit
-   capability degradation; controlled tests cover success, refusal, silence,
-   DNS failure, delay and asymmetric direction without public scanning.
-4. A clean user can install one package containing CLI, agent and Web assets,
-   and follow documented authorization, mTLS/token, semantics, limitations and
-   troubleshooting. The controlled lab gate covers at least twelve layered,
-   silent and asymmetric cases; broader discovery remains frozen until a
-   separate five-operator value study validates it.
+## Requirement Coverage
 
-**Plans**: 3 plans
+| Requirement | Phase |
+|-------------|-------|
+| SCOPE-01 | 1 |
+| SCOPE-02 | 1 |
+| SCOPE-03 | 1 |
+| COVER-01 | 2 |
+| COVER-02 | 2 |
+| COVER-03 | 2 |
+| COVER-04 | 2 |
+| COVER-05 | 2 |
+| COVER-06 | 2 |
+| COVER-07 | 2 |
+| COVER-08 | 2 |
+| MAP-01 | 3 |
+| MAP-02 | 3 |
+| MAP-03 | 3 |
+| MAP-04 | 3 |
+| NMAP-01 | 4 |
+| NMAP-02 | 4 |
+| NMAP-03 | 4 |
+| SURF-01 | 4 |
+| SURF-02 | 4 |
+| PEER-01 | 4 |
+| HIST-01 | 4 |
+| QUAL-01 | 5 |
+| QUAL-02 | 5 |
+| QUAL-03 | 5 |
+| DOC-01 | 5 |
 
-Plans:
-
-- [x] 05-01: Implement the stdlib HTTP task API and accessible native HTML/CSS/JS dashboard with polling/cancellation.
-- [x] 05-02: Implement history browsing, centralized redaction and JSON/self-contained HTML reports.
-- [x] 05-03: Complete controlled/cross-platform E2E, clean-install packaging, security/code/Ponytail reviews and user documentation.
-
-## Progress
-
-**Execution Order:** Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
-
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Evidence and Safety Foundation | 3/3 | Complete | 2026-07-30 |
-| 2. Local Snapshot and Layered Diagnosis | 4/4 | Complete | 2026-08-01 |
-| 3. Authenticated Paired Differential Diagnostics | 3/3 | Complete | 2026-08-02 |
-| 4. Safe Discovery, Topology Evidence, and Routes | 2/2 | Complete | 2026-08-02 |
-| 5. WebUI, Reports, and Release Hardening | 3/3 | Complete | 2026-08-02 |
+**Coverage:** 26 of 26 v1 requirements are mapped exactly once.
 
 ---
-*Roadmap created: 2026-07-30*  
-*Coverage: 42/42 v1 requirements mapped exactly once*
+
+*Roadmap created: 2026-08-02*
+*Last updated: 2026-08-02 after completing executable plans for all internal-coverage phases*
