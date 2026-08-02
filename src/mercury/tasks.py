@@ -696,6 +696,16 @@ class TaskContext:
         """Record aggregate terminal evidence without changing probe progress."""
         self._append_observation(observation)
 
+    def record_aggregate(self, observation: Observation) -> None:
+        """Record already-correlated aggregate evidence without inventing a step.
+
+        Composite services use this only after their individually admitted child
+        actions have completed.  It keeps the final, operator-facing task in
+        the same bounded event/history lifecycle without assigning a received
+        peer receipt to a fabricated local packet step.
+        """
+        self._record_task_observation(observation)
+
     def _append_observation(self, observation: Observation) -> None:
         if type(observation) is not Observation:
             raise TaskError("runner evidence must be an Observation")

@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from .codec import result_from_wire, result_to_wire
+from .discovery import collect_passive_discovery
 from .models import (
     Confidence,
     Conclusion,
@@ -436,13 +437,53 @@ class AuthenticatedCoverageRunner:
         history,
         *,
         coverage_sender: "ConfiguredCoverageExecutor | None" = None,
+        passive_collector=collect_passive_discovery,
     ) -> None:
         if type(client) is not PeerClient or type(config) is not PeerConfig or not config.coverage_enabled:
             raise PairedError("coverage runner requires configured receivers")
         self._client, self._config, self._history = client, config, history
         self._sender = ConfiguredCoverageExecutor(config, history) if coverage_sender is None else coverage_sender
+        self._passive_collector = passive_collector
 
     async def run(self, request: CoverageAssessmentRequest) -> TaskResult:
+        """Persist one immutable, operator-facing coverage assessment.
+
+        The individual sender roles retain their own task accounting.  This
+        enclosing task is the durable correlated result: it binds both
+        directions and the configured matrix to one history record.
+        """
+        plan = coverage_assessment_plan(self._config, request)
+        service = TaskService(self._history)
+
+        async def runner(context: TaskContext) -> None:
+            prepared = [await context.admit(step.id) for step in plan.preview.steps]
+            result = await self._run_assessment(request)
+            for observation in result.observations:
+                context.record_aggregate(observation)
+            for capability in result.capabilities:
+                context.add_capability(capability)
+            for error in result.errors:
+                context.add_error(error)
+            for item in prepared:
+                context.complete_attempt(item.step.id)
+            for conclusion in result.conclusions:
+                context.add_conclusion(conclusion)
+
+        return await service.run(
+            plan,
+            runner,
+            task_kind="coverage",
+            requested_config={
+                "profile": _COVERAGE_MANIFEST,
+                "purpose": "configured paired coverage assessment",
+                "coverage_profiles": [item.value for item in request.profiles],
+                "directions": [_ROLE_A_TO_B, _ROLE_B_TO_A],
+                "timeout_s": request.timeout_s,
+                "network_io": True,
+            },
+        )
+
+    async def _run_assessment(self, request: CoverageAssessmentRequest) -> TaskResult:
         if type(request) is not CoverageAssessmentRequest or not request.authorized:
             raise PairedError("coverage assessment requires explicit authorization")
         if request.identity != self._config.identity or request.address != self._config.peer_addresses[0]:
@@ -508,10 +549,12 @@ class AuthenticatedCoverageRunner:
                 local_receipts = _validate_coverage_receipts(
                     local_registry.receipts_for(reverse) or (), reverse, request.profiles, request.address,
                 )
+                local_link = await self._local_link_evidence(request)
                 return _combine_coverage_results(
                     request, local_forward, remote_reverse,
                     remote_receipts=remote_receipts, local_receipts=local_receipts,
                     forward_correlation=forward, reverse_correlation=reverse,
+                    local_link_observations=local_link,
                 )
         except TimeoutError as exc:
             raise PairedError("coverage assessment exceeded its finite deadline") from exc
@@ -523,6 +566,28 @@ class AuthenticatedCoverageRunner:
                     await asyncio.shield(self._request("cancel", item, control_expires_at, {}))
                 except (PeerError, OSError):
                     pass
+
+    async def _local_link_evidence(
+        self, request: CoverageAssessmentRequest,
+    ) -> tuple[Observation, ...]:
+        """Collect local cache evidence only; this never emits ARP or ND."""
+        profiles = tuple(
+            item for item in request.profiles
+            if item in {CoverageProfile.ARP, CoverageProfile.IPV6_ND}
+        )
+        if not profiles or request.local_network is None or request.peer_network is None:
+            return ()
+        if local_link_applicability(request.local_network, request.peer_network) is CoverageOutcome.NOT_APPLICABLE:
+            return _local_link_scope_observations(request)
+        try:
+            passive = await self._passive_collector()
+        except Exception:
+            # A passive collection failure is a coverage gap.  It must not be
+            # converted into a negative statement about peer reachability.
+            return ()
+        if type(passive) is not TaskResult:
+            return ()
+        return local_link_neighbor_observations(request, passive)
 
     async def _read_receipts(
         self,
@@ -694,6 +759,7 @@ def _combine_coverage_results(
     local_receipts: tuple[CoverageReceipt, ...],
     forward_correlation: str,
     reverse_correlation: str,
+    local_link_observations: tuple[Observation, ...] = (),
 ) -> TaskResult:
     if local_forward.task_kind != "coverage" or remote_reverse.task_kind != "coverage":
         raise PairedError("coverage roles returned an invalid task result")
@@ -703,7 +769,7 @@ def _combine_coverage_results(
     ]
     observations.extend(_receipt_observations(remote_receipts, _ROLE_A_TO_B, forward_correlation, request.address, "B"))
     observations.extend(_receipt_observations(local_receipts, _ROLE_B_TO_A, reverse_correlation, request.address, "A"))
-    observations.extend(_local_link_scope_observations(request))
+    observations.extend(local_link_observations)
     if not observations:
         raise PairedError("coverage assessment produced no evidence")
     provisional = TaskResult(
@@ -805,6 +871,57 @@ def _local_link_scope_observations(request: CoverageAssessmentRequest) -> tuple[
     return tuple(observations)
 
 
+def local_link_neighbor_observations(
+    request: CoverageAssessmentRequest, passive: TaskResult,
+) -> tuple[Observation, ...]:
+    """Project a matching passive neighbour-cache entry as local-only evidence.
+
+    A cache entry says only that this endpoint has a current L2 neighbour fact.
+    It neither sends ARP/ND nor proves a reverse direction, let alone a tunnel.
+    """
+    if type(request) is not CoverageAssessmentRequest or type(passive) is not TaskResult:
+        raise PairedError("local-link evidence requires canonical assessment data")
+    profiles = tuple(item for item in request.profiles if item in {CoverageProfile.ARP, CoverageProfile.IPV6_ND})
+    if not profiles or request.local_network is None or request.peer_network is None:
+        return ()
+    if local_link_applicability(request.local_network, request.peer_network) is CoverageOutcome.NOT_APPLICABLE:
+        return _local_link_scope_observations(request)
+    observations: list[Observation] = []
+    for profile in profiles:
+        family = 4 if profile is CoverageProfile.ARP else 6
+        for source in passive.observations:
+            if (
+                source.probe != "neighbor_cache"
+                or source.detail.get("address") != request.address
+                or source.detail.get("family") != family
+            ):
+                continue
+            observations.append(Observation(
+                id=f"local-link-{profile.value}-{len(observations)}",
+                probe="local_neighbor_cache",
+                disposition=Disposition.POSITIVE,
+                evidence_kind=EvidenceKind.NEIGHBOUR_FACT,
+                direction=Direction.LOCAL,
+                target=request.address,
+                started_at=source.started_at,
+                ended_at=source.ended_at,
+                duration_ms=source.duration_ms,
+                source=source.source,
+                detail={
+                    "coverage_profile": profile.value,
+                    "paired_phase": _ROLE_A_TO_B,
+                    "coverage_outcome": CoverageOutcome.SKIPPED.value,
+                    "local_link_only": True,
+                    "passive_neighbor_observation_id": source.id,
+                    "interface_name": source.detail.get("interface_name"),
+                    "state": source.detail.get("state"),
+                    "passive": True,
+                },
+            ))
+            break
+    return tuple(observations)
+
+
 def _label_role_observations(
     observations: tuple[Observation, ...], endpoint: str, role: str, correlation: str,
 ) -> tuple[Observation, ...]:
@@ -882,10 +999,9 @@ def coverage_matrix(
     rows: list[CoverageMatrixRow] = []
     directions = (_ROLE_A_TO_B, _ROLE_B_TO_A)
     for profile in requested:
-        profile_directions = tuple(
-            direction for candidate, direction in grouped if candidate is profile
-        ) or directions
-        for direction in profile_directions:
+        # A partial local-link observation must not hide the unobserved reverse
+        # direction.  Every selected profile therefore retains both rows.
+        for direction in directions:
             observations = grouped.get((profile, direction), [])
             if not observations:
                 outcome = CoverageOutcome.SKIPPED
@@ -1715,6 +1831,55 @@ def _coverage_runtime_plan(config: PeerConfig, correlation: str, profiles: tuple
     return authorize_plan(preview)
 
 
+def coverage_assessment_plan(config: PeerConfig, request: CoverageAssessmentRequest) -> ProbePlan:
+    """Compile the final bidirectional assessment envelope before data I/O.
+
+    Its steps reserve the fixed, configured profile matrix in each direction;
+    child sender tasks perform the actual sends and this task persists the
+    joined sender/receiver evidence without inventing another packet path.
+    """
+    if type(config) is not PeerConfig or type(request) is not CoverageAssessmentRequest:
+        raise PairedError("coverage assessment plan requires canonical configuration")
+    if request.identity != config.identity or request.address != config.peer_addresses[0]:
+        raise PairedError("coverage request does not match its configured peer")
+    active = tuple(item for item in request.profiles if item not in {CoverageProfile.ARP, CoverageProfile.IPV6_ND})
+    if not active:
+        raise PairedError("coverage assessment selected no active profiles")
+    sender_plan = _coverage_runtime_plan(config, "assessment-plan", active)
+    specs: list[ProbeSpec] = []
+    for attempt in (1, 2):
+        for step in sender_plan.preview.steps:
+            specs.append(ProbeSpec(
+                step.probe_kind, step.target, address=step.address,
+                scope_id=step.scope_id, port=step.port, transport=step.transport,
+                attempt=attempt, source_hostname=step.source_hostname,
+                resolution_slot=step.resolution_slot, server_name=step.server_name,
+                http_scheme=step.http_scheme, max_hops=step.max_hops,
+                timeout_s=step.timeout_s, required=step.required,
+                payload_metadata=step.payload,
+                cost=replace(
+                    step.cost, max_observations=4, max_capabilities=2,
+                    max_conclusions=1, max_errors=2, max_output_bytes=32_768,
+                ),
+            ))
+    duration = max(1, math.ceil(sum(step.timeout_s for step in sender_plan.preview.steps) * 2 + _CONTROL_RESULT_GRACE_S))
+    grant = ScopeGrant(
+        networks=(ipaddress.ip_network(
+            f"{config.peer_addresses[0]}/{32 if ':' not in config.peer_addresses[0] else 128}"
+        ),),
+        ports=sender_plan.preview.ports,
+        transports=sender_plan.preview.transports,
+        attested=True,
+        purpose="configured paired coverage assessment",
+        expires_at=utc_now() + timedelta(seconds=duration),
+    )
+    preview = preview_probe_plan(
+        specs=tuple(specs), grant=grant, profile="coverage-assessment-v2",
+        limits=replace(DEFAULT_LIMITS, max_duration_s=duration),
+    )
+    return authorize_plan(preview)
+
+
 def _coverage_receiver_for(
     configured: dict[CoverageProfile, ReceiverProfileConfig], profile: CoverageProfile,
 ) -> ReceiverProfileConfig:
@@ -2071,6 +2236,6 @@ def _dns_coverage_query(correlation: str) -> bytes:
 
 __all__ = [
     "AuthenticatedCoverageRunner", "AuthenticatedPairedRunner", "ConfiguredCoverageExecutor", "ConfiguredPairedExecutor", "CoverageAssessmentRequest", "CoverageLeaseRegistry", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
-    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "icmp_coverage_evidence", "local_link_applicability", "paired_matrix", "run_icmp_coverage",
+    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_assessment_plan", "coverage_matrix", "encode_coverage_tag", "icmp_coverage_evidence", "local_link_applicability", "local_link_neighbor_observations", "paired_matrix", "run_icmp_coverage",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

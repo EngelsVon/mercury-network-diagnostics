@@ -71,6 +71,8 @@ _REQUEST_KEYS = frozenset(
         "concurrency",
         "duration_s",
         "duration_semantics",
+        "coverage_profiles",
+        "directions",
     }
 )
 _PLAN_KEYS = frozenset(
@@ -171,7 +173,7 @@ def _assert_payload_metadata(value: Any, *, key: str, path: str) -> None:
             raise HistoryError(f"{path}.{key} must be a non-negative integer")
         return
     if normalized == "payloadsha256":
-        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        if not isinstance(value, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", value):
             raise HistoryError(f"{path}.{key} must be a lowercase SHA-256 digest")
         return
     if normalized == "payloadprofile":
@@ -373,6 +375,26 @@ def project_history_request(value: Mapping[str, Any]) -> dict[str, Any]:
             if type(item) is not str or item != "zero means no operator early cutoff within immutable ceilings":
                 raise HistoryError("history request duration_semantics is invalid")
             projected[key] = item
+        elif key == "coverage_profiles":
+            if (
+                not isinstance(item, (list, tuple))
+                or not item
+                or len(item) > 32
+                or any(
+                    type(profile) is not str
+                    or not re.fullmatch(r"[a-z0-9_]{1,64}", profile)
+                    for profile in item
+                )
+            ):
+                raise HistoryError("history request coverage_profiles is invalid")
+            projected[key] = list(item)
+        elif key == "directions":
+            if (
+                not isinstance(item, (list, tuple))
+                or tuple(item) != ("A-to-B", "B-to-A")
+            ):
+                raise HistoryError("history request directions are invalid")
+            projected[key] = list(item)
         elif key == "network_io":
             if type(item) is not bool:
                 raise HistoryError("history request network_io is invalid")

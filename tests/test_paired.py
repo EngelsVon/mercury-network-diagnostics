@@ -34,6 +34,7 @@ from mercury.paired import (
     encode_udp_tag,
     encode_coverage_tag,
     local_link_applicability,
+    local_link_neighbor_observations,
     icmp_coverage_evidence,
     run_icmp_coverage,
     coverage_matrix,
@@ -510,6 +511,33 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
         rows = coverage_matrix(result, requested=request.profiles)
         self.assertEqual({row.outcome for row in rows}, {CoverageOutcome.NOT_APPLICABLE})
 
+    async def test_same_link_neighbor_cache_is_local_only_and_leaves_reverse_gap(self) -> None:
+        from mercury.paired import CoverageAssessmentRequest
+        request = CoverageAssessmentRequest(
+            identity="coverage-pair", address="172.26.4.9", config_path="peer.json",
+            timeout_s=1.0, authorized=True, profiles=(CoverageProfile.ARP,),
+            local_network="172.26.4.0/24", peer_network="172.26.4.0/24",
+        )
+        instant = utc_now()
+        passive = replace(_role_result("local", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED), observations=(
+            Observation(
+                id="cached-neighbor", probe="neighbor_cache", disposition=Disposition.POSITIVE,
+                evidence_kind=EvidenceKind.LOCAL_FACT, direction=Direction.LOCAL,
+                target="local", started_at=instant, ended_at=instant, duration_ms=0.0,
+                source="tests.passive", detail={
+                    "address": "172.26.4.9", "family": 4, "interface_name": "eth0",
+                    "state": "reachable", "passive": True,
+                },
+            ),
+        ))
+        evidence = local_link_neighbor_observations(request, passive)
+        self.assertEqual(len(evidence), 1)
+        self.assertTrue(evidence[0].detail["local_link_only"])
+        rows = coverage_matrix(replace(passive, observations=evidence), requested=request.profiles)
+        self.assertEqual([row.direction for row in rows], ["A-to-B", "B-to-A"])
+        self.assertEqual(rows[0].outcome, CoverageOutcome.SKIPPED)
+        self.assertEqual(rows[1].outcome, CoverageOutcome.SKIPPED)
+
     async def test_coverage_matrix_requires_arrival_or_response_for_candidate_carrier(self) -> None:
         result = _role_result("local", Disposition.POSITIVE, EvidenceKind.PEER_OBSERVED_ARRIVAL)
         observation = replace(
@@ -520,9 +548,11 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
             replace(result, observations=(observation,)),
             requested=(CoverageProfile.TCP_TAGGED,),
         )
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0].outcome, CoverageOutcome.CANDIDATE_CARRIER)
         self.assertEqual(rows[0].direction, "A-to-B")
+        self.assertEqual(rows[1].outcome, CoverageOutcome.SKIPPED)
+        self.assertEqual(rows[1].direction, "B-to-A")
         self.assertIn("profile, port/packet shape", rows[0].limitations[0])
 
     async def test_matrix_is_cited_and_preserves_directional_phases(self) -> None:
@@ -682,6 +712,17 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row.direction for row in rows}, {"A-to-B", "B-to-A"})
         self.assertTrue(all(row.outcome is CoverageOutcome.CANDIDATE_CARRIER for row in rows))
         self.assertTrue(any(item.evidence_kind is EvidenceKind.PEER_OBSERVED_ARRIVAL for item in result.observations))
+        persisted = local_history.get_task(result.task_id)
+        self.assertIsNotNone(persisted)
+        assert persisted is not None
+        self.assertEqual(persisted.request["coverage_profiles"], [
+            CoverageProfile.TCP_CONNECT.value, CoverageProfile.TCP_TAGGED.value,
+            CoverageProfile.UDP_TAGGED.value, CoverageProfile.DNS_UDP.value,
+            CoverageProfile.DNS_TCP.value, CoverageProfile.HTTP_EXCHANGE.value,
+            CoverageProfile.SSH_BANNER.value, CoverageProfile.TLS_HANDSHAKE.value,
+        ])
+        self.assertEqual(persisted.request["directions"], ["A-to-B", "B-to-A"])
+        self.assertEqual(persisted.plan["profile"], "coverage-assessment-v2")
         self.assertTrue({
             CoverageProfile.DNS_UDP.value, CoverageProfile.DNS_TCP.value,
             CoverageProfile.HTTP_EXCHANGE.value, CoverageProfile.SSH_BANNER.value, CoverageProfile.TLS_HANDSHAKE.value,
