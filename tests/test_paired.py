@@ -35,6 +35,7 @@ from mercury.paired import (
     encode_coverage_tag,
     local_link_applicability,
     icmp_coverage_evidence,
+    run_icmp_coverage,
     coverage_matrix,
     is_valid_udp_tag,
     paired_matrix,
@@ -52,6 +53,7 @@ from mercury.planner import (
 from mercury.policy import ScopeGrant
 from mercury.tasks import TaskContext, TaskError, TaskService
 from mercury.platform.common import CommandOutcome, CommandResult
+from mercury.reports import coverage_html_table
 
 
 def _port(kind: int) -> int:
@@ -451,6 +453,35 @@ class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MatrixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_icmp_coverage_uses_only_a_fixed_native_echo_argv(self) -> None:
+        calls: list[tuple[tuple[str, ...], float, int]] = []
+
+        async def runner(argv: tuple[str, ...], timeout_s: float, maximum: int) -> CommandResult:
+            calls.append((argv, timeout_s, maximum))
+            return CommandResult(argv, 0, "", "", CommandOutcome.SUCCESS)
+
+        result = await run_icmp_coverage("127.0.0.1", 0.25, system=lambda: "Windows", command_runner=runner)
+        self.assertEqual(result.outcome, CommandOutcome.SUCCESS)
+        self.assertEqual(calls, [(('ping', '-n', '1', '-w', '250', '127.0.0.1'), 1.25, 8_192)])
+
+    async def test_configured_icmp_profile_persists_native_capability_evidence(self) -> None:
+        async def runner(_address: str, _timeout: float) -> CommandResult:
+            return CommandResult(("ping",), None, "", "", CommandOutcome.PERMISSION_DENIED)
+
+        config = PeerConfig(
+            identity="icmp-pair", bind_host="127.0.0.2", control_port=0,
+            certificate_path=None, key_path=None, ca_path=None, token_path=None,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+            coverage_profiles=(CoverageProfile.ICMP_ECHO,),
+        )
+        history = HistoryStore(":memory:")
+        self.addCleanup(history.close)
+        from mercury.paired import ConfiguredCoverageExecutor
+        result = await ConfiguredCoverageExecutor(config, history, icmp_runner=runner)("A-to-B", "icmp-correlation")
+        self.assertEqual(result.observations[0].evidence_kind, EvidenceKind.PERMISSION_DENIED)
+        self.assertEqual(result.observations[0].disposition, Disposition.UNAVAILABLE)
+        self.assertEqual(result.observations[0].detail["coverage_profile"], CoverageProfile.ICMP_ECHO.value)
+
     async def test_icmp_capability_gaps_do_not_become_peer_arrival_claims(self) -> None:
         cases = (
             (CommandOutcome.SUCCESS, EvidenceKind.NATIVE_PING_REPLY, Disposition.POSITIVE),
@@ -466,6 +497,18 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
     async def test_cross_subnet_arp_nd_is_not_applicable_to_remote_pair(self) -> None:
         self.assertEqual(local_link_applicability("172.26.0.0/16", "172.27.0.0/16"), CoverageOutcome.NOT_APPLICABLE)
         self.assertEqual(local_link_applicability("10.20.30.0/24", "10.20.30.0/24"), CoverageOutcome.SKIPPED)
+
+    async def test_cross_subnet_arp_nd_rows_are_not_applicable_not_negative(self) -> None:
+        from mercury.paired import CoverageAssessmentRequest, _local_link_scope_observations
+        request = CoverageAssessmentRequest(
+            identity="coverage-pair", address="172.27.20.2", config_path="peer.json",
+            timeout_s=1.0, authorized=True, profiles=(CoverageProfile.ARP, CoverageProfile.IPV6_ND),
+            local_network="172.26.0.0/16", peer_network="172.27.0.0/16",
+        )
+        result = _role_result("local", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED)
+        result = replace(result, observations=_local_link_scope_observations(request), conclusions=())
+        rows = coverage_matrix(result, requested=request.profiles)
+        self.assertEqual({row.outcome for row in rows}, {CoverageOutcome.NOT_APPLICABLE})
 
     async def test_coverage_matrix_requires_arrival_or_response_for_candidate_carrier(self) -> None:
         result = _role_result("local", Disposition.POSITIVE, EvidenceKind.PEER_OBSERVED_ARRIVAL)
@@ -592,6 +635,14 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({EvidenceKind.DNS_QUERY, EvidenceKind.HTTP_RESPONSE, EvidenceKind.SSH_BANNER, EvidenceKind.TLS_HANDSHAKE}.issubset(
             {item.evidence_kind for item in result.observations}
         ))
+        table = coverage_html_table(result, requested=(
+            CoverageProfile.TCP_CONNECT, CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+            CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP, CoverageProfile.HTTP_EXCHANGE,
+            CoverageProfile.SSH_BANNER, CoverageProfile.TLS_HANDSHAKE,
+        ))
+        self.assertIn('<th scope="col">Port</th>', table)
+        self.assertIn('<th scope="col">Timing</th>', table)
+        self.assertIn("mercury.coverage_receiver", table)
 
     async def test_configured_runtime_performs_fixed_loopback_tcp_udp_profile(self) -> None:
         """The bare runtime composes only configured data-plane endpoints."""

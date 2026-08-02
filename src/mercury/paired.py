@@ -12,6 +12,7 @@ import errno
 import hashlib
 import ipaddress
 import math
+import platform
 import secrets
 import ssl
 import struct
@@ -41,7 +42,7 @@ from .planner import (
 )
 from .peer import PEER_PROTOCOL_VERSION, PeerClient, PeerConfig, PeerError, PeerFrame, ReceiverProfileConfig
 from .policy import ScopeGrant
-from .platform.common import CommandOutcome, CommandResult
+from .platform.common import CommandOutcome, CommandResult, run_command
 from .tasks import TaskContext, TaskService
 
 _TCP_REPLY = b"MRP1A"
@@ -379,6 +380,8 @@ class CoverageAssessmentRequest:
     authorized: bool
     profiles: tuple[CoverageProfile, ...]
     unsafe_development: bool = False
+    local_network: str | None = None
+    peer_network: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, str) or not self.identity or len(self.identity) > 64:
@@ -395,11 +398,26 @@ class CoverageAssessmentRequest:
             type(item) is not CoverageProfile for item in self.profiles
         ) or len(set(self.profiles)) != len(self.profiles):
             raise PairedError("coverage profiles must be a non-empty unique sequence")
-        supported = set(CoverageReceiverService._IMPLEMENTED) | {CoverageProfile.TCP_CONNECT}
+        supported = set(CoverageReceiverService._IMPLEMENTED) | {
+            CoverageProfile.TCP_CONNECT, CoverageProfile.ICMP_ECHO,
+            CoverageProfile.ARP, CoverageProfile.IPV6_ND,
+        }
         unsupported = set(self.profiles) - supported
         if unsupported:
             raise PairedError("coverage assessment profiles need configured receivers")
         object.__setattr__(self, "profiles", tuple(self.profiles))
+        if (self.local_network is None) != (self.peer_network is None):
+            raise PairedError("local-link coverage needs both endpoint networks")
+        if self.local_network is not None:
+            try:
+                local_network = ipaddress.ip_network(self.local_network, strict=False)
+                peer_network = ipaddress.ip_network(self.peer_network, strict=False)
+            except (TypeError, ValueError) as exc:
+                raise PairedError("local-link coverage networks are invalid") from exc
+            if not (local_network.is_private and peer_network.is_private):
+                raise PairedError("local-link coverage networks must be private")
+            object.__setattr__(self, "local_network", local_network.with_prefixlen)
+            object.__setattr__(self, "peer_network", peer_network.with_prefixlen)
 
 
 class AuthenticatedCoverageRunner:
@@ -422,6 +440,8 @@ class AuthenticatedCoverageRunner:
             raise PairedError("coverage assessment requires explicit authorization")
         if request.identity != self._config.identity or request.address != self._config.peer_addresses[0]:
             raise PairedError("coverage request does not match its configured peer")
+        if set(request.profiles) != set(self._config.coverage_profiles):
+            raise PairedError("coverage request profiles do not match the fixed local coverage configuration")
         correlation = "c" + secrets.token_urlsafe(16)
         forward, reverse = correlation + "f", correlation + "r"
         # Each profile has its configured receive window.  Control must remain
@@ -442,6 +462,12 @@ class AuthenticatedCoverageRunner:
             if CoverageProfile.TCP_TAGGED in local_ports:
                 local_ports[CoverageProfile.TCP_CONNECT] = local_ports[CoverageProfile.TCP_TAGGED]
             for profile in request.profiles:
+                if profile in {CoverageProfile.ARP, CoverageProfile.IPV6_ND}:
+                    continue
+                if profile is CoverageProfile.ICMP_ECHO:
+                    if remote_ports.get(profile) != 0:
+                        raise PairedError("configured peer does not admit the ICMP coverage profile")
+                    continue
                 if remote_ports.get(profile) != local_ports.get(profile):
                     raise PairedError("configured peers do not agree on a coverage receiver profile/port")
             async with asyncio.timeout(request.timeout_s * len(request.profiles) * 2 + _CONTROL_RESULT_GRACE_S):
@@ -453,8 +479,13 @@ class AuthenticatedCoverageRunner:
                 if admitted.body != {"status": "accepted"}:
                     raise PairedError("configured peer did not admit the coverage receiver lease")
                 submitted.append(forward)
-                local_forward = await self._sender(_ROLE_A_TO_B, forward, profiles=request.profiles)
-                remote_receipts = await self._read_receipts(forward, control_expires_at)
+                active_profiles = tuple(item for item in request.profiles if item not in {CoverageProfile.ARP, CoverageProfile.IPV6_ND})
+                if not active_profiles:
+                    raise PairedError("coverage assessment selected no active profiles")
+                local_forward = await self._sender(_ROLE_A_TO_B, forward, profiles=active_profiles)
+                remote_receipts = await self._read_receipts(
+                    forward, control_expires_at, request.profiles, self._config.bind_host,
+                )
 
                 reverse_expires_at = utc_now() + timedelta(seconds=request.timeout_s)
                 await local_registry.start(reverse, reverse_expires_at)
@@ -467,7 +498,9 @@ class AuthenticatedCoverageRunner:
                     raise PairedError("configured peer did not admit the reverse coverage role")
                 submitted.append(reverse)
                 remote_reverse = await self._read_coverage_result(reverse, control_expires_at)
-                local_receipts = local_registry.receipts_for(reverse) or ()
+                local_receipts = _validate_coverage_receipts(
+                    local_registry.receipts_for(reverse) or (), reverse, request.profiles, request.address,
+                )
                 return _combine_coverage_results(
                     request, local_forward, remote_reverse,
                     remote_receipts=remote_receipts, local_receipts=local_receipts,
@@ -484,12 +517,25 @@ class AuthenticatedCoverageRunner:
                 except (PeerError, OSError):
                     pass
 
-    async def _read_receipts(self, correlation: str, expires_at: datetime) -> tuple[CoverageReceipt, ...]:
-        frame = await self._request("read-result", correlation, expires_at, {})
-        receipts = frame.body.get("receipts")
-        if not isinstance(receipts, list):
-            raise PairedError("configured peer did not return coverage receipts")
-        return tuple(_receipt_from_wire(item) for item in receipts)
+    async def _read_receipts(
+        self,
+        correlation: str,
+        expires_at: datetime,
+        profiles: tuple[CoverageProfile, ...],
+        expected_source: str,
+    ) -> tuple[CoverageReceipt, ...]:
+        expected = _receipt_profiles(profiles)
+        while True:
+            frame = await self._request("read-result", correlation, expires_at, {})
+            receipts = frame.body.get("receipts")
+            if not isinstance(receipts, list):
+                raise PairedError("configured peer did not return coverage receipts")
+            validated = _validate_coverage_receipts(
+                tuple(_receipt_from_wire(item) for item in receipts), correlation, profiles, expected_source,
+            )
+            if {item.profile for item in validated} == expected or utc_now() >= expires_at:
+                return validated
+            await asyncio.sleep(0.01)
 
     async def _read_coverage_result(self, correlation: str, expires_at: datetime) -> TaskResult:
         while True:
@@ -580,7 +626,9 @@ def _coverage_capability_ports(value: object) -> dict[CoverageProfile, int]:
             profile, port = CoverageProfile(parts[1]), int(parts[2])
         except (ValueError, TypeError):
             continue
-        if profile in CoverageReceiverService._IMPLEMENTED | {CoverageProfile.TCP_CONNECT} and 1 <= port <= 65_535:
+        if profile is CoverageProfile.ICMP_ECHO and port == 0:
+            ports[profile] = port
+        elif profile in CoverageReceiverService._IMPLEMENTED | {CoverageProfile.TCP_CONNECT} and 1 <= port <= 65_535:
             ports[profile] = port
     return ports
 
@@ -605,6 +653,31 @@ def _receipt_from_wire(value: object) -> CoverageReceipt:
         raise PairedError("configured peer returned an invalid coverage receipt") from exc
 
 
+def _receipt_profiles(profiles: tuple[CoverageProfile, ...]) -> set[CoverageProfile]:
+    return set(profiles) & CoverageReceiverService._IMPLEMENTED
+
+
+def _validate_coverage_receipts(
+    receipts: tuple[CoverageReceipt, ...],
+    correlation: str,
+    profiles: tuple[CoverageProfile, ...],
+    expected_source: str,
+) -> tuple[CoverageReceipt, ...]:
+    expected = _receipt_profiles(profiles)
+    filtered: list[CoverageReceipt] = []
+    for receipt in receipts:
+        if receipt.correlation_id != correlation:
+            raise PairedError("coverage receipt correlation does not match its lease")
+        if receipt.profile not in expected:
+            raise PairedError("coverage receipt profile was not selected")
+        if receipt.source_address != expected_source:
+            raise PairedError("coverage receipt source does not match the configured peer")
+        filtered.append(receipt)
+    if len({item.profile for item in filtered}) != len(filtered):
+        raise PairedError("coverage receiver recorded duplicate profile evidence")
+    return tuple(filtered)
+
+
 def _combine_coverage_results(
     request: CoverageAssessmentRequest,
     local_forward: TaskResult,
@@ -623,6 +696,7 @@ def _combine_coverage_results(
     ]
     observations.extend(_receipt_observations(remote_receipts, _ROLE_A_TO_B, forward_correlation, request.address, "B"))
     observations.extend(_receipt_observations(local_receipts, _ROLE_B_TO_A, reverse_correlation, request.address, "A"))
+    observations.extend(_local_link_scope_observations(request))
     if not observations:
         raise PairedError("coverage assessment produced no evidence")
     provisional = TaskResult(
@@ -696,6 +770,31 @@ def _receipt_observations(
                 "payload_length": receipt.payload_length, "reply_result": receipt.reply_result,
             },
         ))
+    return tuple(observations)
+
+
+def _local_link_scope_observations(request: CoverageAssessmentRequest) -> tuple[Observation, ...]:
+    profiles = tuple(item for item in request.profiles if item in {CoverageProfile.ARP, CoverageProfile.IPV6_ND})
+    if not profiles or request.local_network is None or request.peer_network is None:
+        return ()
+    outcome = local_link_applicability(request.local_network, request.peer_network)
+    if outcome is not CoverageOutcome.NOT_APPLICABLE:
+        return ()
+    instant = utc_now()
+    observations: list[Observation] = []
+    for profile in profiles:
+        for role in (_ROLE_A_TO_B, _ROLE_B_TO_A):
+            observations.append(Observation(
+                id=f"local-link-{profile.value}-{role}", probe="local_link_scope",
+                disposition=Disposition.UNAVAILABLE, evidence_kind=EvidenceKind.UNSUPPORTED,
+                direction=Direction.LOCAL, target=request.address, started_at=instant, ended_at=instant,
+                duration_ms=0.0, source="mercury.local_link_scope",
+                detail={
+                    "coverage_profile": profile.value, "paired_phase": role,
+                    "coverage_outcome": CoverageOutcome.NOT_APPLICABLE.value,
+                    "local_network": request.local_network, "peer_network": request.peer_network,
+                },
+            ))
     return tuple(observations)
 
 
@@ -813,6 +912,8 @@ def _coverage_profile_for(observation: Observation) -> CoverageProfile | None:
 
 
 def _coverage_outcome(observations: list[Observation]) -> CoverageOutcome:
+    if any(item.detail.get("coverage_outcome") == CoverageOutcome.NOT_APPLICABLE.value for item in observations):
+        return CoverageOutcome.NOT_APPLICABLE
     kinds = {item.evidence_kind for item in observations}
     if kinds & {
         EvidenceKind.PEER_OBSERVED_ARRIVAL, EvidenceKind.PEER_ACKNOWLEDGEMENT,
@@ -874,6 +975,25 @@ def icmp_coverage_evidence(result: CommandResult) -> tuple[EvidenceKind, Disposi
     if result.outcome is CommandOutcome.NONZERO:
         return EvidenceKind.NATIVE_PING_FAILURE, Disposition.ERROR, "native_echo_nonzero_unclassified"
     return EvidenceKind.EXECUTION_ERROR, Disposition.ERROR, "native_echo_execution_error"
+
+
+async def run_icmp_coverage(
+    address: str,
+    timeout_s: float,
+    *,
+    system: Callable[[], str] = platform.system,
+    command_runner=run_command,
+) -> CommandResult:
+    """Run one fixed native echo request; never accept arbitrary ping argv."""
+    target = _address(address, "ICMP address")
+    if type(timeout_s) not in (int, float) or not 0.1 <= float(timeout_s) <= 30.0:
+        raise PairedError("ICMP timeout must be within 0.1..30 seconds")
+    milliseconds = max(100, math.ceil(float(timeout_s) * 1000))
+    if system() == "Windows":
+        argv = ("ping", "-n", "1", "-w", str(milliseconds), target)
+    else:
+        argv = ("ping", "-n", "-c", "1", "-W", str(max(1, math.ceil(float(timeout_s)))), target)
+    return await command_runner(argv, min(30.0, float(timeout_s) + 1.0), 8_192)
 
 
 def _address(value: str, label: str) -> str:
@@ -1373,28 +1493,30 @@ class ConfiguredCoverageExecutor:
     table to this same immutable configuration.
     """
 
-    def __init__(self, config: PeerConfig, history) -> None:
+    def __init__(self, config: PeerConfig, history, *, icmp_runner=run_icmp_coverage) -> None:
         if type(config) is not PeerConfig or not config.coverage_enabled:
             raise PairedError("coverage runtime requires configured receivers")
-        self._config, self._history = config, history
+        self._config, self._history, self._icmp_runner = config, history, icmp_runner
 
     async def __call__(
         self, role: str, correlation: str, *, profiles: tuple[CoverageProfile, ...] | None = None,
     ) -> TaskResult:
         if role not in {_ROLE_A_TO_B, _ROLE_B_TO_A}:
             raise PairedError("coverage role is invalid")
-        selected = tuple(item.profile for item in self._config.receiver_profiles) if profiles is None else profiles
+        selected = self._config.coverage_profiles if profiles is None else profiles
+        selected = tuple(item for item in selected if item not in {CoverageProfile.ARP, CoverageProfile.IPV6_ND})
         configured = {item.profile: item for item in self._config.receiver_profiles}
         if not selected or any(profile not in configured and not (
             profile is CoverageProfile.TCP_CONNECT and CoverageProfile.TCP_TAGGED in configured
-        ) for profile in selected):
+        ) and profile is not CoverageProfile.ICMP_ECHO for profile in selected):
             raise PairedError("coverage profile is not locally configured")
         plan = _coverage_runtime_plan(self._config, correlation, selected)
         service = TaskService(self._history)
 
         async def runner(context: TaskContext) -> None:
             for step, profile in zip(plan.preview.steps, selected, strict=True):
-                await self._send(context, step, _coverage_receiver_for(configured, profile), profile, correlation)
+                receiver = None if profile is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(configured, profile)
+                await self._send(context, step, receiver, profile, correlation)
 
         return await service.run(
             plan, runner, task_kind="coverage",
@@ -1402,14 +1524,18 @@ class ConfiguredCoverageExecutor:
         )
 
     async def _send(
-        self, context: TaskContext, step: ProbeStep, receiver: ReceiverProfileConfig,
+        self, context: TaskContext, step: ProbeStep, receiver: ReceiverProfileConfig | None,
         profile: CoverageProfile, correlation: str,
     ) -> None:
         prepared = await context.admit(step.id)
         started = context.wall_clock()
         kind, disposition = EvidenceKind.EXECUTION_ERROR, Disposition.ERROR
         try:
-            if profile is CoverageProfile.TCP_CONNECT:
+            if profile is CoverageProfile.ICMP_ECHO:
+                result = await self._icmp_runner(prepared.address or step.target, step.timeout_s)
+                kind, disposition, _ = icmp_coverage_evidence(result)
+            elif profile is CoverageProfile.TCP_CONNECT:
+                assert receiver is not None
                 reader, writer = await asyncio.open_connection(
                     self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
                 )
@@ -1417,6 +1543,7 @@ class ConfiguredCoverageExecutor:
                 await writer.wait_closed()
                 kind, disposition = EvidenceKind.TCP_CONNECTED, Disposition.POSITIVE
             elif profile is CoverageProfile.TCP_TAGGED:
+                assert receiver is not None
                 reader, writer = await asyncio.open_connection(
                     self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
                 )
@@ -1430,6 +1557,7 @@ class ConfiguredCoverageExecutor:
                     await writer.wait_closed()
                 kind, disposition = EvidenceKind.PEER_ACKNOWLEDGEMENT, Disposition.POSITIVE
             elif profile is CoverageProfile.UDP_TAGGED:
+                assert receiver is not None
                 protocol = _PairedReply()
                 transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
                     lambda: protocol, local_addr=(self._config.bind_host, 0),
@@ -1445,6 +1573,7 @@ class ConfiguredCoverageExecutor:
                     transport.close()
                 kind, disposition = EvidenceKind.PEER_ACKNOWLEDGEMENT, Disposition.POSITIVE
             elif profile is CoverageProfile.DNS_UDP:
+                assert receiver is not None
                 protocol = _PairedReply()
                 transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
                     lambda: protocol, local_addr=(self._config.bind_host, 0),
@@ -1459,6 +1588,7 @@ class ConfiguredCoverageExecutor:
                     transport.close()
                 kind, disposition = EvidenceKind.DNS_QUERY, Disposition.POSITIVE
             elif profile is CoverageProfile.DNS_TCP:
+                assert receiver is not None
                 reader, writer = await asyncio.open_connection(
                     self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
                 )
@@ -1474,6 +1604,7 @@ class ConfiguredCoverageExecutor:
                     await writer.wait_closed()
                 kind, disposition = EvidenceKind.DNS_QUERY, Disposition.POSITIVE
             elif profile is CoverageProfile.HTTP_EXCHANGE:
+                assert receiver is not None
                 reader, writer = await asyncio.open_connection(
                     self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
                 )
@@ -1488,6 +1619,7 @@ class ConfiguredCoverageExecutor:
                     await writer.wait_closed()
                 kind, disposition = EvidenceKind.HTTP_RESPONSE, Disposition.POSITIVE
             elif profile is CoverageProfile.SSH_BANNER:
+                assert receiver is not None
                 reader, writer = await asyncio.open_connection(
                     self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
                 )
@@ -1501,6 +1633,7 @@ class ConfiguredCoverageExecutor:
                     await writer.wait_closed()
                 kind, disposition = EvidenceKind.SSH_BANNER, Disposition.POSITIVE
             elif profile is CoverageProfile.TLS_HANDSHAKE:
+                assert receiver is not None
                 reader, writer = await asyncio.open_connection(
                     self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
                     ssl=_coverage_tls_client_context(receiver), server_hostname=receiver.tls_server_name,
@@ -1538,8 +1671,10 @@ def _coverage_runtime_plan(config: PeerConfig, correlation: str, profiles: tuple
     receivers = {item.profile: item for item in config.receiver_profiles}
     specs: list[ProbeSpec] = []
     for profile in profiles:
-        receiver = _coverage_receiver_for(receivers, profile)
-        if profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP}:
+        receiver = None if profile is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(receivers, profile)
+        if profile is CoverageProfile.ICMP_ECHO:
+            kind, transport = ProbeKind.NATIVE_PING, None
+        elif profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP}:
             kind, transport = ProbeKind.UDP_EXCHANGE, Transport.UDP
         elif profile is CoverageProfile.HTTP_EXCHANGE:
             kind, transport = ProbeKind.HTTP_EXCHANGE, Transport.TCP
@@ -1553,22 +1688,22 @@ def _coverage_runtime_plan(config: PeerConfig, correlation: str, profiles: tuple
         # versioned plan model supports per-step payload metadata summaries.
         payload = PayloadMetadata("coverage-v2", 0)
         specs.append(ProbeSpec(
-            kind, config.peer_addresses[0], address=config.peer_addresses[0], port=receiver.port,
-            transport=transport, timeout_s=receiver.timeout_s, payload_metadata=payload,
+            kind, config.peer_addresses[0], address=config.peer_addresses[0], port=None if receiver is None else receiver.port,
+            transport=transport, timeout_s=1.0 if receiver is None else receiver.timeout_s, payload_metadata=payload,
             server_name=(receiver.tls_server_name if kind is ProbeKind.TLS_HANDSHAKE else config.peer_addresses[0]) if kind in {ProbeKind.TLS_HANDSHAKE, ProbeKind.HTTP_EXCHANGE} else None,
             http_scheme="http" if kind is ProbeKind.HTTP_EXCHANGE else None,
-            cost=StepCost(1, 1 if transport is Transport.UDP else 0, tag_length, logical_packets=1),
+            cost=StepCost(1, 1 if transport is Transport.UDP else 0, tag_length if receiver is not None else 0, logical_packets=1),
         ))
     grant = ScopeGrant(
         networks=(ipaddress.ip_network(f"{config.peer_addresses[0]}/{32 if ':' not in config.peer_addresses[0] else 128}"),),
-        ports=tuple(_coverage_receiver_for(receivers, item).port for item in profiles),
-        transports=tuple(sorted({"udp" if item in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP} else "tcp" for item in profiles})),
+        ports=tuple(_coverage_receiver_for(receivers, item).port for item in profiles if item is not CoverageProfile.ICMP_ECHO),
+        transports=tuple(sorted({"udp" if item in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP} else "tcp" for item in profiles if item is not CoverageProfile.ICMP_ECHO})),
         attested=True, purpose="configured paired coverage sender",
-        expires_at=utc_now() + timedelta(seconds=max(_coverage_receiver_for(receivers, item).timeout_s for item in profiles)),
+        expires_at=utc_now() + timedelta(seconds=max(1.0 if item is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(receivers, item).timeout_s for item in profiles)),
     )
     preview = preview_probe_plan(
         specs=tuple(specs), grant=grant, profile=_COVERAGE_MANIFEST,
-        limits=replace(DEFAULT_LIMITS, max_duration_s=max(1, math.ceil(sum(_coverage_receiver_for(receivers, item).timeout_s for item in profiles)))),
+        limits=replace(DEFAULT_LIMITS, max_duration_s=max(1, math.ceil(sum(1.0 if item is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(receivers, item).timeout_s for item in profiles)))),
     )
     return authorize_plan(preview)
 
@@ -1867,6 +2002,8 @@ class CoverageLeaseRegistry:
         tcp = next((item for item in self._config.receiver_profiles if item.profile is CoverageProfile.TCP_TAGGED), None)
         if tcp is not None:
             entries.append(f"{_COVERAGE_MANIFEST}:{CoverageProfile.TCP_CONNECT.value}:{tcp.port}")
+        if CoverageProfile.ICMP_ECHO in self._config.coverage_profiles:
+            entries.append(f"{_COVERAGE_MANIFEST}:{CoverageProfile.ICMP_ECHO.value}:0")
         return (_COVERAGE_MANIFEST, *entries)
 
     def receipts_for(self, correlation_id: str) -> tuple[CoverageReceipt, ...] | None:
@@ -1927,6 +2064,6 @@ def _dns_coverage_query(correlation: str) -> bytes:
 
 __all__ = [
     "AuthenticatedCoverageRunner", "AuthenticatedPairedRunner", "ConfiguredCoverageExecutor", "ConfiguredPairedExecutor", "CoverageAssessmentRequest", "CoverageLeaseRegistry", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
-    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "icmp_coverage_evidence", "local_link_applicability", "paired_matrix",
+    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "icmp_coverage_evidence", "local_link_applicability", "paired_matrix", "run_icmp_coverage",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

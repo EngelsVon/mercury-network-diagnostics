@@ -131,6 +131,7 @@ class PeerConfig:
     paired_udp_port: int | None = None
     paired_timeout_s: float | None = None
     receiver_profiles: tuple[ReceiverProfileConfig, ...] = ()
+    coverage_profiles: tuple[CoverageProfile, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, str) or not _IDENTITY.fullmatch(self.identity):
@@ -171,6 +172,31 @@ class PeerConfig:
             for item in receivers
         ):
             raise PeerConfigurationError("TLS receiver needs configured certificate material")
+        if not isinstance(self.coverage_profiles, (tuple, list)) or any(
+            type(item) is not CoverageProfile for item in self.coverage_profiles
+        ):
+            raise PeerConfigurationError("coverage profile table is invalid")
+        enabled = tuple(self.coverage_profiles)
+        if not enabled:
+            enabled = tuple(item.profile for item in receivers)
+            if CoverageProfile.TCP_TAGGED in enabled:
+                enabled = (*enabled, CoverageProfile.TCP_CONNECT)
+        if len(enabled) > 16 or len(set(enabled)) != len(enabled):
+            raise PeerConfigurationError("coverage profile table is invalid")
+        allowed = _RECEIVER_CAPABLE_PROFILES | {
+            CoverageProfile.TCP_CONNECT, CoverageProfile.ICMP_ECHO,
+            CoverageProfile.ARP, CoverageProfile.IPV6_ND,
+        }
+        if any(item not in allowed for item in enabled):
+            raise PeerConfigurationError("coverage profile is unavailable")
+        if any(
+            item not in {CoverageProfile.TCP_CONNECT, CoverageProfile.ICMP_ECHO, CoverageProfile.ARP, CoverageProfile.IPV6_ND} and item not in {receiver.profile for receiver in receivers}
+            for item in enabled
+        ):
+            raise PeerConfigurationError("coverage profile lacks a configured receiver")
+        if CoverageProfile.TCP_CONNECT in enabled and CoverageProfile.TCP_TAGGED not in {receiver.profile for receiver in receivers}:
+            raise PeerConfigurationError("TCP connect coverage needs a configured TCP receiver")
+        object.__setattr__(self, "coverage_profiles", tuple(sorted(enabled, key=lambda item: item.value)))
         object.__setattr__(self, "receiver_profiles", tuple(sorted(receivers, key=lambda item: item.profile.value)))
         for pin in self.peer_pins:
             if not isinstance(pin, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", pin):
@@ -224,7 +250,7 @@ class PeerConfig:
 
     @property
     def coverage_enabled(self) -> bool:
-        return bool(self.receiver_profiles)
+        return bool(self.coverage_profiles)
 
     def validate_for_start(self) -> None:
         """Check all trusted files before constructing a listener."""
@@ -259,7 +285,7 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
     required = {"identity", "bind_host", "control_port", "peer_pins", "peer_addresses"}
     optional = {
         "certificate_path", "key_path", "ca_path", "token_path", "server_hostname",
-        "paired", "receivers",
+        "paired", "receivers", "coverage_profiles",
     }
     if set(value) - required - optional or required - set(value):
         raise PeerConfigurationError("peer configuration fields are invalid")
@@ -312,6 +338,13 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
             receiver_profiles.append(ReceiverProfileConfig(
                 profile=profile, bind_host=receiver["bind_host"], port=receiver["port"], timeout_s=receiver["timeout_s"],
             ))
+    coverage_profiles = value.get("coverage_profiles", [])
+    if not isinstance(coverage_profiles, list):
+        raise PeerConfigurationError("coverage profile table is invalid")
+    try:
+        configured_coverage_profiles = tuple(CoverageProfile(item) for item in coverage_profiles)
+    except (TypeError, ValueError) as exc:
+        raise PeerConfigurationError("coverage profile is invalid") from exc
     return PeerConfig(
         identity=value["identity"], bind_host=value["bind_host"], control_port=value["control_port"],
         certificate_path=path_value("certificate_path"), key_path=path_value("key_path"),
@@ -321,7 +354,7 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
         paired_tcp_port=None if paired is None else paired["tcp_port"],
         paired_udp_port=None if paired is None else paired["udp_port"],
         paired_timeout_s=None if paired is None else paired["timeout_s"],
-        receiver_profiles=tuple(receiver_profiles),
+        receiver_profiles=tuple(receiver_profiles), coverage_profiles=configured_coverage_profiles,
     )
 
 

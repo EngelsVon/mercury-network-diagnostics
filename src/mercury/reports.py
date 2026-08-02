@@ -75,13 +75,23 @@ def coverage_html_table(result: TaskResult, *, requested: tuple[CoverageProfile,
     """Render the finite coverage matrix without claiming a universal negative."""
     from .paired import coverage_matrix
     rows = coverage_matrix(result, requested=requested)
-    headings = ("Profile", "Direction", "Outcome", "Evidence", "Provenance", "Limitations")
+    observations = {item.id: item for item in result.observations}
+    headings = ("Profile", "Direction", "Port", "Outcome", "Evidence", "Provenance", "Timing", "Limitations")
     body: list[str] = []
     for row in rows:
+        cited = tuple(observations[item] for item in row.observation_ids if item in observations)
+        ports = sorted({
+            str(item.detail.get("receiver_destination_port", item.detail.get("port", "")))
+            for item in cited
+            if item.detail.get("receiver_destination_port", item.detail.get("port")) is not None
+        })
+        timing = " — "
+        if cited:
+            timing = min(item.started_at for item in cited).isoformat() + " to " + max(item.ended_at for item in cited).isoformat()
         cells = (
-            row.profile.value, row.direction, row.outcome.value,
+            row.profile.value, row.direction, ", ".join(ports) or "—", row.outcome.value,
             ", ".join(row.observation_ids) or "—", ", ".join(row.provenance) or "—",
-            " ".join(row.limitations),
+            timing, " ".join(row.limitations),
         )
         body.append("<tr>" + "".join(f"<td>{html.escape(value, quote=True)}</td>" for value in cells) + "</tr>")
     head = "".join(f"<th scope=\"col\">{html.escape(value)}</th>" for value in headings)
