@@ -391,7 +391,7 @@ def project_history_request(value: Mapping[str, Any]) -> dict[str, Any]:
         elif key == "directions":
             if (
                 not isinstance(item, (list, tuple))
-                or tuple(item) != ("A-to-B", "B-to-A")
+                or tuple(item) not in {("A-to-B", "B-to-A"), ("outbound",)}
             ):
                 raise HistoryError("history request directions are invalid")
             projected[key] = list(item)

@@ -144,7 +144,9 @@ class MercuryApplication:
     async def map_internal(self, request: InternalMappingRequest) -> TaskResult:
         if type(request) is not InternalMappingRequest or not request.authorized:
             raise PolicyError("internal mapping requires explicit authorization attestation")
-        return await run_internal_mapping(request, history=self.history)
+        return await run_internal_mapping(
+            request, history=self.history, service_factory=self.service_factory,
+        )
 
     async def discover(self, request: DiscoveryRequest) -> TaskResult:
         """Run the fixed TCP-only discovery service through this shared facade."""

@@ -72,6 +72,25 @@ class InternalMappingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.effective_config.budget["limits"]["max_global_rate"], 1)
         self.assertEqual(stored.request["duration_s"], 0)
         self.assertEqual(stored.request["duration_semantics"], "zero means no operator early cutoff within immutable ceilings")
+        self.assertEqual(stored.request["coverage_profiles"], [CoverageProfile.TCP_CONNECT.value])
+        self.assertEqual(stored.request["directions"], ["outbound"])
+
+    async def test_application_mapping_uses_its_shared_service_factory(self) -> None:
+        created: list[HistoryStore] = []
+
+        def service_factory(history: HistoryStore):
+            created.append(history)
+            from mercury.tasks import TaskService
+            return TaskService(history)
+
+        with HistoryStore(":memory:") as history:
+            await MercuryApplication(history=history, service_factory=service_factory).map_internal(
+                InternalMappingRequest(
+                    cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.TCP_CONNECT,),
+                    ports=(9,), rate=1, concurrency=1, duration_s=0, authorized=True,
+                )
+            )
+        self.assertEqual(created, [history])
 
     async def test_udp_mapping_preserves_reply_evidence_without_an_arbitrary_payload(self) -> None:
         class Echo(asyncio.DatagramProtocol):

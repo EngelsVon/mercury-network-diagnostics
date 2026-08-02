@@ -397,6 +397,8 @@ async def run_internal_mapping(
             "targets": list(request.cidrs), "profile": "internal-mapping-v1:" + ",".join(profile.value for profile in request.profiles),
             "ports": list(request.ports), "rate": request.rate, "concurrency": request.concurrency,
             "duration_s": request.duration_s, "duration_semantics": "zero means no operator early cutoff within immutable ceilings",
+            "coverage_profiles": [profile.value for profile in request.profiles],
+            "directions": ["outbound"],
             "network_io": True,
         },
     )
@@ -453,5 +455,5 @@ __all__ = [
     "NeighborRecord", "VisibleNetwork", "WifiAccessPoint", "collect_passive_discovery",
     "compile_discovery", "default_discovery_grant", "derive_ipv4_networks",
     "full_confirmation_example", "parse_linux_neighbors", "parse_lldpctl",
-    "parse_windows_neighbors", "parse_windows_wifi", "run_discovery",
+    "parse_windows_neighbors", "parse_windows_wifi", "run_discovery", "run_internal_mapping",
 ]
