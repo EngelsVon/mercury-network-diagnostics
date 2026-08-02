@@ -429,11 +429,18 @@ class AuthenticatedCoverageRunner:
     peer capability advertisement before data-plane I/O begins.
     """
 
-    def __init__(self, client: PeerClient, config: PeerConfig, history) -> None:
+    def __init__(
+        self,
+        client: PeerClient,
+        config: PeerConfig,
+        history,
+        *,
+        coverage_sender: "ConfiguredCoverageExecutor | None" = None,
+    ) -> None:
         if type(client) is not PeerClient or type(config) is not PeerConfig or not config.coverage_enabled:
             raise PairedError("coverage runner requires configured receivers")
         self._client, self._config, self._history = client, config, history
-        self._sender = ConfiguredCoverageExecutor(config, history)
+        self._sender = ConfiguredCoverageExecutor(config, history) if coverage_sender is None else coverage_sender
 
     async def run(self, request: CoverageAssessmentRequest) -> TaskResult:
         if type(request) is not CoverageAssessmentRequest or not request.authorized:

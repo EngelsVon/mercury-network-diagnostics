@@ -551,6 +551,60 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_coverage_runner_keeps_icmp_receiver_gap_distinct_in_both_directions(self) -> None:
+        """ICMP replies are sender-side facts when no privileged peer observer exists."""
+        from mercury.paired import AuthenticatedCoverageRunner, CoverageAssessmentRequest, ConfiguredCoverageExecutor
+
+        async def echo_runner(_address: str, _timeout: float) -> CommandResult:
+            return CommandResult(("ping",), 0, "", "", CommandOutcome.SUCCESS)
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        token_path = Path(temporary.name) / "token"
+        token_path.write_text("controlled-loopback-token", encoding="utf-8")
+        remote_config = PeerConfig(
+            identity="icmp-pair", bind_host="127.0.0.1", control_port=0,
+            certificate_path=None, key_path=None, ca_path=None, token_path=token_path,
+            peer_pins=(), peer_addresses=("127.0.0.2",), unsafe_development=True,
+            coverage_profiles=(CoverageProfile.ICMP_ECHO,),
+        )
+        remote_history = HistoryStore(":memory:")
+        self.addCleanup(remote_history.close)
+        remote_app = MercuryApplication(
+            history=remote_history,
+            paired_peer_service=PairedPeerService(
+                lambda _role, _correlation: _role_result("unused", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED),
+                coverage_registry=CoverageLeaseRegistry(remote_config),
+                coverage_sender_executor=ConfiguredCoverageExecutor(remote_config, remote_history, icmp_runner=echo_runner),
+            ),
+        )
+        agent = await remote_app.start_agent(remote_config)
+        try:
+            server = agent.server
+            assert server is not None
+            local_config = PeerConfig(
+                identity="icmp-pair", bind_host="127.0.0.2", control_port=server.sockets[0].getsockname()[1],
+                certificate_path=None, key_path=None, ca_path=None, token_path=token_path,
+                peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+                coverage_profiles=(CoverageProfile.ICMP_ECHO,),
+            )
+            local_history = HistoryStore(":memory:")
+            self.addCleanup(local_history.close)
+            runner = AuthenticatedCoverageRunner(
+                PeerClient(local_config), local_config, local_history,
+                coverage_sender=ConfiguredCoverageExecutor(local_config, local_history, icmp_runner=echo_runner),
+            )
+            result = await runner.run(CoverageAssessmentRequest(
+                identity="icmp-pair", address="127.0.0.1", config_path="peer.json",
+                timeout_s=1.0, authorized=True, profiles=(CoverageProfile.ICMP_ECHO,), unsafe_development=True,
+            ))
+        finally:
+            await remote_app.stop_agent()
+        rows = coverage_matrix(result, requested=(CoverageProfile.ICMP_ECHO,))
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row.outcome is CoverageOutcome.CANDIDATE_CARRIER for row in rows))
+        self.assertFalse(any(item.evidence_kind is EvidenceKind.PEER_OBSERVED_ARRIVAL for item in result.observations))
+
     async def test_coverage_runner_correlates_configured_tcp_udp_receivers_in_both_directions(self) -> None:
         """Each direction needs a sender fact *and* the peer receiver receipt."""
         from mercury.paired import AuthenticatedCoverageRunner, CoverageAssessmentRequest, ConfiguredCoverageExecutor
