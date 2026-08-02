@@ -292,6 +292,28 @@ class UdpProfileTests(unittest.TestCase):
 
 
 class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dns_tcp_receiver_answers_the_same_fixed_query(self) -> None:
+        port = _port(socket.SOCK_STREAM)
+        receiver = ReceiverProfileConfig(CoverageProfile.DNS_TCP, "127.0.0.1", port, 1.0)
+        service = CoverageReceiverService(CoverageReceiverLease(
+            receiver, "coverage-correlation", "127.0.0.1", utc_now() + timedelta(seconds=2),
+        ))
+        await service.start()
+        try:
+            name = b"\x14coverage-correlation\x07mercury\x04test\x00"
+            query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x01\x00\x01"
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(len(query).to_bytes(2, "big") + query)
+            await writer.drain()
+            reply = await reader.readexactly(int.from_bytes(await reader.readexactly(2), "big"))
+            self.assertEqual(reply[2:4], b"\x81\x80")
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.sleep(0)
+            self.assertEqual(service.receipts[0].reply_result, "acknowledged")
+        finally:
+            await service.stop()
+
     async def test_dns_udp_receiver_answers_only_its_correlation_test_zone(self) -> None:
         port = _port(socket.SOCK_DGRAM)
         receiver = ReceiverProfileConfig(CoverageProfile.DNS_UDP, "127.0.0.1", port, 1.0)
