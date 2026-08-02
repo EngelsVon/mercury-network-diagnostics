@@ -228,6 +228,10 @@ class PairedPeerService:
         self._results[correlation] = result
 
     async def read_result(self, frame: PeerFrame) -> dict[str, object]:
+        if self._coverage_registry is not None:
+            receipts = self._coverage_registry.receipts_for(frame.correlation_id)
+            if receipts is not None:
+                return {"receipts": [_receipt_wire(receipt) for receipt in receipts]}
         task = self._tasks.get(frame.correlation_id)
         if task is not None:
             if not task.done():
@@ -1323,6 +1327,21 @@ class CoverageLeaseRegistry:
     @property
     def receipts(self) -> tuple[CoverageReceipt, ...]:
         return tuple(receipt for services in self._services.values() for service in services for receipt in service.receipts)
+
+    def receipts_for(self, correlation_id: str) -> tuple[CoverageReceipt, ...] | None:
+        services = self._services.get(correlation_id)
+        return None if services is None else tuple(receipt for service in services for receipt in service.receipts)
+
+
+def _receipt_wire(receipt: CoverageReceipt) -> dict[str, object]:
+    return {
+        "correlation_id": receipt.correlation_id, "profile": receipt.profile.value,
+        "source_address": receipt.source_address, "source_port": receipt.source_port,
+        "destination_port": receipt.destination_port, "arrived_at": receipt.arrived_at.isoformat(),
+        "payload_sha256": receipt.payload_sha256, "payload_length": receipt.payload_length,
+        "direction": receipt.direction.value, "provenance": receipt.provenance,
+        "reply_result": receipt.reply_result,
+    }
 
 
 def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | None:

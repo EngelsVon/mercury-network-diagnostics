@@ -318,6 +318,8 @@ class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await reader.readexactly(5), b"MRC2A")
         writer.close()
         await writer.wait_closed()
+        receipts = await service.read_result(replace(frame, operation="read-result", body={}, nonce="nonce-coverage2"))
+        self.assertEqual(receipts["receipts"][0]["correlation_id"], "coverage-correlation")
         await service.cancel(frame)
 
     async def test_tls_receiver_requires_a_configured_certificate_and_records_handshake(self) -> None:

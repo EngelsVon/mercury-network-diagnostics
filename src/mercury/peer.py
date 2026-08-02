@@ -445,6 +445,8 @@ class PeerFrame:
                     result_from_wire(body["result"])
                 except (CodecError, TypeError, ValueError) as exc:
                     raise PeerProtocolError("peer paired result body is invalid") from exc
+            elif set(body) == {"receipts"} and isinstance(body["receipts"], list):
+                _validate_json(body)
             else:
                 raise PeerProtocolError("peer paired result body is invalid")
         elif self.operation == "cancel":
