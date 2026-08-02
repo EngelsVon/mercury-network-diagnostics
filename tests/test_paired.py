@@ -538,6 +538,42 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0].outcome, CoverageOutcome.SKIPPED)
         self.assertEqual(rows[1].outcome, CoverageOutcome.SKIPPED)
 
+    async def test_arp_only_assessment_records_passive_local_link_evidence(self) -> None:
+        from mercury.paired import AuthenticatedCoverageRunner, CoverageAssessmentRequest
+        config = PeerConfig(
+            identity="arp-pair", bind_host="127.0.0.2", control_port=1,
+            certificate_path=None, key_path=None, ca_path=None, token_path=None,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+            coverage_profiles=(CoverageProfile.ARP,),
+        )
+        instant = utc_now()
+        passive = replace(_role_result("local", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED), observations=(
+            Observation(
+                id="cached-arp", probe="neighbor_cache", disposition=Disposition.POSITIVE,
+                evidence_kind=EvidenceKind.LOCAL_FACT, direction=Direction.LOCAL,
+                target="local", started_at=instant, ended_at=instant, duration_ms=0.0,
+                source="tests.passive", detail={"address": "127.0.0.1", "family": 4, "passive": True},
+            ),
+        ))
+
+        async def passive_collector() -> TaskResult:
+            return passive
+
+        history = HistoryStore(":memory:")
+        self.addCleanup(history.close)
+        runner = AuthenticatedCoverageRunner(
+            PeerClient(config), config, history, passive_collector=passive_collector,
+        )
+        result = await runner.run(CoverageAssessmentRequest(
+            identity="arp-pair", address="127.0.0.1", config_path="peer.json",
+            timeout_s=1.0, authorized=True, profiles=(CoverageProfile.ARP,),
+            local_network="127.0.0.0/8", peer_network="127.0.0.0/8", unsafe_development=True,
+        ))
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        self.assertEqual(len(result.observations), 1)
+        self.assertTrue(result.observations[0].detail["local_link_only"])
+        self.assertIsNotNone(history.get_task(result.task_id))
+
     async def test_coverage_matrix_requires_arrival_or_response_for_candidate_carrier(self) -> None:
         result = _role_result("local", Disposition.POSITIVE, EvidenceKind.PEER_OBSERVED_ARRIVAL)
         observation = replace(

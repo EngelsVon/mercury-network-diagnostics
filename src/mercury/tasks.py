@@ -706,6 +706,22 @@ class TaskContext:
         """
         self._record_task_observation(observation)
 
+    def complete_aggregate_attempt(self, step_id: str) -> None:
+        """Complete a parent envelope step backed by persisted child actions.
+
+        A composite task cannot bind a remote receiver receipt to a fabricated
+        local packet step.  Its immutable envelope still requires completion,
+        so this method is limited to already-admitted steps and is used only
+        after the child action results have been recorded with
+        :meth:`record_aggregate`.
+        """
+        if type(step_id) is not str or step_id not in self._admitted_steps:
+            raise TaskError("aggregate completion requires an admitted plan step")
+        if step_id in self._completed_steps:
+            raise TaskError("aggregate plan step is already complete")
+        self._observed_steps.add(step_id)
+        self.complete_attempt(step_id)
+
     def _append_observation(self, observation: Observation) -> None:
         if type(observation) is not Observation:
             raise TaskError("runner evidence must be an Observation")

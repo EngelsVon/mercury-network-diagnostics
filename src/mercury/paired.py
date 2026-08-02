@@ -31,10 +31,13 @@ from .models import (
     Direction,
     Disposition,
     EvidenceKind,
+    EffectiveConfig,
     Health,
     Observation,
     ProbeKind,
+    Progress,
     TaskResult,
+    TaskState,
     utc_now,
 )
 from .planner import (
@@ -465,7 +468,7 @@ class AuthenticatedCoverageRunner:
             for error in result.errors:
                 context.add_error(error)
             for item in prepared:
-                context.complete_attempt(item.step.id)
+                context.complete_aggregate_attempt(item.step.id)
             for conclusion in result.conclusions:
                 context.add_conclusion(conclusion)
 
@@ -490,6 +493,32 @@ class AuthenticatedCoverageRunner:
             raise PairedError("coverage request does not match its configured peer")
         if set(request.profiles) != set(self._config.coverage_profiles):
             raise PairedError("coverage request profiles do not match the fixed local coverage configuration")
+        if not any(
+            item not in {CoverageProfile.ARP, CoverageProfile.IPV6_ND}
+            for item in request.profiles
+        ):
+            observations = await self._local_link_evidence(request)
+            instant = utc_now()
+            return TaskResult(
+                task_id="coverage-local-link",
+                task_kind="coverage",
+                direction=Direction.LOCAL,
+                target=request.address,
+                state=TaskState.COMPLETED,
+                started_at=instant,
+                ended_at=instant,
+                requested_config={
+                    "coverage_manifest": _COVERAGE_MANIFEST,
+                    "profiles": [item.value for item in request.profiles],
+                    "network_io": False,
+                },
+                effective_config=EffectiveConfig(
+                    "coverage-local-link-v2", (request.address,), True,
+                    "coverage-local-link-v2", {},
+                ),
+                progress=Progress(0, 0, 0),
+                observations=observations,
+            )
         correlation = "c" + secrets.token_urlsafe(16)
         forward, reverse = correlation + "f", correlation + "r"
         # Each profile has its configured receive window.  Control must remain
@@ -1844,7 +1873,17 @@ def coverage_assessment_plan(config: PeerConfig, request: CoverageAssessmentRequ
         raise PairedError("coverage request does not match its configured peer")
     active = tuple(item for item in request.profiles if item not in {CoverageProfile.ARP, CoverageProfile.IPV6_ND})
     if not active:
-        raise PairedError("coverage assessment selected no active profiles")
+        preview = preview_probe_plan(
+            specs=(ProbeSpec(
+                ProbeKind.LOCAL_SNAPSHOT, "local", timeout_s=0.1,
+                cost=StepCost(1, 0, 0, logical_packets=0, max_observations=4,
+                              max_output_bytes=32_768),
+            ),),
+            grant=ScopeGrant(networks=(), attested=True, purpose="configured paired local-link coverage assessment", expires_at=utc_now() + timedelta(seconds=1)),
+            profile="coverage-assessment-v2",
+            limits=replace(DEFAULT_LIMITS, max_duration_s=1),
+        )
+        return authorize_plan(preview)
     sender_plan = _coverage_runtime_plan(config, "assessment-plan", active)
     specs: list[ProbeSpec] = []
     for attempt in (1, 2):
