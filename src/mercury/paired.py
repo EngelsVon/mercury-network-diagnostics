@@ -395,7 +395,8 @@ class CoverageAssessmentRequest:
             type(item) is not CoverageProfile for item in self.profiles
         ) or len(set(self.profiles)) != len(self.profiles):
             raise PairedError("coverage profiles must be a non-empty unique sequence")
-        unsupported = set(self.profiles) - CoverageReceiverService._IMPLEMENTED
+        supported = set(CoverageReceiverService._IMPLEMENTED) | {CoverageProfile.TCP_CONNECT}
+        unsupported = set(self.profiles) - supported
         if unsupported:
             raise PairedError("coverage assessment profiles need configured receivers")
         object.__setattr__(self, "profiles", tuple(self.profiles))
@@ -438,6 +439,8 @@ class AuthenticatedCoverageRunner:
             capabilities = (await self._request("capabilities", correlation, control_expires_at, {})).body.get("capabilities")
             remote_ports = _coverage_capability_ports(capabilities)
             local_ports = {item.profile: item.port for item in self._config.receiver_profiles}
+            if CoverageProfile.TCP_TAGGED in local_ports:
+                local_ports[CoverageProfile.TCP_CONNECT] = local_ports[CoverageProfile.TCP_TAGGED]
             for profile in request.profiles:
                 if remote_ports.get(profile) != local_ports.get(profile):
                     raise PairedError("configured peers do not agree on a coverage receiver profile/port")
@@ -577,7 +580,7 @@ def _coverage_capability_ports(value: object) -> dict[CoverageProfile, int]:
             profile, port = CoverageProfile(parts[1]), int(parts[2])
         except (ValueError, TypeError):
             continue
-        if profile in CoverageReceiverService._IMPLEMENTED and 1 <= port <= 65_535:
+        if profile in CoverageReceiverService._IMPLEMENTED | {CoverageProfile.TCP_CONNECT} and 1 <= port <= 65_535:
             ports[profile] = port
     return ports
 
@@ -1382,14 +1385,16 @@ class ConfiguredCoverageExecutor:
             raise PairedError("coverage role is invalid")
         selected = tuple(item.profile for item in self._config.receiver_profiles) if profiles is None else profiles
         configured = {item.profile: item for item in self._config.receiver_profiles}
-        if not selected or any(profile not in configured for profile in selected):
+        if not selected or any(profile not in configured and not (
+            profile is CoverageProfile.TCP_CONNECT and CoverageProfile.TCP_TAGGED in configured
+        ) for profile in selected):
             raise PairedError("coverage profile is not locally configured")
         plan = _coverage_runtime_plan(self._config, correlation, selected)
         service = TaskService(self._history)
 
         async def runner(context: TaskContext) -> None:
             for step, profile in zip(plan.preview.steps, selected, strict=True):
-                await self._send(context, step, configured[profile], correlation)
+                await self._send(context, step, _coverage_receiver_for(configured, profile), profile, correlation)
 
         return await service.run(
             plan, runner, task_kind="coverage",
@@ -1397,14 +1402,21 @@ class ConfiguredCoverageExecutor:
         )
 
     async def _send(
-        self, context: TaskContext, step: ProbeStep, receiver: ReceiverProfileConfig, correlation: str,
+        self, context: TaskContext, step: ProbeStep, receiver: ReceiverProfileConfig,
+        profile: CoverageProfile, correlation: str,
     ) -> None:
         prepared = await context.admit(step.id)
         started = context.wall_clock()
-        profile = receiver.profile
         kind, disposition = EvidenceKind.EXECUTION_ERROR, Disposition.ERROR
         try:
-            if profile is CoverageProfile.TCP_TAGGED:
+            if profile is CoverageProfile.TCP_CONNECT:
+                reader, writer = await asyncio.open_connection(
+                    self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
+                )
+                writer.close()
+                await writer.wait_closed()
+                kind, disposition = EvidenceKind.TCP_CONNECTED, Disposition.POSITIVE
+            elif profile is CoverageProfile.TCP_TAGGED:
                 reader, writer = await asyncio.open_connection(
                     self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
                 )
@@ -1488,12 +1500,27 @@ class ConfiguredCoverageExecutor:
                     writer.close()
                     await writer.wait_closed()
                 kind, disposition = EvidenceKind.SSH_BANNER, Disposition.POSITIVE
+            elif profile is CoverageProfile.TLS_HANDSHAKE:
+                reader, writer = await asyncio.open_connection(
+                    self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
+                    ssl=_coverage_tls_client_context(receiver), server_hostname=receiver.tls_server_name,
+                )
+                try:
+                    await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                kind, disposition = EvidenceKind.TLS_HANDSHAKE, Disposition.POSITIVE
             else:
                 kind, disposition = EvidenceKind.UNSUPPORTED, Disposition.UNAVAILABLE
         except TimeoutError:
             kind, disposition = EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE
+        except ssl.SSLCertVerificationError:
+            kind, disposition = EvidenceKind.TLS_VERIFICATION_FAILED, Disposition.NEGATIVE
+        except ssl.SSLError:
+            kind, disposition = EvidenceKind.TLS_HANDSHAKE_FAILED, Disposition.NEGATIVE
         except OSError as exc:
-            kind, disposition = _paired_socket_failure(exc, udp=profile is CoverageProfile.UDP_TAGGED)
+            kind, disposition = _paired_socket_failure(exc, udp=profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP})
         ended = context.wall_clock()
         context.record(Observation(
             id=f"coverage-send-{correlation[-12:]}-{profile.value}",
@@ -1511,11 +1538,13 @@ def _coverage_runtime_plan(config: PeerConfig, correlation: str, profiles: tuple
     receivers = {item.profile: item for item in config.receiver_profiles}
     specs: list[ProbeSpec] = []
     for profile in profiles:
-        receiver = receivers[profile]
+        receiver = _coverage_receiver_for(receivers, profile)
         if profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP}:
             kind, transport = ProbeKind.UDP_EXCHANGE, Transport.UDP
         elif profile is CoverageProfile.HTTP_EXCHANGE:
             kind, transport = ProbeKind.HTTP_EXCHANGE, Transport.TCP
+        elif profile is CoverageProfile.TLS_HANDSHAKE:
+            kind, transport = ProbeKind.TLS_HANDSHAKE, Transport.TCP
         else:
             kind, transport = ProbeKind.TCP_CONNECT, Transport.TCP
         tag_length = len(f"MRC2:{profile.value}:{correlation}".encode("ascii"))
@@ -1526,22 +1555,33 @@ def _coverage_runtime_plan(config: PeerConfig, correlation: str, profiles: tuple
         specs.append(ProbeSpec(
             kind, config.peer_addresses[0], address=config.peer_addresses[0], port=receiver.port,
             transport=transport, timeout_s=receiver.timeout_s, payload_metadata=payload,
-            server_name=config.peer_addresses[0] if kind is ProbeKind.HTTP_EXCHANGE else None,
+            server_name=(receiver.tls_server_name if kind is ProbeKind.TLS_HANDSHAKE else config.peer_addresses[0]) if kind in {ProbeKind.TLS_HANDSHAKE, ProbeKind.HTTP_EXCHANGE} else None,
             http_scheme="http" if kind is ProbeKind.HTTP_EXCHANGE else None,
             cost=StepCost(1, 1 if transport is Transport.UDP else 0, tag_length, logical_packets=1),
         ))
     grant = ScopeGrant(
         networks=(ipaddress.ip_network(f"{config.peer_addresses[0]}/{32 if ':' not in config.peer_addresses[0] else 128}"),),
-        ports=tuple(receiver.port for receiver in (receivers[item] for item in profiles)),
+        ports=tuple(_coverage_receiver_for(receivers, item).port for item in profiles),
         transports=tuple(sorted({"udp" if item in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP} else "tcp" for item in profiles})),
         attested=True, purpose="configured paired coverage sender",
-        expires_at=utc_now() + timedelta(seconds=max(receiver.timeout_s for receiver in (receivers[item] for item in profiles))),
+        expires_at=utc_now() + timedelta(seconds=max(_coverage_receiver_for(receivers, item).timeout_s for item in profiles)),
     )
     preview = preview_probe_plan(
         specs=tuple(specs), grant=grant, profile=_COVERAGE_MANIFEST,
-        limits=replace(DEFAULT_LIMITS, max_duration_s=max(1, math.ceil(sum(receivers[item].timeout_s for item in profiles)))),
+        limits=replace(DEFAULT_LIMITS, max_duration_s=max(1, math.ceil(sum(_coverage_receiver_for(receivers, item).timeout_s for item in profiles)))),
     )
     return authorize_plan(preview)
+
+
+def _coverage_receiver_for(
+    configured: dict[CoverageProfile, ReceiverProfileConfig], profile: CoverageProfile,
+) -> ReceiverProfileConfig:
+    receiver = configured.get(profile)
+    if receiver is None and profile is CoverageProfile.TCP_CONNECT:
+        receiver = configured.get(CoverageProfile.TCP_TAGGED)
+    if receiver is None:
+        raise PairedError("coverage profile is not locally configured")
+    return receiver
 
 
 def _runtime_pair_tag(correlation: str, left: str, right: str, tcp_port: int, udp_port: int) -> bytes:
@@ -1796,9 +1836,12 @@ class CoverageLeaseRegistry:
         try:
             for receiver in self._config.receiver_profiles:
                 expiry = min(requested_expiry, now + timedelta(seconds=receiver.timeout_s))
+                context = self._ssl_context
+                if receiver.profile is CoverageProfile.TLS_HANDSHAKE and context is None:
+                    context = _coverage_tls_server_context(receiver)
                 service = CoverageReceiverService(CoverageReceiverLease(
                     receiver, correlation_id, self._config.peer_addresses[0], expiry,
-                ), ssl_context=self._ssl_context)
+                ), ssl_context=context)
                 await service.start()
                 services.append(service)
         except Exception:
@@ -1817,10 +1860,14 @@ class CoverageLeaseRegistry:
 
     @property
     def capabilities(self) -> tuple[str, ...]:
-        return (_COVERAGE_MANIFEST,) + tuple(
+        entries = [
             f"{_COVERAGE_MANIFEST}:{receiver.profile.value}:{receiver.port}"
             for receiver in self._config.receiver_profiles
-        )
+        ]
+        tcp = next((item for item in self._config.receiver_profiles if item.profile is CoverageProfile.TCP_TAGGED), None)
+        if tcp is not None:
+            entries.append(f"{_COVERAGE_MANIFEST}:{CoverageProfile.TCP_CONNECT.value}:{tcp.port}")
+        return (_COVERAGE_MANIFEST, *entries)
 
     def receipts_for(self, correlation_id: str) -> tuple[CoverageReceipt, ...] | None:
         services = self._services.get(correlation_id)
@@ -1850,6 +1897,26 @@ def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | N
     header = query[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00"
     answer = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x00\x00\x04\x7f\x00\x00\x01"
     return header + question + answer
+
+
+def _coverage_tls_server_context(receiver: ReceiverProfileConfig) -> ssl.SSLContext:
+    if receiver.profile is not CoverageProfile.TLS_HANDSHAKE or receiver.tls_certificate_path is None or receiver.tls_key_path is None:
+        raise PairedError("TLS coverage receiver needs configured certificate material")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        context.load_cert_chain(receiver.tls_certificate_path, receiver.tls_key_path)
+    except (OSError, ssl.SSLError) as exc:
+        raise PairedError("TLS coverage certificate configuration is unusable") from exc
+    return context
+
+
+def _coverage_tls_client_context(receiver: ReceiverProfileConfig) -> ssl.SSLContext:
+    if receiver.profile is not CoverageProfile.TLS_HANDSHAKE or receiver.tls_ca_path is None:
+        raise PairedError("TLS coverage receiver needs configured CA material")
+    try:
+        return ssl.create_default_context(cafile=str(receiver.tls_ca_path))
+    except (OSError, ssl.SSLError) as exc:
+        raise PairedError("TLS coverage CA configuration is unusable") from exc
 
 
 def _dns_coverage_query(correlation: str) -> bytes:

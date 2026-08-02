@@ -77,6 +77,10 @@ class ReceiverProfileConfig:
     bind_host: str
     port: int
     timeout_s: float
+    tls_certificate_path: Path | None = None
+    tls_key_path: Path | None = None
+    tls_ca_path: Path | None = None
+    tls_server_name: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.profile) is not CoverageProfile or self.profile not in _RECEIVER_CAPABLE_PROFILES:
@@ -93,6 +97,19 @@ class ReceiverProfileConfig:
             raise PeerConfigurationError("receiver timeout is invalid")
         object.__setattr__(self, "bind_host", target.canonical)
         object.__setattr__(self, "timeout_s", float(self.timeout_s))
+        tls_values = (
+            self.tls_certificate_path, self.tls_key_path,
+            self.tls_ca_path, self.tls_server_name,
+        )
+        if self.profile is CoverageProfile.TLS_HANDSHAKE:
+            if any(value is not None for value in tls_values) and not all(value is not None for value in tls_values):
+                raise PeerConfigurationError("TLS receiver needs configured certificate, key, CA, and server name")
+            if all(value is not None for value in tls_values) and any(not isinstance(value, Path) for value in tls_values[:3]):
+                raise PeerConfigurationError("TLS receiver paths are invalid")
+            if all(value is not None for value in tls_values) and (not isinstance(self.tls_server_name, str) or not self.tls_server_name or len(self.tls_server_name) > 255):
+                raise PeerConfigurationError("TLS receiver server name is invalid")
+        elif any(value is not None for value in tls_values):
+            raise PeerConfigurationError("non-TLS receiver cannot define TLS material")
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +166,11 @@ class PeerConfig:
             raise PeerConfigurationError("receiver profile table is invalid")
         if len({(item.bind_host, item.port) for item in receivers}) != len(receivers):
             raise PeerConfigurationError("receiver ports must not overlap")
+        if any(
+            item.profile is CoverageProfile.TLS_HANDSHAKE and item.tls_certificate_path is None
+            for item in receivers
+        ):
+            raise PeerConfigurationError("TLS receiver needs configured certificate material")
         object.__setattr__(self, "receiver_profiles", tuple(sorted(receivers, key=lambda item: item.profile.value)))
         for pin in self.peer_pins:
             if not isinstance(pin, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", pin):
@@ -262,15 +284,34 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
         raise PeerConfigurationError("receiver configuration fields are invalid")
     receiver_profiles: list[ReceiverProfileConfig] = []
     for receiver in receivers:
-        if not isinstance(receiver, dict) or set(receiver) != {"profile", "bind_host", "port", "timeout_s"}:
+        if not isinstance(receiver, dict) or set(receiver) - {"profile", "bind_host", "port", "timeout_s", "tls"} or {
+            "profile", "bind_host", "port", "timeout_s"
+        } - set(receiver):
             raise PeerConfigurationError("receiver configuration fields are invalid")
         try:
             profile = CoverageProfile(receiver["profile"])
         except (TypeError, ValueError) as exc:
             raise PeerConfigurationError("receiver profile is invalid") from exc
-        receiver_profiles.append(ReceiverProfileConfig(
-            profile=profile, bind_host=receiver["bind_host"], port=receiver["port"], timeout_s=receiver["timeout_s"],
-        ))
+        tls = receiver.get("tls")
+        if profile is CoverageProfile.TLS_HANDSHAKE:
+            if not isinstance(tls, dict) or set(tls) != {"certificate_path", "key_path", "ca_path", "server_name"}:
+                raise PeerConfigurationError("TLS receiver configuration fields are invalid")
+            def tls_path(name: str) -> Path:
+                item = tls[name]
+                if not isinstance(item, str) or not item or len(item) > 4096:
+                    raise PeerConfigurationError("TLS receiver path is invalid")
+                return (path.parent / item).resolve() if not Path(item).is_absolute() else Path(item)
+            receiver_profiles.append(ReceiverProfileConfig(
+                profile=profile, bind_host=receiver["bind_host"], port=receiver["port"], timeout_s=receiver["timeout_s"],
+                tls_certificate_path=tls_path("certificate_path"), tls_key_path=tls_path("key_path"),
+                tls_ca_path=tls_path("ca_path"), tls_server_name=tls["server_name"],
+            ))
+        elif tls is not None:
+            raise PeerConfigurationError("non-TLS receiver cannot define TLS material")
+        else:
+            receiver_profiles.append(ReceiverProfileConfig(
+                profile=profile, bind_host=receiver["bind_host"], port=receiver["port"], timeout_s=receiver["timeout_s"],
+            ))
     return PeerConfig(
         identity=value["identity"], bind_host=value["bind_host"], control_port=value["control_port"],
         certificate_path=path_value("certificate_path"), key_path=path_value("key_path"),

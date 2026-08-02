@@ -19,8 +19,8 @@ from .models import TaskResult
 from .peer import PeerAgent, PeerClient, PeerConfig, load_peer_config
 from .planner import InternalMappingRequest, ProbePlan, authorize_internal_mapping
 from .paired import (
-    AuthenticatedPairedRunner, ConfiguredPairedExecutor, CoverageLeaseRegistry, PairedError, PairedPeerService,
-    PairedRequest,
+    AuthenticatedCoverageRunner, AuthenticatedPairedRunner, ConfiguredCoverageExecutor, ConfiguredPairedExecutor,
+    CoverageAssessmentRequest, CoverageLeaseRegistry, PairedError, PairedPeerService, PairedRequest,
 )
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import BASIC_V1, DiagnosisRequest, compile_diagnosis
@@ -71,6 +71,7 @@ class MercuryApplication:
         peer_agent_factory=PeerAgent,
         paired_executor: Callable[[PairedRequest], Awaitable[TaskResult]] | None = None,
         paired_runner: AuthenticatedPairedRunner | None = None,
+        coverage_runner: AuthenticatedCoverageRunner | None = None,
         paired_peer_service: PairedPeerService | None = None,
         passive_discovery_collector=collect_passive_discovery,
         discovery_executor=run_discovery,
@@ -87,6 +88,7 @@ class MercuryApplication:
         self.peer_agent_factory = peer_agent_factory
         self.paired_executor = paired_executor
         self.paired_runner = paired_runner
+        self.coverage_runner = coverage_runner
         self.paired_peer_service = paired_peer_service
         self.passive_discovery_collector = passive_discovery_collector
         self.discovery_executor = discovery_executor
@@ -209,6 +211,7 @@ class MercuryApplication:
             self.paired_peer_service = PairedPeerService(
                 ConfiguredPairedExecutor(config, self.history) if config.paired_enabled else unavailable_role,
                 coverage_registry=CoverageLeaseRegistry(config) if config.coverage_enabled else None,
+                coverage_sender_executor=ConfiguredCoverageExecutor(config, self.history) if config.coverage_enabled else None,
             )
         return await self.start_agent(config)
 
@@ -245,6 +248,23 @@ class MercuryApplication:
             result = await runner.run(request)
         if type(result) is not TaskResult:
             raise RuntimeError("paired executor returned an invalid result")
+        return result
+
+    async def run_coverage(self, request: CoverageAssessmentRequest) -> TaskResult:
+        """Dispatch the fixed two-endpoint coverage matrix through the facade."""
+        if type(request) is not CoverageAssessmentRequest or not request.authorized:
+            raise PolicyError("coverage assessment requires explicit authorization attestation")
+        if self.coverage_runner is not None:
+            result = await self.coverage_runner.run(request)
+        else:
+            config = load_peer_config(Path(request.config_path), unsafe_development=request.unsafe_development)
+            if not config.coverage_enabled:
+                raise PolicyError("peer configuration does not define coverage receivers")
+            if request.identity != config.identity or request.address != config.peer_addresses[0]:
+                raise PolicyError("coverage request does not match its operator-provisioned peer configuration")
+            result = await AuthenticatedCoverageRunner(PeerClient(config), config, self.history).run(request)
+        if type(result) is not TaskResult:
+            raise RuntimeError("coverage runner returned an invalid result")
         return result
 
 

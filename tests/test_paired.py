@@ -517,6 +517,7 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
         token_path = Path(temporary.name) / "token"
         token_path.write_text("controlled-loopback-token", encoding="utf-8")
         tcp_port, udp_port = _port(socket.SOCK_STREAM), _port(socket.SOCK_DGRAM)
+        tls_fixture = Path(__file__).parent / "fixtures" / "tls"
         receivers = (
             ReceiverProfileConfig(CoverageProfile.TCP_TAGGED, "127.0.0.1", tcp_port, 1.0),
             ReceiverProfileConfig(CoverageProfile.UDP_TAGGED, "127.0.0.1", udp_port, 1.0),
@@ -524,6 +525,12 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
             ReceiverProfileConfig(CoverageProfile.DNS_TCP, "127.0.0.1", _port(socket.SOCK_STREAM), 1.0),
             ReceiverProfileConfig(CoverageProfile.HTTP_EXCHANGE, "127.0.0.1", _port(socket.SOCK_STREAM), 1.0),
             ReceiverProfileConfig(CoverageProfile.SSH_BANNER, "127.0.0.1", _port(socket.SOCK_STREAM), 1.0),
+            ReceiverProfileConfig(
+                CoverageProfile.TLS_HANDSHAKE, "127.0.0.1", _port(socket.SOCK_STREAM), 1.0,
+                tls_certificate_path=tls_fixture / "localhost-cert.pem",
+                tls_key_path=tls_fixture / "localhost-key.pem", tls_ca_path=tls_fixture / "test-ca.pem",
+                tls_server_name="localhost",
+            ),
         )
         remote_config = PeerConfig(
             identity="coverage-pair", bind_host="127.0.0.1", control_port=0,
@@ -562,27 +569,27 @@ class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
                 identity="coverage-pair", address="127.0.0.1", config_path="peer.json",
                 timeout_s=1.0, authorized=True,
                 profiles=(
-                    CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+                    CoverageProfile.TCP_CONNECT, CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
                     CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP,
-                    CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER,
+                    CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER, CoverageProfile.TLS_HANDSHAKE,
                 ),
                 unsafe_development=True,
             ))
         finally:
             await remote_app.stop_agent()
         rows = coverage_matrix(result, requested=(
-            CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+            CoverageProfile.TCP_CONNECT, CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
             CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP,
-            CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER,
+            CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER, CoverageProfile.TLS_HANDSHAKE,
         ))
         self.assertEqual({row.direction for row in rows}, {"A-to-B", "B-to-A"})
         self.assertTrue(all(row.outcome is CoverageOutcome.CANDIDATE_CARRIER for row in rows))
         self.assertTrue(any(item.evidence_kind is EvidenceKind.PEER_OBSERVED_ARRIVAL for item in result.observations))
         self.assertTrue({
             CoverageProfile.DNS_UDP.value, CoverageProfile.DNS_TCP.value,
-            CoverageProfile.HTTP_EXCHANGE.value, CoverageProfile.SSH_BANNER.value,
+            CoverageProfile.HTTP_EXCHANGE.value, CoverageProfile.SSH_BANNER.value, CoverageProfile.TLS_HANDSHAKE.value,
         }.issubset({str(item.detail.get("coverage_profile")) for item in result.observations}))
-        self.assertTrue({EvidenceKind.DNS_QUERY, EvidenceKind.HTTP_RESPONSE, EvidenceKind.SSH_BANNER}.issubset(
+        self.assertTrue({EvidenceKind.DNS_QUERY, EvidenceKind.HTTP_RESPONSE, EvidenceKind.SSH_BANNER, EvidenceKind.TLS_HANDSHAKE}.issubset(
             {item.evidence_kind for item in result.observations}
         ))
 
