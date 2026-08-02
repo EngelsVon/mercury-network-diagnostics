@@ -210,6 +210,8 @@ class DocumentationTests(unittest.TestCase):
             "Operator release smoke",
             "does not scan unowned",
             "Internal mapping and two-endpoint coverage",
+            "Coverage receiver configuration",
+            "coverage_profiles",
             "nmap_sctp_init",
             "not_applicable",
         ):

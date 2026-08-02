@@ -118,6 +118,34 @@ Start the agent on both endpoints, then invoke `mercury paired --config ...
 --authorized`. Non-loopback operation requires mTLS, a configured certificate
 pin, and a token. `--unsafe-development` is loopback-only.
 
+### Coverage receiver configuration
+
+For two-endpoint coverage, each reciprocal peer file adds a local `receivers`
+table and an explicit `coverage_profiles` list. Receiver ports are fixed by the
+administrator; the coverage command cannot provide a listener address, port,
+payload, or receiver profile to the other peer.
+
+```json
+{
+  "receivers": [
+    {"profile": "tcp_tagged", "bind_host": "172.26.4.10", "port": 45101, "timeout_s": 3},
+    {"profile": "udp_tagged", "bind_host": "172.26.4.10", "port": 45102, "timeout_s": 3},
+    {"profile": "dns_udp", "bind_host": "172.26.4.10", "port": 45103, "timeout_s": 3},
+    {"profile": "dns_tcp", "bind_host": "172.26.4.10", "port": 45104, "timeout_s": 3},
+    {"profile": "http_exchange", "bind_host": "172.26.4.10", "port": 45105, "timeout_s": 3},
+    {"profile": "ssh_banner", "bind_host": "172.26.4.10", "port": 45106, "timeout_s": 3}
+  ],
+  "coverage_profiles": ["tcp_connect", "tcp_tagged", "udp_tagged", "dns_udp", "dns_tcp", "http_exchange", "ssh_banner", "icmp_echo", "arp", "ipv6_nd"]
+}
+```
+
+Add `tls_handshake` only with its own receiver entry and a fixed `tls` object
+containing certificate, key, CA, and server-name paths. The normal peer-control
+fields—local certificate/key/CA paths, token path, one fixed peer address, and
+the peer certificate pin—remain required for a non-loopback agent. Start each
+endpoint with `mercury agent --config peer.json`; then invoke `coverage` from
+one endpoint using that same configured identity and peer address.
+
 ## Discovery and routes
 
 Start with passive discovery; it reads local IPv4 interface, route, neighbor,
