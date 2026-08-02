@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mercury diagnostics</title>
+  <title>Mercury internal coverage</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <h1>Mercury diagnostics</h1>
-    <p id="safety">Loopback-only by default. Active work requires authorization.</p>
+    <h1>Mercury internal coverage</h1>
+    <p id="safety">Private-network only. Active work requires authorization and records finite evidence.</p>
   </header>
   <main>
     <section aria-labelledby="status-heading">
@@ -66,6 +66,18 @@
       <p id="task-state" aria-live="polite"></p>
       <button id="cancel-button" type="button" disabled>Cancel active task</button>
       <pre id="task-output" aria-live="polite"></pre>
+    </section>
+    <section id="coverage-result" hidden aria-labelledby="coverage-result-heading">
+      <h2 id="coverage-result-heading">Coverage evidence and gaps</h2>
+      <p id="coverage-result-note">Rows describe only emitted profiles, ports, directions, and the recorded time window.</p>
+      <table>
+        <thead><tr><th scope="col">Profile</th><th scope="col">Direction</th><th scope="col">Port</th><th scope="col">Outcome</th><th scope="col">Evidence</th><th scope="col">Provenance</th></tr></thead>
+        <tbody id="coverage-result-body"></tbody>
+      </table>
+      <h3>Candidate carriers</h3>
+      <ul id="candidate-carriers"></ul>
+      <h3>Coverage gaps</h3>
+      <ul id="coverage-gaps"></ul>
     </section>
     <section aria-labelledby="evidence-heading">
       <h2 id="evidence-heading">Evidence semantics</h2>

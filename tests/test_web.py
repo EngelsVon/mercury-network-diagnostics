@@ -236,6 +236,11 @@ class WebServerTests(unittest.TestCase):
         self.assertIn('src="/static/app.js" defer', html)
         self.assertIn('value="mapping"', html)
         self.assertIn('value="coverage"', html)
+        self.assertIn('id="coverage-result"', html)
+        self.assertIn('id="candidate-carriers"', html)
+        script = (Path(__file__).parents[1] / "src" / "mercury" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function renderCoverage", script)
+        self.assertIn("coverage gap", script)
         self.assertNotIn("onclick=", html)
 
     def test_history_routes_use_the_broker_facade_and_redact_by_default(self) -> None:

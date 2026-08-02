@@ -112,7 +112,7 @@ def _add_json_option(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = MercuryArgumentParser(
         prog="mercury",
-        description="Evidence-first, authorized network diagnostics.",
+        description="Evidence-first, private-network analysis and coverage diagnostics.",
     )
     parser.add_argument(
         "--version", action="version", version=f"Mercury {__version__}"

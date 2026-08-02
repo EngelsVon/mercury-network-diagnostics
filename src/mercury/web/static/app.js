@@ -14,6 +14,38 @@ async function request(path, options = {}) {
   return value;
 }
 function taskHeaders() { return { "Content-Type": "application/json", "X-Mercury-CSRF": csrf }; }
+function cell(row, value) { const element = document.createElement("td"); element.textContent = value; row.appendChild(element); }
+function listItem(list, value) { const item = document.createElement("li"); item.textContent = value; list.appendChild(item); }
+function renderCoverage(result) {
+  const section = document.querySelector("#coverage-result");
+  const body = document.querySelector("#coverage-result-body");
+  const candidates = document.querySelector("#candidate-carriers");
+  const gaps = document.querySelector("#coverage-gaps");
+  body.replaceChildren(); candidates.replaceChildren(); gaps.replaceChildren();
+  const profiles = Array.isArray(result.requested_config?.coverage_profiles) ? result.requested_config.coverage_profiles : [];
+  const observations = Array.isArray(result.observations) ? result.observations : [];
+  if (!profiles.length) { section.hidden = true; return; }
+  section.hidden = false;
+  for (const profile of profiles) {
+    const matching = observations.filter((item) => item.detail?.coverage_profile === profile || item.detail?.native_profile === profile);
+    const directions = result.task_kind === "coverage" ? ["outbound", "reverse"] : ["outbound"];
+    for (const direction of directions) {
+      const evidence = matching.filter((item) => item.direction === direction || item.detail?.coverage_role === direction);
+      const row = document.createElement("tr");
+      const first = evidence[0];
+      const port = first?.detail?.receiver_destination_port ?? first?.detail?.port ?? "—";
+      const outcome = evidence.length ? evidence.map((item) => item.disposition).join(", ") : "coverage gap";
+      cell(row, profile); cell(row, direction); cell(row, String(port)); cell(row, outcome);
+      cell(row, evidence.map((item) => item.evidence_kind).join(", ") || "no recorded evidence");
+      cell(row, evidence.map((item) => item.source).filter(Boolean).join(", ") || "not observed");
+      body.appendChild(row);
+      if (!evidence.length) listItem(gaps, `${profile} ${direction}: no recorded evidence in this assessment.`);
+      if (evidence.some((item) => item.disposition === "positive")) listItem(candidates, `${profile} ${direction}: positive evidence was recorded.`);
+    }
+  }
+  if (!candidates.children.length) listItem(candidates, "No positive candidate carrier was recorded in this finite assessment.");
+  if (!gaps.children.length) listItem(gaps, "No profile-direction row was empty; inspect unavailable and inconclusive evidence above.");
+}
 async function start(body) {
   const value = await request("/api/tasks", { method: "POST", headers: taskHeaders(), body: JSON.stringify(body) });
   activeTask = value.task_id;
@@ -27,6 +59,7 @@ async function poll() {
     state.textContent = `Task ${value.state}`;
     if (value.result || value.error) {
       output.textContent = JSON.stringify(value.result || value.error, null, 2);
+      if (value.result) renderCoverage(value.result);
       activeTask = null;
       document.querySelector("#cancel-button").disabled = true;
       return;
