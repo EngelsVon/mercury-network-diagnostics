@@ -81,6 +81,33 @@ class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(PeerConfigurationError, "fields"):
                 load_peer_config(config_path)
 
+    async def test_tls_receiver_file_configuration_requires_fixed_data_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "peer.json"
+            config_path.write_text(json.dumps({
+                "identity": "loopback-peer", "bind_host": "127.0.0.1", "control_port": 0,
+                "peer_pins": [], "peer_addresses": ["127.0.0.1"], "token_path": "token.txt",
+                "receivers": [{
+                    "profile": "tls_handshake", "bind_host": "127.0.0.1", "port": 4443, "timeout_s": 1.0,
+                    "tls": {
+                        "certificate_path": str(FIXTURE_DIR / "localhost-cert.pem"),
+                        "key_path": str(FIXTURE_DIR / "localhost-key.pem"),
+                        "ca_path": str(FIXTURE_DIR / "test-ca.pem"), "server_name": "localhost",
+                    },
+                }],
+            }), encoding="utf-8")
+            config = load_peer_config(config_path, unsafe_development=True)
+            receiver = config.receiver_profiles[0]
+            self.assertEqual(receiver.tls_server_name, "localhost")
+            self.assertEqual(receiver.tls_ca_path, FIXTURE_DIR / "test-ca.pem")
+            config_path.write_text(json.dumps({
+                "identity": "loopback-peer", "bind_host": "127.0.0.1", "control_port": 0,
+                "peer_pins": [], "peer_addresses": ["127.0.0.1"],
+                "receivers": [{"profile": "tls_handshake", "bind_host": "127.0.0.1", "port": 4443, "timeout_s": 1.0}],
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(PeerConfigurationError, "TLS receiver"):
+                load_peer_config(config_path, unsafe_development=True)
+
     def _config(self, default_token_path: Path, **changes: object) -> PeerConfig:
         values: dict[str, object] = {
             "identity": "loopback-peer",
