@@ -45,7 +45,11 @@
             </div>
             <p data-i18n="status-copy">Collect interfaces, routes, DNS, neighbour and native-capability evidence without sending probes.</p>
             <button id="status-button" class="button button-secondary" type="button" data-i18n="status-button">Collect passive status</button>
-            <pre id="status-output" class="console" aria-live="polite" data-i18n="status-empty">Awaiting collection.</pre>
+            <div id="status-result" class="result-overview compact-result" hidden>
+              <div id="status-summary" class="result-metrics"></div>
+              <ul id="status-conclusions" class="conclusion-list"></ul>
+              <details class="raw-result"><summary data-i18n="raw-result">Show raw JSON evidence</summary><pre id="status-output" class="console" aria-live="polite" data-i18n="status-empty">Awaiting collection.</pre></details>
+            </div>
           </section>
 
           <section class="panel semantics-panel" aria-labelledby="evidence-heading">
@@ -151,6 +155,15 @@
               </div>
             </div>
 
+            <details class="coverage-guide form-block-wide" data-kinds="coverage" open>
+              <summary data-i18n="coverage-guide-title">How to fill a two-endpoint assessment</summary>
+              <ol>
+                <li data-i18n="coverage-guide-one">Start a Mercury agent on both endpoints using their reciprocal peer configuration files.</li>
+                <li data-i18n="coverage-guide-two">Configuration path: the local endpoint's peer JSON file. Identity and peer address must exactly match values already fixed in that file.</li>
+                <li data-i18n="coverage-guide-three">Profiles: choose only profiles enabled in that peer configuration. Use the local and peer CIDRs only to explain whether ARP/ND is applicable.</li>
+              </ol>
+            </details>
+
             <div class="form-footer">
               <label class="authorization"><input id="authorized" name="authorized" type="checkbox"> <span data-i18n="authorized-label">I am authorized to test this target</span></label>
               <button class="button button-primary" type="submit" data-i18n="start-task">Start task</button>
@@ -162,7 +175,13 @@
             <p id="task-state" data-i18n="task-ready">Ready for a new task.</p>
             <button id="cancel-button" class="button button-quiet" type="button" disabled data-i18n="cancel-task">Cancel active task</button>
           </div>
-          <pre id="task-output" class="console task-console" aria-live="polite" data-i18n="task-output">Task output will appear here.</pre>
+          <section id="task-result" class="result-overview" hidden aria-labelledby="task-result-heading">
+            <h3 id="task-result-heading" data-i18n="result-heading">Result at a glance</h3>
+            <div id="task-summary" class="result-metrics"></div>
+            <ul id="task-conclusions" class="conclusion-list"></ul>
+            <ul id="task-warnings" class="warning-list"></ul>
+            <details class="raw-result"><summary data-i18n="raw-result">Show raw JSON evidence</summary><pre id="task-output" class="console task-console" aria-live="polite" data-i18n="task-output">Task output will appear here.</pre></details>
+          </section>
         </section>
       </div>
 

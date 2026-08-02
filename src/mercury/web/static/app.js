@@ -19,6 +19,7 @@ const translations = {
     "history-eyebrow": "Local record", "history-title": "History and reports", "history-button": "Refresh completed history", "compare-left-label": "Earlier task ID", "compare-right-label": "Later task ID", "compare-button": "Compare tasks", "report-task-label": "Task ID for redacted HTML report", "report-button": "Open redacted report", "history-empty": "No history requested yet.",
     "context-empty": "Choose a task to show its inputs.", "context-diagnose": "Check one selected private endpoint.", "context-discover-passive": "Read local network facts without probes.", "context-discover": "Map one authorized private CIDR with a fixed profile.", "context-trace": "Collect bounded route evidence for one private target.", "context-paired": "Run the configured reciprocal peer diagnostic.", "context-mapping": "Map selected private ranges with bounded rate and duration.", "context-coverage": "Test configured receiver profiles in both directions.",
     "language-toggle": "Switch to Chinese", "task-state": "Task {state}", "coverage-gap": "coverage gap", "no-evidence": "no recorded evidence", "not-observed": "not observed", "gap-detail": "{profile} {direction}: no recorded evidence in this assessment.", "candidate-detail": "{profile} {direction}: positive evidence was recorded.", "no-candidates": "No positive candidate carrier was recorded in this finite assessment.", "no-gaps": "No profile-direction row was empty; inspect unavailable and inconclusive evidence above.",
+    "coverage-guide-title": "How to fill a two-endpoint assessment", "coverage-guide-one": "Start a Mercury agent on both endpoints using their reciprocal peer configuration files.", "coverage-guide-two": "Configuration path: the local endpoint's peer JSON file. Identity and peer address must exactly match values already fixed in that file.", "coverage-guide-three": "Profiles: choose only profiles enabled in that peer configuration. Use the local and peer CIDRs only to explain whether ARP/ND is applicable.", "result-heading": "Result at a glance", "raw-result": "Show raw JSON evidence", "metric-state": "Task state", "metric-target": "Target", "metric-progress": "Completed", "metric-evidence": "Evidence items", "metric-positive": "Positive", "metric-inconclusive": "Inconclusive / unavailable", "metric-none": "Not recorded", "conclusion-limitations": "Limitations: {value}", "warnings-heading": "Operator notes",
   },
   zh: {
     "skip": "跳至任务工作区", "brand-eyebrow": "内网网络诊断", "scope": "私有网络范围已启用",
@@ -32,6 +33,7 @@ const translations = {
     "history-eyebrow": "本地记录", "history-title": "历史与报告", "history-button": "刷新已完成历史", "compare-left-label": "较早任务 ID", "compare-right-label": "较晚任务 ID", "compare-button": "比较任务", "report-task-label": "生成脱敏 HTML 报告的任务 ID", "report-button": "打开脱敏报告", "history-empty": "尚未请求历史记录。",
     "context-empty": "选择一种任务以显示所需输入。", "context-diagnose": "检查一个选定的私有端点。", "context-discover-passive": "不发送探测包，读取本地网络事实。", "context-discover": "用固定配置文件测绘一个已授权的私有 CIDR。", "context-trace": "为一个私有目标采集受限的路由证据。", "context-paired": "运行已配置的双向对端诊断。", "context-mapping": "在受限速率与时长内测绘选定的私有网段。", "context-coverage": "在两个方向测试已配置的接收端配置文件。",
     "language-toggle": "切换为英文", "task-state": "任务状态：{state}", "coverage-gap": "覆盖缺口", "no-evidence": "未记录证据", "not-observed": "未观测到", "gap-detail": "{profile} {direction}：本次评估未记录证据。", "candidate-detail": "{profile} {direction}：记录到了肯定证据。", "no-candidates": "本次有限评估未记录到肯定的候选承载通道。", "no-gaps": "没有配置文件-方向行为空；请检查上方不可用及不确定证据。",
+    "coverage-guide-title": "双端覆盖评估怎么填", "coverage-guide-one": "先在两个端点分别用互为对端的配置文件启动 Mercury agent。", "coverage-guide-two": "配置文件路径填写本机端的 peer JSON 文件；身份标识和对端地址必须与该文件中已固定的值完全一致。", "coverage-guide-three": "配置文件只选择 peer 配置中已经启用的项目；本机和对端 CIDR 仅用于判断 ARP/ND 是否适用。", "result-heading": "结果概览", "raw-result": "查看原始 JSON 证据", "metric-state": "任务状态", "metric-target": "目标", "metric-progress": "已完成", "metric-evidence": "证据条目", "metric-positive": "肯定证据", "metric-inconclusive": "不确定／不可用", "metric-none": "未记录", "conclusion-limitations": "限制条件：{value}", "warnings-heading": "操作提示",
   },
 };
 let language = "en";
@@ -77,6 +79,54 @@ async function request(path, options = {}) {
 function taskHeaders() { return { "Content-Type": "application/json", "X-Mercury-CSRF": csrf }; }
 function cell(row, value) { const element = document.createElement("td"); element.textContent = value; row.appendChild(element); }
 function listItem(list, value) { const item = document.createElement("li"); item.textContent = value; list.appendChild(item); }
+function metric(container, value, label, warning = false) {
+  const item = document.createElement("div");
+  item.className = `result-metric${warning ? " warning" : ""}`;
+  const strong = document.createElement("strong");
+  strong.textContent = value;
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  item.append(strong, caption); container.appendChild(item);
+}
+function renderHumanResult(result, prefix) {
+  const section = document.querySelector(`#${prefix}-result`);
+  const summary = document.querySelector(`#${prefix}-summary`);
+  const conclusions = document.querySelector(`#${prefix}-conclusions`);
+  const warnings = document.querySelector(`#${prefix}-warnings`);
+  if (!section || !summary || !conclusions) return;
+  section.hidden = false;
+  summary.replaceChildren(); conclusions.replaceChildren(); if (warnings) warnings.replaceChildren();
+  const observations = Array.isArray(result.observations) ? result.observations : [];
+  const positive = observations.filter((item) => item.disposition === "positive").length;
+  const inconclusive = observations.filter((item) => ["inconclusive", "unavailable", "permission_denied", "error"].includes(item.disposition)).length;
+  const progress = result.progress || {};
+  metric(summary, result.state || text("metric-none"), text("metric-state"));
+  metric(summary, result.target || text("metric-none"), text("metric-target"));
+  metric(summary, `${progress.completed ?? 0} / ${progress.total ?? 0}`, text("metric-progress"));
+  metric(summary, String(observations.length), text("metric-evidence"));
+  metric(summary, String(positive), text("metric-positive"), positive > 0);
+  metric(summary, String(inconclusive), text("metric-inconclusive"), inconclusive > 0);
+  const resultConclusions = Array.isArray(result.conclusions) ? result.conclusions : [];
+  for (const conclusion of resultConclusions) {
+    const item = document.createElement("li");
+    const title = document.createElement("strong"); title.textContent = conclusion.title || text("metric-none");
+    const summaryText = document.createElement("span"); summaryText.textContent = conclusion.summary || "";
+    item.append(title, summaryText);
+    if (Array.isArray(conclusion.limitations) && conclusion.limitations.length) {
+      const limitations = document.createElement("small");
+      limitations.textContent = text("conclusion-limitations", { value: conclusion.limitations.join("; ") });
+      item.appendChild(limitations);
+    }
+    conclusions.appendChild(item);
+  }
+  if (!conclusions.children.length) listItem(conclusions, text("metric-none"));
+  if (!warnings) return;
+  const notes = [
+    ...(Array.isArray(result.errors) ? result.errors : []),
+    ...(Array.isArray(result.effective_config?.warnings) ? result.effective_config.warnings : []),
+  ];
+  for (const note of notes) listItem(warnings, note);
+}
 function renderCoverage(result) {
   const section = document.querySelector("#coverage-result");
   const body = document.querySelector("#coverage-result-body");
@@ -123,7 +173,10 @@ async function poll() {
       const destination = currentTask.presentation === "status" ? statusOutput : output;
       destination.textContent = JSON.stringify(value.result || value.error, null, 2);
       destination.dataset.populated = "true";
-      if (value.result) renderCoverage(value.result);
+      if (value.result) {
+        renderHumanResult(value.result, currentTask.presentation === "status" ? "status" : "task");
+        renderCoverage(value.result);
+      }
       activeTask = null;
       document.querySelector("#cancel-button").disabled = true;
       return;
