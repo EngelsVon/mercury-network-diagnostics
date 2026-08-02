@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from mercury.models import CoverageProfile
-from mercury.planner import BudgetError, InternalMappingRequest, compile_internal_mapping
+from mercury.planner import BudgetError, InternalMappingRequest, authorize_internal_mapping, compile_internal_mapping
 from mercury.policy import PolicyError
 
 
@@ -34,6 +34,7 @@ class InternalMappingRequestTests(unittest.TestCase):
         self.assertEqual(len(preview.steps), 2)
         self.assertEqual(preview.limits.max_global_rate, 5)
         self.assertEqual(preview.profile, "internal-mapping-v1")
+        self.assertEqual(authorize_internal_mapping(request).preview.digest, preview.digest)
 
     def test_large_range_is_rejected_before_host_expansion(self) -> None:
         request = InternalMappingRequest(

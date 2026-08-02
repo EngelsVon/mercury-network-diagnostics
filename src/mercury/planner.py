@@ -206,6 +206,14 @@ def compile_internal_mapping(
     return preview_probe_plan(specs=tuple(specs), grant=grant, profile="internal-mapping-v1", limits=effective)
 
 
+def authorize_internal_mapping(
+    request: InternalMappingRequest, *, limits: BudgetLimits = DEFAULT_LIMITS,
+    now: datetime | None = None,
+) -> "ProbePlan":
+    """Bind a canonical mapping request to the normal immutable plan digest."""
+    return authorize_plan(compile_internal_mapping(request, limits=limits), now=now)
+
+
 @dataclass(frozen=True, slots=True)
 class WorkEstimate:
     hosts: int
@@ -1499,6 +1507,7 @@ __all__ = [
     "Transport",
     "WorkEstimate",
     "authorize_plan",
+    "authorize_internal_mapping",
     "compile_internal_mapping",
     "confirmation_phrase",
     "preview_plan",
