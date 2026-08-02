@@ -179,8 +179,9 @@ class PairedPeerService:
     listener use; the authenticated peer never supplies any of those values.
     """
 
-    def __init__(self, role_executor: RoleExecutor) -> None:
+    def __init__(self, role_executor: RoleExecutor, *, coverage_registry: "CoverageLeaseRegistry | None" = None) -> None:
         self._role_executor = role_executor
+        self._coverage_registry = coverage_registry
         self._results: dict[str, TaskResult] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -194,11 +195,22 @@ class PairedPeerService:
         }
 
     async def capabilities(self, _frame: PeerFrame) -> dict[str, object]:
-        return {"capabilities": [_PAIRED_MANIFEST]}
+        capabilities = [_PAIRED_MANIFEST]
+        if self._coverage_registry is not None:
+            capabilities.append(_COVERAGE_MANIFEST)
+        return {"capabilities": capabilities}
 
     async def submit(self, frame: PeerFrame) -> dict[str, object]:
         body = frame.body
-        if body.get("manifest") != _PAIRED_MANIFEST or body.get("role") not in {_ROLE_A_TO_B, _ROLE_B_TO_A}:
+        manifest, role = body.get("manifest"), body.get("role")
+        if role not in {_ROLE_A_TO_B, _ROLE_B_TO_A}:
+            raise PairedError("paired manifest was not admitted")
+        if manifest == _COVERAGE_MANIFEST:
+            if self._coverage_registry is None:
+                raise PairedError("coverage manifest was not admitted")
+            await self._coverage_registry.start(frame.correlation_id, frame.expires_at)
+            return {"status": "accepted"}
+        if manifest != _PAIRED_MANIFEST:
             raise PairedError("paired manifest was not admitted")
         if frame.correlation_id in self._tasks or frame.correlation_id in self._results:
             raise PairedError("paired correlation is already active")
@@ -235,6 +247,8 @@ class PairedPeerService:
         if task is not None:
             task.cancel()
         self._results.pop(frame.correlation_id, None)
+        if self._coverage_registry is not None:
+            await self._coverage_registry.stop(frame.correlation_id)
         return {"status": "cancelled"}
 
 
@@ -1272,6 +1286,45 @@ class _CoverageDatagram(asyncio.DatagramProtocol):
         self._service._receive_datagram(data, address)
 
 
+class CoverageLeaseRegistry:
+    """Peer-control-owned lifecycle for the receiver table of one endpoint."""
+
+    def __init__(self, config: PeerConfig, *, ssl_context: ssl.SSLContext | None = None) -> None:
+        if type(config) is not PeerConfig or not config.coverage_enabled:
+            raise PairedError("coverage registry requires configured receivers")
+        self._config, self._ssl_context = config, ssl_context
+        self._services: dict[str, tuple[CoverageReceiverService, ...]] = {}
+
+    async def start(self, correlation_id: str, requested_expiry: datetime) -> None:
+        if correlation_id in self._services:
+            raise PairedError("coverage correlation is already active")
+        if type(requested_expiry) is not datetime or requested_expiry.tzinfo is None:
+            raise PairedError("coverage frame expiry is invalid")
+        now = utc_now()
+        services: list[CoverageReceiverService] = []
+        try:
+            for receiver in self._config.receiver_profiles:
+                expiry = min(requested_expiry, now + timedelta(seconds=receiver.timeout_s))
+                service = CoverageReceiverService(CoverageReceiverLease(
+                    receiver, correlation_id, self._config.peer_addresses[0], expiry,
+                ), ssl_context=self._ssl_context)
+                await service.start()
+                services.append(service)
+        except Exception:
+            for service in services:
+                await service.stop()
+            raise
+        self._services[correlation_id] = tuple(services)
+
+    async def stop(self, correlation_id: str) -> None:
+        for service in self._services.pop(correlation_id, ()):
+            await service.stop()
+
+    @property
+    def receipts(self) -> tuple[CoverageReceipt, ...]:
+        return tuple(receipt for services in self._services.values() for service in services for receipt in service.receipts)
+
+
 def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | None:
     """Validate one normal A query for `<correlation>.mercury.test`."""
     if len(query) < 17 or query[2:4] != b"\x01\x00":
@@ -1287,7 +1340,7 @@ def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | N
 
 
 __all__ = [
-    "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
+    "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageLeaseRegistry", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
     "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "icmp_coverage_evidence", "local_link_applicability", "paired_matrix",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

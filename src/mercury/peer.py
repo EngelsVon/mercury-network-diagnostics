@@ -430,6 +430,8 @@ class PeerFrame:
             if body not in (
                 {"manifest": "paired-v1", "role": "A-to-B"},
                 {"manifest": "paired-v1", "role": "B-to-A"},
+                {"manifest": "coverage-v2", "role": "A-to-B"},
+                {"manifest": "coverage-v2", "role": "B-to-A"},
                 {"status": "accepted"},
             ):
                 raise PeerProtocolError("peer paired submit body is invalid")

@@ -22,6 +22,7 @@ from mercury.paired import (
     ConfiguredPairedExecutor,
     CoverageReceiverLease,
     CoverageReceiverService,
+    CoverageLeaseRegistry,
     PairedEndpoint,
     PairedError,
     PairedLease,
@@ -38,7 +39,7 @@ from mercury.paired import (
     is_valid_udp_tag,
     paired_matrix,
 )
-from mercury.peer import PeerClient, PeerConfig, PeerConfigurationError, ReceiverProfileConfig
+from mercury.peer import PeerClient, PeerConfig, PeerConfigurationError, PeerFrame, ReceiverProfileConfig
 from mercury.planner import (
     PayloadMetadata,
     ProbeKind,
@@ -296,6 +297,29 @@ class UdpProfileTests(unittest.TestCase):
 
 
 class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authenticated_coverage_manifest_provisions_only_local_receiver_table(self) -> None:
+        port = _port(socket.SOCK_STREAM)
+        config = PeerConfig(
+            identity="coverage-peer", bind_host="127.0.0.1", control_port=0,
+            certificate_path=None, key_path=None, ca_path=None, token_path=None,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+            receiver_profiles=(ReceiverProfileConfig(CoverageProfile.TCP_TAGGED, "127.0.0.1", port, 1.0),),
+        )
+        registry = CoverageLeaseRegistry(config)
+        service = PairedPeerService(lambda _role, _correlation: _role_result("unused", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED), coverage_registry=registry)
+        now = utc_now()
+        frame = PeerFrame(
+            1, "submit", "coverage-correlation", "coverage-peer", now, now + timedelta(seconds=1), "nonce-coverage", {"manifest": "coverage-v2", "role": "B-to-A"},
+        )
+        self.assertEqual(await service.submit(frame), {"status": "accepted"})
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"MRC2:tcp_tagged:coverage-correlation")
+        await writer.drain()
+        self.assertEqual(await reader.readexactly(5), b"MRC2A")
+        writer.close()
+        await writer.wait_closed()
+        await service.cancel(frame)
+
     async def test_tls_receiver_requires_a_configured_certificate_and_records_handshake(self) -> None:
         port = _port(socket.SOCK_STREAM)
         receiver = ReceiverProfileConfig(CoverageProfile.TLS_HANDSHAKE, "127.0.0.1", port, 1.0)
