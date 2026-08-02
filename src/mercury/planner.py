@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import math
 import re
 from dataclasses import dataclass, field, fields
@@ -24,7 +25,7 @@ from .policy import (
     recheck_resolution,
     resolve_for_plan,
 )
-from .models import ProbeKind
+from .models import CoverageProfile, ProbeKind
 
 
 class BudgetError(ValueError):
@@ -38,6 +39,56 @@ class ConfirmationError(PermissionError):
 class Transport(StrEnum):
     TCP = "tcp"
     UDP = "udp"
+
+
+_PRIVATE_V4 = (
+    ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"), ipaddress.ip_network("127.0.0.0/8"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class InternalMappingRequest:
+    """Finite, canonical operator input for one private multi-range assessment."""
+
+    cidrs: tuple[str, ...]
+    profiles: tuple[CoverageProfile, ...]
+    ports: tuple[int, ...]
+    rate: int
+    concurrency: int
+    duration_s: int
+    authorized: bool
+
+    def __post_init__(self) -> None:
+        if type(self.authorized) is not bool or not self.authorized:
+            raise PolicyError("internal mapping requires explicit authorization attestation")
+        if not isinstance(self.cidrs, (tuple, list)) or not self.cidrs:
+            raise PolicyError("internal mapping requires private IPv4 CIDRs")
+        networks: list[ipaddress.IPv4Network] = []
+        for value in self.cidrs:
+            try:
+                network = ipaddress.ip_network(value, strict=False)
+            except ValueError as exc:
+                raise PolicyError("internal mapping CIDR is invalid") from exc
+            if not isinstance(network, ipaddress.IPv4Network) or not any(network.subnet_of(allowed) for allowed in _PRIVATE_V4):
+                raise PolicyError("internal mapping CIDR is outside the private scope")
+            networks.append(network)
+        canonical = tuple(str(item) for item in ipaddress.collapse_addresses(networks))
+        object.__setattr__(self, "cidrs", canonical)
+        if not isinstance(self.profiles, (tuple, list)) or not self.profiles or any(type(item) is not CoverageProfile for item in self.profiles):
+            raise BudgetError("internal mapping profiles are invalid")
+        if len(set(self.profiles)) != len(self.profiles):
+            raise BudgetError("internal mapping profiles must be unique")
+        object.__setattr__(self, "profiles", tuple(sorted(self.profiles, key=lambda item: item.value)))
+        if not isinstance(self.ports, (tuple, list)) or not self.ports or any(type(port) is not int or not 1 <= port <= 65535 for port in self.ports):
+            raise BudgetError("internal mapping ports are invalid")
+        object.__setattr__(self, "ports", tuple(sorted(set(self.ports))))
+        if type(self.rate) is not int or not 1 <= self.rate <= ABSOLUTE_CEILINGS.max_global_rate:
+            raise BudgetError("internal mapping rate is invalid")
+        if type(self.concurrency) is not int or not 1 <= self.concurrency <= ABSOLUTE_CEILINGS.max_concurrency:
+            raise BudgetError("internal mapping concurrency is invalid")
+        if type(self.duration_s) is not int or not 0 <= self.duration_s <= ABSOLUTE_CEILINGS.max_duration_s:
+            raise BudgetError("internal mapping duration is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1391,6 +1442,7 @@ __all__ = [
     "BudgetError",
     "BudgetLimits",
     "ConfirmationError",
+    "InternalMappingRequest",
     "PayloadMetadata",
     "PlanPreview",
     "PreparedStep",
