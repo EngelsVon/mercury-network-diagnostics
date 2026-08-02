@@ -19,6 +19,8 @@ from mercury.models import (
 from mercury.paired import (
     AuthenticatedPairedRunner,
     ConfiguredPairedExecutor,
+    CoverageReceiverLease,
+    CoverageReceiverService,
     PairedEndpoint,
     PairedError,
     PairedLease,
@@ -28,11 +30,12 @@ from mercury.paired import (
     PairedRunner,
     encode_tcp_tag,
     encode_udp_tag,
+    encode_coverage_tag,
     coverage_matrix,
     is_valid_udp_tag,
     paired_matrix,
 )
-from mercury.peer import PeerClient, PeerConfig, PeerConfigurationError
+from mercury.peer import PeerClient, PeerConfig, PeerConfigurationError, ReceiverProfileConfig
 from mercury.planner import (
     PayloadMetadata,
     ProbeKind,
@@ -286,6 +289,67 @@ class UdpProfileTests(unittest.TestCase):
         self.assertFalse(is_valid_udp_tag(lease, payload + b"x"))
         self.assertFalse(is_valid_udp_tag(lease, b"MRP1"))
         self.assertFalse(is_valid_udp_tag(lease, b"x" * 1_401))
+
+
+class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_http_and_ssh_receivers_require_the_fixed_correlation(self) -> None:
+        for profile in (CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER):
+            with self.subTest(profile=profile):
+                port = _port(socket.SOCK_STREAM)
+                receiver = ReceiverProfileConfig(profile, "127.0.0.1", port, 1.0)
+                service = CoverageReceiverService(CoverageReceiverLease(
+                    receiver, "coverage-correlation", "127.0.0.1", utc_now() + timedelta(seconds=2),
+                ))
+                await service.start()
+                try:
+                    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                    if profile is CoverageProfile.HTTP_EXCHANGE:
+                        writer.write(b"GET /mercury/coverage-correlation HTTP/1.1\r\nHost: test\r\nX-Mercury-Correlation: coverage-correlation\r\n\r\n")
+                        await writer.drain()
+                        self.assertTrue((await reader.readuntil(b"\r\n\r\n")).startswith(b"HTTP/1.1 204"))
+                    else:
+                        self.assertEqual(await reader.readline(), b"SSH-2.0-MercuryCoverage\r\n")
+                        writer.write(b"SSH-2.0-Mercury-coverage-correlation\r\n")
+                        await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+                    await asyncio.sleep(0)
+                    self.assertEqual(len(service.receipts), 1)
+                finally:
+                    await service.stop()
+
+    async def test_tcp_and_udp_receivers_accept_only_the_fixed_lease_tag(self) -> None:
+        for profile, kind in ((CoverageProfile.TCP_TAGGED, socket.SOCK_STREAM), (CoverageProfile.UDP_TAGGED, socket.SOCK_DGRAM)):
+            with self.subTest(profile=profile):
+                port = _port(kind)
+                receiver = ReceiverProfileConfig(profile, "127.0.0.1", port, 1.0)
+                service = CoverageReceiverService(CoverageReceiverLease(
+                    receiver, "coverage-correlation", "127.0.0.1", utc_now() + timedelta(seconds=2),
+                ))
+                await service.start()
+                try:
+                    tag = encode_coverage_tag(service.lease)
+                    if profile is CoverageProfile.TCP_TAGGED:
+                        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                        writer.write(tag)
+                        await writer.drain()
+                        self.assertEqual(await reader.readexactly(5), b"MRC2A")
+                        writer.close()
+                        await writer.wait_closed()
+                    else:
+                        protocol = _UdpClient()
+                        transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                            lambda: protocol, remote_addr=("127.0.0.1", port),
+                        )
+                        try:
+                            transport.sendto(tag)
+                            self.assertEqual(await asyncio.wait_for(protocol.reply, 1), b"MRC2A")
+                        finally:
+                            transport.close()
+                    self.assertEqual(len(service.receipts), 1)
+                    self.assertEqual(service.receipts[0].payload_length, len(tag))
+                finally:
+                    await service.stop()
 
 
 class MatrixTests(unittest.IsolatedAsyncioTestCase):

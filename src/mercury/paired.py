@@ -24,6 +24,7 @@ from .models import (
     Conclusion,
     CoverageOutcome,
     CoverageProfile,
+    CoverageReceipt,
     Direction,
     Disposition,
     EvidenceKind,
@@ -37,11 +38,12 @@ from .planner import (
     DEFAULT_LIMITS, PayloadMetadata, ProbePlan, ProbeSpec, ProbeStep, StepCost, Transport,
     authorize_plan, preview_probe_plan, validate_plan,
 )
-from .peer import PEER_PROTOCOL_VERSION, PeerClient, PeerConfig, PeerError, PeerFrame
+from .peer import PEER_PROTOCOL_VERSION, PeerClient, PeerConfig, PeerError, PeerFrame, ReceiverProfileConfig
 from .policy import ScopeGrant
 from .tasks import TaskContext, TaskService
 
 _TCP_REPLY = b"MRP1A"
+_COVERAGE_REPLY = b"MRC2A"
 _MAX_PAYLOAD = 1_400
 _MATRIX_ORDER = {"local_snapshot": 0, "system_dns": 1, "native_path": 2, "tcp_connect": 3, "udp_exchange": 4, "tls_handshake": 5, "http_exchange": 6}
 _PAIRED_MANIFEST = "paired-v1"
@@ -1062,8 +1064,166 @@ def _paired_observation(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class CoverageReceiverLease:
+    """Short-lived authority for one fixed, locally configured receiver."""
+
+    receiver: ReceiverProfileConfig
+    correlation_id: str
+    authenticated_source: str
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if type(self.receiver) is not ReceiverProfileConfig:
+            raise PairedError("coverage receiver must be locally configured")
+        if not isinstance(self.correlation_id, str) or not self.correlation_id.isascii() or not 1 <= len(self.correlation_id) <= 64:
+            raise PairedError("coverage correlation is invalid")
+        object.__setattr__(self, "authenticated_source", _address(self.authenticated_source, "coverage authenticated source"))
+        if type(self.expires_at) is not datetime or self.expires_at.tzinfo is None or self.expires_at <= utc_now():
+            raise PairedError("coverage lease expiry is invalid")
+
+    def assert_current(self, now: datetime) -> None:
+        if type(now) is not datetime or now.tzinfo is None or now >= self.expires_at:
+            raise PairedError("coverage lease has expired")
+
+
+def encode_coverage_tag(lease: CoverageReceiverLease) -> bytes:
+    """Return the only data-plane tag accepted by a coverage receiver."""
+    return f"MRC2:{lease.receiver.profile.value}:{lease.correlation_id}".encode("ascii")
+
+
+class CoverageReceiverService:
+    """Receive fixed TCP/UDP/HTTP/SSH coverage records for a bounded lease.
+
+    The service has no caller-specified bind, payload, or reply knob.  It is
+    deliberately a small adapter used by the trusted peer coordinator; DNS and
+    TLS require their dedicated standards-compliant adapters and are not
+    silently emulated here.
+    """
+
+    _IMPLEMENTED = frozenset({
+        CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+        CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER,
+    })
+
+    def __init__(self, lease: CoverageReceiverLease, *, now: Callable[[], datetime] = utc_now) -> None:
+        if type(lease) is not CoverageReceiverLease:
+            raise PairedError("coverage receiver requires a lease")
+        self.lease, self._now = lease, now
+        self._tcp: asyncio.AbstractServer | None = None
+        self._udp: asyncio.DatagramTransport | None = None
+        self._expiry: asyncio.Task[None] | None = None
+        self._receipts: list[CoverageReceipt] = []
+        self._claimed = False
+
+    @property
+    def receipts(self) -> tuple[CoverageReceipt, ...]:
+        return tuple(self._receipts)
+
+    async def start(self) -> None:
+        lease = self.lease
+        lease.assert_current(self._now())
+        if lease.receiver.profile not in self._IMPLEMENTED:
+            raise PairedError(f"coverage receiver profile is unavailable: {lease.receiver.profile.value}")
+        if lease.receiver.profile is CoverageProfile.UDP_TAGGED:
+            transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                lambda: _CoverageDatagram(self), local_addr=(lease.receiver.bind_host, lease.receiver.port),
+            )
+            self._udp = transport
+        else:
+            self._tcp = await asyncio.start_server(
+                self._handle_tcp, host=lease.receiver.bind_host, port=lease.receiver.port,
+            )
+        self._expiry = asyncio.create_task(self._expire(), name=f"mercury:coverage:{lease.correlation_id}")
+
+    async def stop(self) -> None:
+        if self._expiry is not None and self._expiry is not asyncio.current_task():
+            self._expiry.cancel()
+        self._expiry = None
+        if self._udp is not None:
+            self._udp.close()
+            self._udp = None
+        if self._tcp is not None:
+            server, self._tcp = self._tcp, None
+            server.close()
+            await server.wait_closed()
+
+    async def _expire(self) -> None:
+        await asyncio.sleep(max(0, (self.lease.expires_at - self._now()).total_seconds()))
+        await self.stop()
+
+    async def _handle_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            if not self._source_matches(writer.get_extra_info("peername")):
+                return
+            self.lease.assert_current(self._now())
+            profile = self.lease.receiver.profile
+            tag = encode_coverage_tag(self.lease)
+            async with asyncio.timeout(self.lease.receiver.timeout_s):
+                if profile is CoverageProfile.HTTP_EXCHANGE:
+                    request = await reader.readuntil(b"\r\n\r\n")
+                    expected = b"GET /mercury/" + self.lease.correlation_id.encode("ascii") + b" HTTP/1.1\r\n"
+                    if not request.startswith(expected) or b"X-Mercury-Correlation: " + self.lease.correlation_id.encode("ascii") not in request:
+                        return
+                    writer.write(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                elif profile is CoverageProfile.SSH_BANNER:
+                    writer.write(b"SSH-2.0-MercuryCoverage\r\n")
+                    await writer.drain()
+                    if await reader.readline() != b"SSH-2.0-Mercury-" + self.lease.correlation_id.encode("ascii") + b"\r\n":
+                        return
+                else:
+                    if await reader.readexactly(len(tag)) != tag:
+                        return
+                    writer.write(_COVERAGE_REPLY)
+                await writer.drain()
+            self._record(writer.get_extra_info("peername"), tag, "acknowledged")
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, OSError, TimeoutError, PairedError):
+            return
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (OSError, RuntimeError):
+                pass
+
+    def _receive_datagram(self, data: bytes, address: tuple[str, int]) -> None:
+        if self._claimed or not self._source_matches(address) or data != encode_coverage_tag(self.lease):
+            return
+        try:
+            self.lease.assert_current(self._now())
+        except PairedError:
+            return
+        assert self._udp is not None
+        self._udp.sendto(_COVERAGE_REPLY, address)
+        self._record(address, data, "acknowledged")
+
+    def _record(self, peer: object, payload: bytes, reply_result: str) -> None:
+        if self._claimed or not isinstance(peer, tuple) or len(peer) < 2 or not isinstance(peer[0], str) or type(peer[1]) is not int:
+            return
+        self._claimed = True
+        now = self._now()
+        self._receipts.append(CoverageReceipt(
+            correlation_id=self.lease.correlation_id, profile=self.lease.receiver.profile,
+            source_address=peer[0], source_port=peer[1], destination_port=self.lease.receiver.port,
+            arrived_at=now, payload_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
+            payload_length=len(payload), direction=Direction.INBOUND,
+            provenance="mercury.coverage_receiver", reply_result=reply_result,
+        ))
+
+    def _source_matches(self, peer: object) -> bool:
+        return isinstance(peer, tuple) and bool(peer) and isinstance(peer[0], str) and _address(peer[0], "coverage packet source") == self.lease.authenticated_source
+
+
+class _CoverageDatagram(asyncio.DatagramProtocol):
+    def __init__(self, service: CoverageReceiverService) -> None:
+        self._service = service
+
+    def datagram_received(self, data: bytes, address: tuple[str, int]) -> None:
+        self._service._receive_datagram(data, address)
+
+
 __all__ = [
-    "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageMatrixRow", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
-    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "paired_matrix",
+    "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
+    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "paired_matrix",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]
