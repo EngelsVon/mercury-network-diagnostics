@@ -18,7 +18,7 @@ from .inventory import collect_status
 from .models import TaskResult
 from .peer import PeerAgent, PeerClient, PeerConfig, load_peer_config
 from .paired import (
-    AuthenticatedPairedRunner, ConfiguredPairedExecutor, PairedPeerService,
+    AuthenticatedPairedRunner, ConfiguredPairedExecutor, CoverageLeaseRegistry, PairedError, PairedPeerService,
     PairedRequest,
 )
 from .policy import PolicyError, ScopeGrant, parse_target
@@ -191,9 +191,12 @@ class MercuryApplication:
     ) -> PeerAgent:
         """Load operator-provisioned paths and start the shared control agent."""
         config = load_peer_config(path, unsafe_development=unsafe_development)
-        if self.paired_peer_service is None and config.paired_enabled:
+        if self.paired_peer_service is None and (config.paired_enabled or config.coverage_enabled):
+            async def unavailable_role(_role: str, _correlation: str) -> TaskResult:
+                raise PairedError("paired-v1 is not configured on this coverage receiver")
             self.paired_peer_service = PairedPeerService(
-                ConfiguredPairedExecutor(config, self.history)
+                ConfiguredPairedExecutor(config, self.history) if config.paired_enabled else unavailable_role,
+                coverage_registry=CoverageLeaseRegistry(config) if config.coverage_enabled else None,
             )
         return await self.start_agent(config)
 
