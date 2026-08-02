@@ -4,9 +4,28 @@ let activeTask = null;
 const state = document.querySelector("#task-state");
 const output = document.querySelector("#task-output");
 const historyOutput = document.querySelector("#history-output");
+const statusOutput = document.querySelector("#status-output");
+const taskContext = document.querySelector("#task-context");
+const taskDescriptions = {
+  diagnose: "Check one selected private endpoint.",
+  discover_passive: "Read local network facts without probes.",
+  discover: "Map one authorized private CIDR with a fixed profile.",
+  trace: "Collect bounded route evidence for one private target.",
+  paired: "Run the configured reciprocal peer diagnostic.",
+  mapping: "Map selected private ranges with bounded rate and duration.",
+  coverage: "Test configured receiver profiles in both directions.",
+};
 function field(name) { return document.querySelector(name).value.trim(); }
 function csv(name) { return field(name) ? field(name).split(",").map((value) => value.trim()).filter(Boolean) : []; }
 function integer(name, fallback) { const value = Number(field(name)); return Number.isInteger(value) ? value : fallback; }
+function syncTaskForm() {
+  const kind = field("#kind");
+  taskContext.textContent = taskDescriptions[kind] || "Choose a task to show its inputs.";
+  for (const group of document.querySelectorAll("[data-kinds]")) {
+    const kinds = group.dataset.kinds.split(",");
+    group.hidden = !kinds.includes(kind);
+  }
+}
 async function request(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", ...options });
   const value = await response.json();
@@ -46,19 +65,21 @@ function renderCoverage(result) {
   if (!candidates.children.length) listItem(candidates, "No positive candidate carrier was recorded in this finite assessment.");
   if (!gaps.children.length) listItem(gaps, "No profile-direction row was empty; inspect unavailable and inconclusive evidence above.");
 }
-async function start(body) {
+async function start(body, presentation = "task") {
   const value = await request("/api/tasks", { method: "POST", headers: taskHeaders(), body: JSON.stringify(body) });
-  activeTask = value.task_id;
+  activeTask = { id: value.task_id, presentation };
   document.querySelector("#cancel-button").disabled = false;
   poll();
 }
 async function poll() {
   if (!activeTask) return;
   try {
-    const value = await request(`/api/tasks/${activeTask}`);
+    const currentTask = activeTask;
+    const value = await request(`/api/tasks/${currentTask.id}`);
     state.textContent = `Task ${value.state}`;
     if (value.result || value.error) {
-      output.textContent = JSON.stringify(value.result || value.error, null, 2);
+      const destination = currentTask.presentation === "status" ? statusOutput : output;
+      destination.textContent = JSON.stringify(value.result || value.error, null, 2);
       if (value.result) renderCoverage(value.result);
       activeTask = null;
       document.querySelector("#cancel-button").disabled = true;
@@ -72,8 +93,10 @@ async function poll() {
 }
 document.addEventListener("DOMContentLoaded", async () => {
   try { csrf = (await request("/api/bootstrap")).csrf; } catch (error) { state.textContent = error.message; }
+  syncTaskForm();
+  document.querySelector("#kind").addEventListener("change", syncTaskForm);
   document.querySelector("#status-button").addEventListener("click", async () => {
-    try { await start({ kind: "status" }); } catch (error) { state.textContent = error.message; }
+    try { await start({ kind: "status" }, "status"); } catch (error) { statusOutput.textContent = error.message; }
   });
   document.querySelector("#task-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -106,7 +129,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.querySelector("#cancel-button").addEventListener("click", async () => {
     if (!activeTask) return;
-    try { await request(`/api/tasks/${activeTask}`, { method: "DELETE", headers: { "X-Mercury-CSRF": csrf } }); } catch (error) { state.textContent = error.message; }
+    try { await request(`/api/tasks/${activeTask.id}`, { method: "DELETE", headers: { "X-Mercury-CSRF": csrf } }); } catch (error) { state.textContent = error.message; }
   });
   document.querySelector("#history-button").addEventListener("click", async () => {
     try { historyOutput.textContent = JSON.stringify(await request("/api/history"), null, 2); } catch (error) { historyOutput.textContent = error.message; }

@@ -238,8 +238,12 @@ class WebServerTests(unittest.TestCase):
         self.assertIn('value="coverage"', html)
         self.assertIn('id="coverage-result"', html)
         self.assertIn('id="candidate-carriers"', html)
+        self.assertIn('id="task-context"', html)
+        self.assertIn('class="skip-link"', html)
         script = (Path(__file__).parents[1] / "src" / "mercury" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("function renderCoverage", script)
+        self.assertIn("function syncTaskForm", script)
+        self.assertIn("statusOutput", script)
         self.assertIn("coverage gap", script)
         self.assertNotIn("onclick=", html)
 
