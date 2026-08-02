@@ -41,6 +41,7 @@ from .planner import (
 )
 from .peer import PEER_PROTOCOL_VERSION, PeerClient, PeerConfig, PeerError, PeerFrame, ReceiverProfileConfig
 from .policy import ScopeGrant
+from .platform.common import CommandOutcome, CommandResult
 from .tasks import TaskContext, TaskService
 
 _TCP_REPLY = b"MRP1A"
@@ -531,6 +532,23 @@ def local_link_applicability(left_network: str, right_network: str) -> CoverageO
     except ValueError as exc:
         raise PairedError("local-link networks are invalid") from exc
     return CoverageOutcome.SKIPPED if left.version == right.version and left.overlaps(right) else CoverageOutcome.NOT_APPLICABLE
+
+
+def icmp_coverage_evidence(result: CommandResult) -> tuple[EvidenceKind, Disposition, str]:
+    """Classify the bounded native ICMP command without parsing locale-specific text."""
+    if type(result) is not CommandResult:
+        raise PairedError("ICMP coverage requires a bounded command result")
+    if result.outcome is CommandOutcome.SUCCESS:
+        return EvidenceKind.NATIVE_PING_REPLY, Disposition.POSITIVE, "native_echo_reply"
+    if result.outcome is CommandOutcome.TIMEOUT:
+        return EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE, "native_echo_timeout"
+    if result.outcome is CommandOutcome.PERMISSION_DENIED:
+        return EvidenceKind.PERMISSION_DENIED, Disposition.UNAVAILABLE, "native_permission_denied"
+    if result.outcome is CommandOutcome.MISSING_TOOL:
+        return EvidenceKind.UNSUPPORTED, Disposition.UNAVAILABLE, "native_icmp_unavailable"
+    if result.outcome is CommandOutcome.NONZERO:
+        return EvidenceKind.NATIVE_PING_FAILURE, Disposition.ERROR, "native_echo_nonzero_unclassified"
+    return EvidenceKind.EXECUTION_ERROR, Disposition.ERROR, "native_echo_execution_error"
 
 
 def _address(value: str, label: str) -> str:
@@ -1270,6 +1288,6 @@ def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | N
 
 __all__ = [
     "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
-    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "local_link_applicability", "paired_matrix",
+    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "icmp_coverage_evidence", "local_link_applicability", "paired_matrix",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

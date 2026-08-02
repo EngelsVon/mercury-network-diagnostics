@@ -33,6 +33,7 @@ from mercury.paired import (
     encode_udp_tag,
     encode_coverage_tag,
     local_link_applicability,
+    icmp_coverage_evidence,
     coverage_matrix,
     is_valid_udp_tag,
     paired_matrix,
@@ -49,6 +50,7 @@ from mercury.planner import (
 )
 from mercury.policy import ScopeGrant
 from mercury.tasks import TaskContext, TaskError, TaskService
+from mercury.platform.common import CommandOutcome, CommandResult
 
 
 def _port(kind: int) -> int:
@@ -420,6 +422,18 @@ class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MatrixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_icmp_capability_gaps_do_not_become_peer_arrival_claims(self) -> None:
+        cases = (
+            (CommandOutcome.SUCCESS, EvidenceKind.NATIVE_PING_REPLY, Disposition.POSITIVE),
+            (CommandOutcome.TIMEOUT, EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE),
+            (CommandOutcome.PERMISSION_DENIED, EvidenceKind.PERMISSION_DENIED, Disposition.UNAVAILABLE),
+            (CommandOutcome.MISSING_TOOL, EvidenceKind.UNSUPPORTED, Disposition.UNAVAILABLE),
+        )
+        for outcome, kind, disposition in cases:
+            with self.subTest(outcome=outcome):
+                result = CommandResult(("ping",), 0 if outcome is CommandOutcome.SUCCESS else None, "", "", outcome)
+                self.assertEqual(icmp_coverage_evidence(result)[:2], (kind, disposition))
+
     async def test_cross_subnet_arp_nd_is_not_applicable_to_remote_pair(self) -> None:
         self.assertEqual(local_link_applicability("172.26.0.0/16", "172.27.0.0/16"), CoverageOutcome.NOT_APPLICABLE)
         self.assertEqual(local_link_applicability("10.20.30.0/24", "10.20.30.0/24"), CoverageOutcome.SKIPPED)
