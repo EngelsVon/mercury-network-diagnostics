@@ -22,7 +22,7 @@ from .paired import (
     PairedRequest,
 )
 from .policy import PolicyError, ScopeGrant, parse_target
-from .profiles import BASIC_V1, CHINA_V1, DiagnosisRequest, compile_diagnosis
+from .profiles import BASIC_V1, DiagnosisRequest, compile_diagnosis
 from .tasks import TaskService
 from .trace import TraceRequest, default_trace_grant, run_trace
 from .reports import compare_records, report_wire
@@ -34,7 +34,7 @@ def _default_grant(request: DiagnosisRequest) -> ScopeGrant:
         endpoints = tuple(item.rsplit(":", 1)[0].strip("[]") for item in request.targets)
         ports = tuple(int(item.rsplit(":", 1)[1]) for item in request.targets)
     else:
-        profile = BASIC_V1 if request.profile == "basic" else CHINA_V1
+        profile = BASIC_V1
         endpoints = (profile.raw_tcp_target.host, *profile.https_hosts)
         ports = (profile.raw_tcp_target.port, 443)
     networks = []

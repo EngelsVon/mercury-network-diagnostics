@@ -5,7 +5,6 @@ import unittest
 
 from mercury.profiles import (
     BASIC_V1,
-    CHINA_V1,
     DiagnosisRequest,
     ProfileError,
     canonical_custom_targets,
@@ -16,11 +15,11 @@ from mercury.policy import ScopeGrant
 
 
 class ProfileRequestTests(unittest.TestCase):
-    def test_builtin_profiles_are_finite_and_versioned(self) -> None:
+    def test_builtin_profile_is_private_and_versioned(self) -> None:
         self.assertEqual(BASIC_V1.name, "basic-v1")
-        self.assertEqual(CHINA_V1.name, "china-v1")
-        self.assertEqual(len(BASIC_V1.https_hosts), 3)
-        self.assertEqual(len(CHINA_V1.https_hosts), 3)
+        self.assertEqual(len(BASIC_V1.https_hosts), 1)
+        self.assertEqual(BASIC_V1.raw_tcp_target.host, "127.0.0.1")
+        self.assertEqual(BASIC_V1.https_hosts, ("localhost",))
 
     def test_builtin_profile_keeps_optional_native_context_out_of_required_groups(self) -> None:
         async def loopback(hostname, **_):
@@ -31,7 +30,7 @@ class ProfileRequestTests(unittest.TestCase):
         compiled = __import__("asyncio").run(compile_diagnosis(
             DiagnosisRequest(profile="basic", authorized=True),
             grant=ScopeGrant(
-                networks=(ipaddress.ip_network("1.1.1.1/32"),),
+                networks=(),
                 hostnames=BASIC_V1.https_hosts, ports=(53, 443), transports=("tcp",),
                 attested=True,
             ), resolver=loopback,
@@ -47,6 +46,8 @@ class ProfileRequestTests(unittest.TestCase):
                 DiagnosisRequest(timeout_s=timeout)
         with self.assertRaises(ProfileError):
             DiagnosisRequest(profile="custom")
+        with self.assertRaises(ProfileError):
+            DiagnosisRequest(profile="china")
 
 
 class CustomTargetTests(unittest.TestCase):

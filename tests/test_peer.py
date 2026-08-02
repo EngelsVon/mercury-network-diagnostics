@@ -83,7 +83,7 @@ class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(PeerConfigurationError, "certificate"):
                 config = self._config(
                     Path(temporary) / "token",
-                    bind_host="192.0.2.10",
+                    bind_host="10.20.30.10",
                     certificate_path=None,
                     key_path=None,
                     ca_path=None,
@@ -92,6 +92,14 @@ class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await PeerAgent(config, server_factory=server_factory).start()
         self.assertEqual(starts, 0)
+
+    async def test_public_peer_bind_or_destination_is_rejected_at_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            token_path = Path(temporary) / "token"
+            with self.assertRaisesRegex(PeerConfigurationError, "private"):
+                self._config(token_path, bind_host="203.0.113.10")
+            with self.assertRaisesRegex(PeerConfigurationError, "private"):
+                self._config(token_path, peer_addresses=("8.8.8.8",))
 
     async def test_unsafe_development_is_loopback_only_and_audited(self) -> None:
         starts = 0
@@ -119,7 +127,7 @@ class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(PeerConfigurationError, "loopback"):
                 self._config(
                     Path(temporary) / "token",
-                    bind_host="192.0.2.10",
+                    bind_host="10.20.30.10",
                     unsafe_development=True,
                     certificate_path=None,
                     key_path=None,

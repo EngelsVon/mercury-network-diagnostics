@@ -20,7 +20,7 @@ from .history import HistoryStore
 from .models import Direction, Disposition, EvidenceKind, Observation, ProbeKind, TaskResult
 from .planner import DEFAULT_LIMITS, PayloadMetadata, ProbePlan, ProbeSpec, StepCost, authorize_plan, preview_probe_plan
 from .platform.common import CommandOutcome, run_command
-from .policy import PolicyError, ScopeGrant
+from .policy import PolicyError, ScopeGrant, TargetKind, parse_target
 from .tasks import TaskContext, TaskService
 
 
@@ -64,8 +64,12 @@ class TraceRequest:
     authorized: bool = False
 
     def __post_init__(self) -> None:
-        address = ipaddress.ip_address(self.target)
-        network = ipaddress.ip_network(self.scope, strict=False)
+        target_value = parse_target(self.target)
+        scope_value = parse_target(self.scope)
+        if target_value.kind is not TargetKind.ADDRESS or scope_value.kind is not TargetKind.NETWORK:
+            raise PolicyError("trace target must be a private numeric address in a private CIDR")
+        assert target_value.address is not None and scope_value.network is not None
+        address, network = target_value.address, scope_value.network
         if address.version != network.version or address not in network:
             raise PolicyError("trace target must be contained in the authorized scope")
         if type(self.max_hops) is not int or not 1 <= self.max_hops <= MAX_TRACE_HOPS:
@@ -113,14 +117,20 @@ def compile_trace(request: TraceRequest, *, grant: ScopeGrant):
 
 
 def windows_trace_argv(target: str, *, max_hops: int, timeout_s: float) -> tuple[str, ...]:
-    address = ipaddress.ip_address(target).compressed
+    target_value = parse_target(target)
+    if target_value.kind is not TargetKind.ADDRESS or target_value.address is None:
+        raise ValueError("trace target must be a numeric private address")
+    address = target_value.address.compressed
     if not 1 <= max_hops <= MAX_TRACE_HOPS or not 0.1 <= timeout_s <= 5.0:
         raise ValueError("trace bounds are invalid")
     return ("tracert.exe", "-d", "-h", str(max_hops), "-w", str(math.ceil(timeout_s * 1_000)), address)
 
 
 def linux_trace_argv(target: str, *, max_hops: int, timeout_s: float) -> tuple[str, ...]:
-    address = ipaddress.ip_address(target).compressed
+    target_value = parse_target(target)
+    if target_value.kind is not TargetKind.ADDRESS or target_value.address is None:
+        raise ValueError("trace target must be a numeric private address")
+    address = target_value.address.compressed
     if not 1 <= max_hops <= MAX_TRACE_HOPS or not 0.1 <= timeout_s <= 5.0:
         raise ValueError("trace bounds are invalid")
     return ("traceroute", "-n", "-m", str(max_hops), "-w", f"{timeout_s:.1f}", address)

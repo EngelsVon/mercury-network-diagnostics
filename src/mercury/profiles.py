@@ -39,8 +39,8 @@ class DiagnosisRequest:
     authorized: bool = False
 
     def __post_init__(self) -> None:
-        if type(self.profile) is not str or self.profile not in {"basic", "china", "custom"}:
-            raise ProfileError("profile must be basic, china, or custom")
+        if type(self.profile) is not str or self.profile not in {"basic", "custom"}:
+            raise ProfileError("profile must be basic or custom")
         if not isinstance(self.targets, (tuple, list)) or len(self.targets) > 256:
             raise ProfileError("targets must contain at most 256 values")
         targets = tuple(self.targets)
@@ -90,8 +90,8 @@ class ProfileDefinition:
             raise ProfileError("profile definition must have a versioned name")
         if type(self.raw_tcp_target) is not CustomTarget:
             raise ProfileError("profile raw TCP target is invalid")
-        if not isinstance(self.https_hosts, tuple) or len(self.https_hosts) != 3:
-            raise ProfileError("profile must contain exactly three HTTPS hosts")
+        if not isinstance(self.https_hosts, tuple) or not 1 <= len(self.https_hosts) <= 3:
+            raise ProfileError("profile must contain one to three HTTPS hosts")
         canonical = tuple(parse_target(host).canonical for host in self.https_hosts)
         if any(parse_target(host).kind is not TargetKind.HOSTNAME for host in canonical):
             raise ProfileError("profile HTTPS targets must be hostnames")
@@ -99,14 +99,10 @@ class ProfileDefinition:
 
 
 BASIC_V1 = ProfileDefinition(
-    "basic-v1", CustomTarget("1.1.1.1", 53),
-    ("www.cloudflare.com", "www.microsoft.com", "www.apple.com"),
+    "basic-v1", CustomTarget("127.0.0.1", 53),
+    ("localhost",),
 )
-CHINA_V1 = ProfileDefinition(
-    "china-v1", CustomTarget("223.5.5.5", 53),
-    ("www.baidu.com", "www.qq.com", "www.aliyun.com"),
-)
-_PROFILES = {"basic": BASIC_V1, "china": CHINA_V1}
+_PROFILES = {"basic": BASIC_V1}
 _PORT_RE = re.compile(r"^[1-9][0-9]{0,4}$")
 
 
@@ -309,7 +305,7 @@ def profile_definition(request: DiagnosisRequest) -> ProfileDefinition | None:
 
 
 __all__ = [
-    "BASIC_V1", "CHINA_V1", "CompiledDiagnosis", "CustomTarget", "DiagnosisRequest",
+    "BASIC_V1", "CompiledDiagnosis", "CustomTarget", "DiagnosisRequest",
     "ProfileDefinition", "ProfileError", "canonical_custom_targets",
     "parse_custom_target", "profile_definition", "ProbeGroupKey", "compile_diagnosis",
 ]

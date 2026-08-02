@@ -23,6 +23,7 @@ from types import MappingProxyType
 from typing import Mapping, Protocol
 
 from .codec import CodecError, result_from_wire
+from .policy import PolicyError, TargetKind, parse_target
 
 
 MAX_FRAME_BYTES = 16 * 1024
@@ -82,18 +83,27 @@ class PeerConfig:
         if not isinstance(self.identity, str) or not _IDENTITY.fullmatch(self.identity):
             raise PeerConfigurationError("peer identity is invalid")
         try:
-            bound = ipaddress.ip_address(self.bind_host)
-        except ValueError as exc:
-            raise PeerConfigurationError("peer bind host must be an IP address") from exc
+            bind_target = parse_target(self.bind_host)
+        except PolicyError as exc:
+            raise PeerConfigurationError("peer bind host must be a private IP address") from exc
+        if bind_target.kind is not TargetKind.ADDRESS or bind_target.address is None:
+            raise PeerConfigurationError("peer bind host must be an IP address")
+        bound = bind_target.address
         if isinstance(self.control_port, bool) or not 0 <= self.control_port <= 65535:
             raise PeerConfigurationError("peer control port is invalid")
         if not self.peer_addresses:
             raise PeerConfigurationError("peer configuration requires fixed peer addresses")
+        canonical_peers: set[str] = set()
         for address in self.peer_addresses:
             try:
-                ipaddress.ip_address(address)
-            except ValueError as exc:
-                raise PeerConfigurationError("peer address must be an IP address") from exc
+                target = parse_target(address)
+            except PolicyError as exc:
+                raise PeerConfigurationError("peer address must be a private IP address") from exc
+            if target.kind is not TargetKind.ADDRESS:
+                raise PeerConfigurationError("peer address must be an IP address")
+            canonical_peers.add(target.canonical)
+        object.__setattr__(self, "bind_host", bind_target.canonical)
+        object.__setattr__(self, "peer_addresses", tuple(sorted(canonical_peers)))
         for pin in self.peer_pins:
             if not isinstance(pin, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", pin):
                 raise PeerConfigurationError("peer certificate pin is invalid")
@@ -136,7 +146,9 @@ class PeerConfig:
 
     @property
     def bind_is_loopback(self) -> bool:
-        return ipaddress.ip_address(self.bind_host).is_loopback
+        target = parse_target(self.bind_host)
+        assert target.address is not None
+        return target.address.is_loopback
 
     @property
     def paired_enabled(self) -> bool:

@@ -30,7 +30,7 @@ from .planner import (
     ABSOLUTE_CEILINGS, DEFAULT_LIMITS, BudgetLimits, PlanPreview, ProbePlan,
     confirmation_phrase, authorize_plan, preview_plan,
 )
-from .policy import PolicyError, ScopeGrant
+from .policy import PolicyError, ScopeGrant, TargetKind, parse_target
 from .probes import run_protocol_probe
 from .tasks import TaskContext, TaskService
 from .platform.common import CommandOutcome, CommandResult, run_passive_command
@@ -320,8 +320,12 @@ class DiscoveryRequest:
     confirmations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        target = ipaddress.ip_network(self.network, strict=False)
-        scope = ipaddress.ip_network(self.scope, strict=False)
+        target_value = parse_target(self.network)
+        scope_value = parse_target(self.scope)
+        if target_value.kind is not TargetKind.NETWORK or scope_value.kind is not TargetKind.NETWORK:
+            raise PolicyError("active discovery requires IPv4 CIDR targets")
+        assert target_value.network is not None and scope_value.network is not None
+        target, scope = target_value.network, scope_value.network
         if target.version != 4 or scope.version != 4:
             raise PolicyError("active discovery supports IPv4 CIDR only")
         if not target.subnet_of(scope):

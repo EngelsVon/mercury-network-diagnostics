@@ -80,8 +80,8 @@ class PassiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):
 class ActiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_scope_and_authorization_reject_before_connects(self):
         with self.assertRaises(PolicyError):
-            DiscoveryRequest("192.0.2.0/30", "198.51.100.0/24", authorized=True)
-        request = DiscoveryRequest("192.0.2.0/30", "192.0.2.0/24", authorized=False)
+            DiscoveryRequest("203.0.113.0/30", "10.20.30.0/24", authorized=True)
+        request = DiscoveryRequest("10.20.30.0/30", "10.20.30.0/24", authorized=False)
         with self.assertRaises(PolicyError):
             compile_discovery(request, grant=default_discovery_grant(request))
         with self.assertRaises(PolicyError):
