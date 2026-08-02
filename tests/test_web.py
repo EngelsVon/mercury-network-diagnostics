@@ -194,7 +194,11 @@ class WebServerTests(unittest.TestCase):
 
     def test_non_loopback_requires_tls_and_token_before_listener(self) -> None:
         with self.assertRaisesRegex(WebError, "TLS and a token"):
-            WebConfig(bind_host="192.0.2.10")
+            WebConfig(bind_host="10.20.30.10")
+
+    def test_public_bind_is_rejected_before_listener_configuration(self) -> None:
+        with self.assertRaisesRegex(WebError, "private"):
+            WebConfig(bind_host="203.0.113.10", certificate_path=Path("cert.pem"), key_path=Path("key.pem"), token="test-token")
 
     def test_static_dashboard_has_accessible_external_assets(self) -> None:
         html = (Path(__file__).parents[1] / "src" / "mercury" / "web" / "static" / "index.html").read_text(encoding="utf-8")

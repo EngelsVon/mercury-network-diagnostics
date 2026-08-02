@@ -136,8 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="collect passive local network facts")
     _add_json_option(status_parser)
 
-    diagnose_parser = subparsers.add_parser("diagnose", help="run an authorized layered diagnosis")
-    diagnose_parser.add_argument("--profile", choices=("basic", "china"), default="basic")
+    diagnose_parser = subparsers.add_parser("diagnose", help="run an authorized internal layered diagnosis")
+    diagnose_parser.add_argument("--profile", choices=("basic",), default="basic")
     diagnose_parser.add_argument("--target", action="append", default=[])
     diagnose_parser.add_argument("--timeout", type=float, default=3.0)
     diagnose_parser.add_argument("--authorized", action="store_true")
@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser = subparsers.add_parser(
         "plan", help="canonicalize and cost an active plan without executing it"
     )
-    plan_parser.add_argument("targets", nargs="+", help="IP, CIDR, or hostname")
+    plan_parser.add_argument("targets", nargs="+", help="private IP, private CIDR, or internally resolved hostname")
     plan_parser.add_argument(
         "--ports", default="80,443", help="comma-separated ports/ranges"
     )
@@ -218,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scope",
         action="append",
         default=[],
-        help="authorized IP/CIDR (repeatable)",
+        help="authorized private IP/CIDR (repeatable)",
     )
     plan_parser.add_argument(
         "--name",

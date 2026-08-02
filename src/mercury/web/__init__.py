@@ -25,6 +25,7 @@ from ..discovery import DiscoveryRequest
 from ..history import HistoryStore, sanitize_exception
 from ..models import TaskResult
 from ..paired import PairedRequest
+from ..policy import PolicyError, TargetKind, parse_target
 from ..profiles import DiagnosisRequest
 from ..trace import TraceRequest
 from ..reports import html_report, redact
@@ -51,9 +52,12 @@ class WebConfig:
 
     def __post_init__(self) -> None:
         try:
-            address = ipaddress.ip_address(self.bind_host)
-        except ValueError as exc:
-            raise WebError("web bind host must be a numeric IP address") from exc
+            target = parse_target(self.bind_host)
+        except PolicyError as exc:
+            raise WebError("web bind host must be a private numeric IP address") from exc
+        if target.kind is not TargetKind.ADDRESS or target.address is None:
+            raise WebError("web bind host must be a numeric IP address")
+        address = target.address
         if type(self.port) is not int or not 0 <= self.port <= 65_535:
             raise WebError("web port must be within 0..65535")
         if (self.certificate_path is None) != (self.key_path is None):
@@ -63,11 +67,13 @@ class WebConfig:
             raise WebError("non-loopback WebUI requires TLS and a token")
         if self.token is not None and (not isinstance(self.token, str) or not self.token or len(self.token) > 512):
             raise WebError("web token is invalid")
-        object.__setattr__(self, "bind_host", address.compressed)
+        object.__setattr__(self, "bind_host", target.canonical)
 
     @property
     def loopback(self) -> bool:
-        return ipaddress.ip_address(self.bind_host).is_loopback
+        target = parse_target(self.bind_host)
+        assert target.address is not None
+        return target.address.is_loopback
 
     @property
     def tls_enabled(self) -> bool:
@@ -236,7 +242,7 @@ def _normalize_payload(payload: Mapping[str, object]) -> dict[str, object]:
             raise WebError("diagnosis targets are invalid")
         body["targets"] = [_string(item, "diagnosis target") for item in targets]
         profile = body.get("profile", "basic")
-        if profile not in ("basic", "china"):
+        if profile not in ("basic",):
             raise WebError("diagnosis profile is invalid")
         body["profile"] = profile
         body["timeout_s"] = _finite_number(body.get("timeout_s"), "diagnosis timeout", 3.0)

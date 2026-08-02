@@ -1,8 +1,8 @@
 # Mercury
 
-Mercury is a local-first, evidence-first network diagnostics tool. It reports
-what was observed for selected endpoints and layers; it is not a scanner,
-topology oracle, or a replacement for Nmap, MTR, iperf3, or LLDP tooling.
+Mercury is a local-first, evidence-first internal-network diagnostics tool. It
+reports what was observed for selected private endpoints and layers; it is not a
+topology oracle or a replacement for MTR, iperf3, or LLDP tooling.
 
 ## Installation
 
@@ -28,9 +28,9 @@ uv run --no-sync python -m mercury status
 uv run --no-sync python -m mercury status --json
 ```
 
-Run diagnosis only for endpoints you own or are authorized to test. Built-in
-profiles are immutable (`basic-v1` and `china-v1`); custom endpoints are exact
-repeatable `HOST:PORT` values, including `[::1]:443`.
+Run diagnosis only for private endpoints you own or are authorized to test.
+The immutable `basic-v1` profile uses loopback; custom endpoints are exact
+repeatable private `HOST:PORT` values, including `[::1]:443`.
 
 ```powershell
 uv run --no-sync python -m mercury diagnose --profile basic --authorized
@@ -100,9 +100,9 @@ peer address reversed.
 ```json
 {
   "identity": "campus-pair-01",
-  "bind_host": "192.0.2.10",
+  "bind_host": "10.20.30.10",
   "control_port": 9443,
-  "peer_addresses": ["192.0.2.20"],
+  "peer_addresses": ["10.20.30.20"],
   "peer_pins": ["sha256:<configured-peer-certificate-fingerprint>"],
   "certificate_path": "server-cert.pem",
   "key_path": "server-key.pem",
@@ -126,8 +126,8 @@ identify a switch from a gateway, ARP/NDP entry or route hop.
 
 ```powershell
 uv run --no-sync python -m mercury discover --passive
-uv run --no-sync python -m mercury discover --network 192.0.2.0/30 --scope 192.0.2.0/24 --profile common --authorized
-uv run --no-sync python -m mercury trace 192.0.2.10 --scope 192.0.2.0/24 --authorized
+uv run --no-sync python -m mercury discover --network 10.20.30.0/30 --scope 10.20.30.0/24 --profile common --authorized
+uv run --no-sync python -m mercury trace 10.20.30.10 --scope 10.20.30.0/24 --authorized
 ```
 
 Active discovery is TCP-only and requires an authorized CIDR. `common` is the
@@ -152,7 +152,7 @@ For an intentional non-loopback listener, provide a numeric bind address,
 certificate, key and token file:
 
 ```powershell
-uv run --no-sync python -m mercury web --bind 192.0.2.10 --cert web-cert.pem --key web-key.pem --token-file web-token.txt
+uv run --no-sync python -m mercury web --bind 10.20.30.10 --cert web-cert.pem --key web-key.pem --token-file web-token.txt
 ```
 
 The token stays in its local file and is never printed or persisted. Web mode
@@ -175,13 +175,14 @@ payloads. It never retains credentials, tokens or private keys.
 ## Safety and limitations
 
 - Active work is normalized, authorized, admitted, rate-limited, and bounded
-  before it starts. Public profile use requires explicit authorization.
+  before it starts. Public, documentation, multicast, unspecified, and
+  broadcast destinations are rejected before I/O.
 - DNS, TCP, TLS, HTTP, native ping, and path observations retain separate
   outcomes; silence and timeout are inconclusive, not success or failure.
 - Diagnosis conclusions cover only the selected endpoints and observed layers;
   Mercury never makes a universal Internet or root-cause claim.
-- Tests use fakes and loopback only. They never resolve or connect to built-in
-  public profile targets.
+- Tests use fakes and loopback only. They never resolve or connect to real
+  non-loopback targets.
 - SQLite history rejects credentials and secret material; reports repeat that
   protection by default.
 - If a native command is absent or permission is insufficient, inspect the

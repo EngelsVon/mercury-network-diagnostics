@@ -193,13 +193,20 @@ class CliTests(unittest.TestCase):
 
     def test_nonloopback_plan_requires_attestation(self) -> None:
         code, output, error = invoke(
-            "plan", "192.0.2.10", "--ports", "443", "--json"
+            "plan", "10.20.30.10", "--ports", "443", "--json"
         )
         self.assertEqual(code, EXIT_POLICY)
         self.assertEqual(output, "")
         payload = json.loads(error)
         self.assertEqual(payload["error"]["category"], "policy")
         self.assertIn("attestation", payload["error"]["message"])
+
+    def test_public_plan_is_rejected_by_canonical_policy(self) -> None:
+        code, output, error = invoke(
+            "--json", "plan", "203.0.113.10", "--ports", "443"
+        )
+        self.assertEqual((code, output), (EXIT_POLICY, ""))
+        self.assertIn("private", json.loads(error)["error"]["message"])
 
     def test_synthetic_task_and_history_share_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
