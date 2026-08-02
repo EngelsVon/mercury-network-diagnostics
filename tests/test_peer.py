@@ -38,6 +38,14 @@ class _FakeServer:
 
 
 class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_coverage_submit_frame_cannot_carry_receiver_selectors(self) -> None:
+        now = datetime.now(timezone.utc)
+        with self.assertRaisesRegex(Exception, "submit body"):
+            PeerFrame(
+                1, "submit", "coverage-correlation", "loopback-peer", now, now + timedelta(seconds=1), "nonce-coverage",
+                {"manifest": "coverage-v2", "role": "A-to-B", "port": 53},
+            )
+
     async def test_receiver_profiles_are_local_fixed_private_bindings(self) -> None:
         receiver = ReceiverProfileConfig(
             profile=CoverageProfile.DNS_UDP,
