@@ -47,6 +47,8 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 
 ## Phase 3: Multi-Range Internal Mapping Engine
 
+**Status:** Complete (2026-08-02)
+
 **Goal:** Compile and execute one bounded multi-range mapping or coverage plan through the existing task lifecycle.
 
 **Requirements:** MAP-01, MAP-02, MAP-03, MAP-04
@@ -59,10 +61,12 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 4. A requested duration of 0 means no extra operator-selected early cutoff but still ends at immutable ceilings with terminal evidence explaining the reason.
 5. Cancellation and persistence leave a valid bounded result and do not permit a runner to exceed admitted steps.
 
-**Plans:** 1 ready
+**Plans:** 1 complete
 **UI hint:** no
 
 ## Phase 4: Native Coverage and Operator Surfaces
+
+**Status:** Complete (2026-08-02)
 
 **Goal:** Add optional Nmap-native profiles and expose all mapping/coverage functionality through the shared CLI, Web UI, peer, and history boundaries.
 
@@ -76,10 +80,12 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 4. The Web UI shows profile coverage, peer-receiver capability, per-direction progress, candidate carriers, evidence provenance, and explicit assessment gaps accessibly.
 5. Peer mTLS/token/pinning/replay controls remain intact, and history/report output retains provenance while preserving existing secret filtering and redaction.
 
-**Plans:** 1 ready
+**Plans:** 1 complete
 **UI hint:** yes
 
 ## Phase 5: Verification, Documentation, and Release Migration
+
+**Status:** In progress (2026-08-02)
 
 **Goal:** Demonstrate the private-only boundary and the exact coverage contract with controlled tests and accurate operator guidance.
 
@@ -92,7 +98,7 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 3. Packaging, compilation, and supported-platform-safe smoke commands pass.
 4. README, CLI, and Web copy enumerate the actual coverage matrix, receiver prerequisites, ARP/ND cross-subnet boundary, native capability gaps, and the scoped meaning of a negative result.
 
-**Plans:** 1 ready
+**Plans:** 1 in progress
 **UI hint:** yes
 
 ## Requirement Coverage

@@ -142,6 +142,8 @@ class InstalledEntryPointTests(unittest.TestCase):
                 ("model", "--json"),
                 ("status", "--help"),
                 ("diagnose", "--help"),
+                ("mapping", "--help"),
+                ("coverage", "--help"),
                 ("agent", "--help"),
                 ("web", "--help"),
                 ("--json", "plan"),
@@ -207,6 +209,9 @@ class DocumentationTests(unittest.TestCase):
             "--retain-sensitive",
             "Operator release smoke",
             "does not scan unowned",
+            "Internal mapping and two-endpoint coverage",
+            "nmap_sctp_init",
+            "not_applicable",
         ):
             with self.subTest(text=text):
                 self.assertIn(text, readme)

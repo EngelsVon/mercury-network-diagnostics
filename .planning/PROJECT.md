@@ -23,12 +23,12 @@ Within an explicitly declared private-network scope, show reproducible evidence 
 
 ### Active
 
-- [ ] Provide one private mapping request that accepts multiple internal CIDRs, finite transport/port profiles, rate, concurrency, and duration parameters.
+- [x] Provide one private mapping request that accepts multiple internal CIDRs, finite transport/port profiles, rate, concurrency, and duration parameters. *(Phase 3, 2026-08-02.)*
 - ✅ Use paired, correlation-bound Mercury receivers to witness inbound TCP, UDP, DNS, ICMP (where the platform can observe it), TLS, HTTP, SSH-banner, and local-link ARP/ND coverage profiles in both directions. *(Phase 2, 2026-08-02.)*
 - ✅ Produce a tunnel-exposure coverage matrix that flags every tested carrier with positive arrival or reply evidence and lists every unavailable, skipped, and non-applicable profile. *(Phase 2, 2026-08-02.)*
-- [ ] Optionally use the locally installed Nmap executable through a fixed, policy-derived adapter, never an arbitrary Nmap command line.
-- [ ] Expose the same mapping service through CLI and Web UI while preserving peer trust controls, local evidence history, cancellation, redaction, and hard ceilings.
-- [ ] Replace the deleted project plan with requirements, roadmap, phase state, and a codebase map that make the product pivot executable.
+- [x] Optionally use the locally installed Nmap executable through a fixed, policy-derived adapter, never an arbitrary Nmap command line. *(Phase 4, 2026-08-02.)*
+- [x] Expose the same mapping and coverage services through CLI and Web UI while preserving peer trust controls, local evidence history, cancellation, redaction, and hard ceilings. *(Phase 4, 2026-08-02.)*
+- [x] Replace the deleted project plan with requirements, roadmap, phase state, and a codebase map that make the product pivot executable. *(Planning migration, 2026-08-02.)*
 
 ### Out of Scope
 
@@ -93,4 +93,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-08-02 after Phase 1 private-scope migration*
+*Last updated: 2026-08-02 after Phase 4 native mapping and operator-surface implementation*

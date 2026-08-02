@@ -73,6 +73,7 @@ class FoundationContractTests(unittest.TestCase):
             (EvidenceKind.HTTP_RESPONSE, Disposition.NEGATIVE),
             (EvidenceKind.SSH_BANNER, Disposition.POSITIVE),
             (EvidenceKind.NEIGHBOUR_FACT, Disposition.POSITIVE),
+            (EvidenceKind.NATIVE_PORT_STATE, Disposition.INCONCLUSIVE),
             (EvidenceKind.NATIVE_PING_REPLY, Disposition.POSITIVE),
             (EvidenceKind.NATIVE_PING_FAILURE, Disposition.NEGATIVE),
             (EvidenceKind.PATH_HOP, Disposition.POSITIVE),

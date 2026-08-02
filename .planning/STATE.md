@@ -17,6 +17,8 @@ See: `.planning/PROJECT.md` (updated 2026-08-02)
 - The peer-receiver and tunnel-exposure contract is recorded in .planning/TUNNEL-COVERAGE.md.
 - Phase 1 is complete: every active entry point now admits only the explicit private-address allowlist, including post-resolution rechecks; public profiles and examples were removed.
 - Phase 2 is complete: configured coverage receivers and senders exercise the finite TCP, UDP, DNS, ICMP, TLS, HTTP and SSH matrix in both directions, preserve receiver correlation evidence in one immutable assessment history record, and render ARP/ND only as passive local-link evidence or cross-subnet non-applicability.
+- Phase 3 is complete: mapping accepts canonical private multi-CIDR input, fixed profiles, rate/concurrency and duration-zero semantics through one immutable outbound TaskService plan.
+- Phase 4 is complete: optional fixed Nmap TCP-connect/SYN, UDP and SCTP-init profiles run from the admitted plan, bounded XML becomes native-provenance evidence, and CLI/Web route mapping and paired coverage through MercuryApplication.
 
 ## Constraints to Preserve
 
@@ -42,13 +44,13 @@ See: `.planning/PROJECT.md` (updated 2026-08-02)
 |-------|------|--------|--------------|
 | 1 | Private-Scope Policy Migration | Complete (2026-08-02) | SCOPE-01..03 |
 | 2 | Peer Receivers and Coverage Matrix | Complete (2026-08-02) | COVER-01..08 |
-| 3 | Multi-Range Internal Mapping Engine | In progress | MAP-01..04 |
-| 4 | Native Coverage and Operator Surfaces | Planned | NMAP-01..03, SURF-01..02, PEER-01, HIST-01 |
-| 5 | Verification, Documentation, and Release Migration | Planned | QUAL-01..03, DOC-01 |
+| 3 | Multi-Range Internal Mapping Engine | Complete (2026-08-02) | MAP-01..04 |
+| 4 | Native Coverage and Operator Surfaces | Complete (2026-08-02) | NMAP-01..03, SURF-01..02, PEER-01, HIST-01 |
+| 5 | Verification, Documentation, and Release Migration | In progress | QUAL-01..03, DOC-01 |
 
 ## Next Action
 
-Execute `.planning/phases/03-multi-range-internal-mapping-engine/03-01-PLAN.md` next. Then execute Phases 4 and 5 strictly in roadmap order.
+Finish Phase 5 planning evidence: focused suites, compilation, build, and CLI help have passed; the slow isolated-installation test needs a completed run outside the desktop command time limit before QUAL-03 is marked complete.
 
 ---
 

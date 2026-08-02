@@ -13,7 +13,7 @@
 
 ### Peer-Correlated Coverage
 
-- [ ] **COVER-01**: An operator can select a finite named coverage matrix containing TCP connect/tagged exchange, UDP tagged exchange, DNS over UDP/TCP, ICMP echo, TLS handshake, HTTP exchange, SSH banner, local ARP/IPv6-ND evidence, and optional native Nmap TCP/UDP/SCTP profiles. *(The non-native matrix completed in Phase 2; Nmap selection completes this in Phase 4.)*
+- [x] **COVER-01**: An operator can select a finite named coverage matrix containing TCP connect/tagged exchange, UDP tagged exchange, DNS over UDP/TCP, ICMP echo, TLS handshake, HTTP exchange, SSH banner, local ARP/IPv6-ND evidence, and optional native Nmap TCP/UDP/SCTP profiles. *(Phase 4; native profiles are local Nmap evidence, while receiver-capable profiles are correlated by peers.)*
 - [x] **COVER-02**: A configured Mercury peer can provision only its configured short-lived receiver profiles and records correlation ID, protocol/profile, source/destination tuple, arrival time, payload digest/length, and reply result for every received test message. *(Phase 2.)*
 - [x] **COVER-03**: A two-endpoint assessment runs each selected receiver-capable profile independently in both directions and correlates sender evidence with peer arrival/acknowledgement evidence. *(Phase 2.)*
 - [x] **COVER-04**: TCP and UDP coverage results preserve connection/refusal/reset, tagged arrival, acknowledgement, ICMP unreachable, timeout, silent, permission-denied, and execution-error semantics separately. *(Phase 2.)*
@@ -24,23 +24,23 @@
 
 ### Mapping Plans
 
-- [ ] **MAP-01**: An operator can declare multiple IPv4 private CIDRs in one mapping request; overlapping inputs are canonicalized, deduplicated, and compiled into one immutable plan.
-- [ ] **MAP-02**: An operator can set logical attempt-start rate and concurrency within immutable ceilings, and the effective values plus accounting units appear in the result.
-- [ ] **MAP-03**: An operator can set a finite duration ceiling; a requested duration of 0 means no additional operator-selected early cutoff, not unlimited work, and the result states when an immutable ceiling stops the run.
-- [ ] **MAP-04**: The exact selected coverage profiles, receiver leases, ports, payload metadata, rate, concurrency, duration, directions, and limits are bound into the immutable plan before any active step is admitted.
+- [x] **MAP-01**: An operator can declare multiple IPv4 private CIDRs in one mapping request; overlapping inputs are canonicalized, deduplicated, and compiled into one immutable plan. *(Phase 3.)*
+- [x] **MAP-02**: An operator can set logical attempt-start rate and concurrency within immutable ceilings, and the effective values plus accounting units appear in the result. *(Phase 3.)*
+- [x] **MAP-03**: An operator can set a finite duration ceiling; a requested duration of 0 means no additional operator-selected early cutoff, not unlimited work, and the result states when an immutable ceiling stops the run. *(Phase 3.)*
+- [x] **MAP-04**: The exact selected mapping profiles, ports, payload metadata, rate, concurrency, duration, outbound direction, and limits are bound into the immutable plan before any active step is admitted; paired receiver leases are independently bound by the Phase 2 coverage assessment. *(Phase 3.)*
 
 ### Optional Native Nmap
 
-- [ ] **NMAP-01**: When Nmap is installed, an operator can choose documented fixed internal TCP connect/SYN, UDP, or SCTP-init coverage profiles; Mercury derives argv only from an admitted private plan and reports unavailable capability when Nmap is absent or lacks required privilege.
-- [ ] **NMAP-02**: Mercury parses bounded Nmap XML into the versioned evidence model with explicit native provenance and preserves the difference between native open/closed/filtered/open-or-filtered, timeout/silence, parser failure, and unsupported profile.
-- [ ] **NMAP-03**: Mercury never accepts arbitrary Nmap flags, scripts, target files, proxy/decoy configuration, or a target that escaped its canonical private plan.
+- [x] **NMAP-01**: When Nmap is installed, an operator can choose documented fixed internal TCP connect/SYN, UDP, or SCTP-init coverage profiles; Mercury derives argv only from an admitted private plan and reports unavailable capability when Nmap is absent or lacks required privilege. *(Phase 4.)*
+- [x] **NMAP-02**: Mercury parses bounded Nmap XML into the versioned evidence model with explicit native provenance and preserves the difference between native open/closed/filtered/open-or-filtered, timeout/silence, parser failure, and unsupported profile. *(Phase 4.)*
+- [x] **NMAP-03**: Mercury never accepts arbitrary Nmap flags, scripts, target files, proxy/decoy configuration, or a target that escaped its canonical private plan. *(Phase 4.)*
 
 ### Service, Peer, and History
 
-- [ ] **SURF-01**: CLI and Web UI submit the same internal mapping or paired coverage request through MercuryApplication; no presentation code opens a scan socket or native subprocess directly.
-- [ ] **SURF-02**: The Web UI displays accessible coverage-profile, range, port, rate, duration, direction, receiver-capability, progress, cancellation, candidate-carrier, provenance, and gap information while its non-loopback listener retains TLS/token protections.
-- [ ] **PEER-01**: Mercury peer communication keeps mTLS, configured certificate pinning, token/replay checks, and closed configured destinations; peer control cannot accept an arbitrary mapping target or receiver profile.
-- [ ] **HIST-01**: Local task history records the effective private plan, receiver/provenance evidence, immutable limits, and terminal reason while preserving credential/token/private-key filtering and default report redaction.
+- [x] **SURF-01**: CLI and Web UI submit the same internal mapping or paired coverage request through MercuryApplication; no presentation code opens a scan socket or native subprocess directly. *(Phase 4.)*
+- [x] **SURF-02**: The Web UI displays accessible coverage-profile, range, port, rate, duration, direction, receiver-capability, progress, cancellation, candidate-carrier, provenance, and gap information while its non-loopback listener retains TLS/token protections. *(Phase 4.)*
+- [x] **PEER-01**: Mercury peer communication keeps mTLS, configured certificate pinning, token/replay checks, and closed configured destinations; peer control cannot accept an arbitrary mapping target or receiver profile. *(Phase 4 regression tests.)*
+- [x] **HIST-01**: Local task history records the effective private plan, receiver/provenance evidence, immutable limits, and terminal reason while preserving credential/token/private-key filtering and default report redaction. *(Phase 4 regression tests.)*
 
 ### Verification and Documentation
 
@@ -75,7 +75,7 @@
 | SCOPE-01 | Phase 1 | Complete |
 | SCOPE-02 | Phase 1 | Complete |
 | SCOPE-03 | Phase 1 | Complete |
-| COVER-01 | Phase 4 | Pending |
+| COVER-01 | Phase 4 | Complete |
 | COVER-02 | Phase 2 | Complete |
 | COVER-03 | Phase 2 | Complete |
 | COVER-04 | Phase 2 | Complete |
@@ -83,17 +83,17 @@
 | COVER-06 | Phase 2 | Complete |
 | COVER-07 | Phase 2 | Complete |
 | COVER-08 | Phase 2 | Complete |
-| MAP-01 | Phase 3 | Pending |
-| MAP-02 | Phase 3 | Pending |
-| MAP-03 | Phase 3 | Pending |
-| MAP-04 | Phase 3 | Pending |
-| NMAP-01 | Phase 4 | Pending |
-| NMAP-02 | Phase 4 | Pending |
-| NMAP-03 | Phase 4 | Pending |
-| SURF-01 | Phase 4 | Pending |
-| SURF-02 | Phase 4 | Pending |
-| PEER-01 | Phase 4 | Pending |
-| HIST-01 | Phase 4 | Pending |
+| MAP-01 | Phase 3 | Complete |
+| MAP-02 | Phase 3 | Complete |
+| MAP-03 | Phase 3 | Complete |
+| MAP-04 | Phase 3 | Complete |
+| NMAP-01 | Phase 4 | Complete |
+| NMAP-02 | Phase 4 | Complete |
+| NMAP-03 | Phase 4 | Complete |
+| SURF-01 | Phase 4 | Complete |
+| SURF-02 | Phase 4 | Complete |
+| PEER-01 | Phase 4 | Complete |
+| HIST-01 | Phase 4 | Complete |
 | QUAL-01 | Phase 5 | Pending |
 | QUAL-02 | Phase 5 | Pending |
 | QUAL-03 | Phase 5 | Pending |
@@ -108,4 +108,4 @@
 ---
 
 *Requirements defined: 2026-08-02*
-*Last updated: 2026-08-02 after Phase 1 private-scope verification*
+*Last updated: 2026-08-02 after Phase 4 native-profile and operator-surface verification*

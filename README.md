@@ -136,6 +136,47 @@ finite 1–65535 TCP plan and requires the digest-bound confirmation printed by
 the preview. Native route tracing is repeated and retains unanswered or
 alternate hops; it does not claim one certain path.
 
+## Internal mapping and two-endpoint coverage
+
+`mapping` expands one or more RFC1918/loopback IPv4 CIDRs into a single
+immutable, outbound plan. Select only named profiles and ports; its rate is
+logical attempt starts per second, and `--duration 0` means "finish the
+selected plan where possible" within compiled hard ceilings, not an unlimited
+scan.
+
+```powershell
+uv run --no-sync python -m mercury mapping --cidr 172.26.4.0/24 --cidr 172.27.20.0/24 --profiles tcp_connect,udp_tagged --ports 53,80,443 --rate 20 --concurrency 4 --duration 0 --authorized
+uv run --no-sync python -m mercury mapping --cidr 172.26.4.0/24 --profiles nmap_tcp_connect --ports 1-1024 --rate 20 --concurrency 4 --duration 0 --authorized
+```
+
+Nmap selection is optional and closed: `nmap_tcp_connect`, `nmap_tcp_syn`,
+`nmap_udp`, and `nmap_sctp_init` are the only native profiles. Mercury derives
+their arguments from the approved plan; there is no `--nmap-args`, script,
+proxy, decoy, target-file, payload, or arbitrary destination option. Native
+results retain Nmap `open`, `closed`, `filtered`, and `open|filtered` as native
+provenance, rather than claiming that Mercury observed an equivalent direct
+socket response. Missing Nmap or native privilege is capability evidence.
+
+For a directed isolation-boundary assessment, provision reciprocal Mercury
+peers with fixed receiver profile ports, start an agent on both, then run the
+configured matrix from the initiating endpoint:
+
+```powershell
+uv run --no-sync python -m mercury coverage --config peer.json --identity campus-pair-01 --address 172.27.20.20 --profiles tcp_tagged,udp_tagged,dns_udp,dns_tcp,icmp_echo,tls_handshake,http_exchange,ssh_banner,arp,ipv6_nd --local-network 172.26.4.0/24 --peer-network 172.27.20.0/24 --authorized
+```
+
+Receivers record only configured short-lived leases and correlate a fixed
+Mercury test record in both directions. TCP, UDP, DNS-over-UDP/TCP, ICMP echo,
+TLS, HTTP, and SSH-banner tests are available when configured; no login or
+credentials are attempted. ARP and IPv6 ND are passive same-link evidence:
+between different subnets they are explicitly `not_applicable`, never evidence
+that the remote peer was reached.
+
+An assessment can identify a tested candidate carrier, for example a tagged
+UDP/DNS message whose peer receipt matches. It cannot establish that every
+untested custom packet sequence or tunnel is impossible. Each result records
+the profile, port, direction, packet shape, time window, evidence, and gaps.
+
 ## Web dashboard and history reports
 
 The dashboard uses the same `MercuryApplication` service boundary as the CLI;
@@ -187,6 +228,9 @@ payloads. It never retains credentials, tokens or private keys.
   protection by default.
 - If a native command is absent or permission is insufficient, inspect the
   capability evidence instead of treating the result as a connectivity claim.
+- A finite matrix can prove that one emitted carrier worked, or show a direct
+  profile-specific negative; it cannot prove that no arbitrary tunnel, packet
+  mutation, or unknown protocol can ever cross the boundary.
 - For a refused TCP connection, inspect the TCP observation; for timeouts or
   UDP silence, treat the result as inconclusive and compare a controlled second
   endpoint or route trace where authorized.
