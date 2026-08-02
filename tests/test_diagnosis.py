@@ -126,7 +126,7 @@ class DiagnosisRunnerTests(unittest.IsolatedAsyncioTestCase):
         compiled = await compile_diagnosis(
             DiagnosisRequest(profile="basic", authorized=True),
             grant=ScopeGrant(
-                networks=(ipaddress.ip_network("1.1.1.1/32"), ipaddress.ip_network("127.0.0.0/8")), hostnames=BASIC_V1.https_hosts,
+                networks=(ipaddress.ip_network("127.0.0.0/8"),), hostnames=BASIC_V1.https_hosts,
                 ports=(53, 443), transports=("tcp",), attested=True,
             ), resolver=resolve,
         )

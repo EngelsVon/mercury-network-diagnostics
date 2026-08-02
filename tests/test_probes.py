@@ -129,9 +129,9 @@ class ResolverIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await helper_rows(accepted)).outcome, CommandOutcome.SUCCESS)
         self.assertEqual((await helper_rows(accepted + ["192.0.2.1"])).error, "ResolutionRowOverflow")
 
-        addresses = [f"2001:4860:4860::{index}" for index in range(MAX_RESOLUTION_ADDRESSES)]
+        addresses = [f"fd00::{index}" for index in range(MAX_RESOLUTION_ADDRESSES)]
         self.assertEqual((await helper_rows(addresses)).outcome, CommandOutcome.SUCCESS)
-        overflow = await helper_rows(addresses + ["2001:4860:4860::100"])
+        overflow = await helper_rows(addresses + ["fd00::100"])
         self.assertEqual((overflow.outcome, overflow.addresses, overflow.error), (CommandOutcome.ERROR, (), "ResolutionAddressOverflow"))
 
     async def test_cancellation_propagates_without_a_late_result(self) -> None:
