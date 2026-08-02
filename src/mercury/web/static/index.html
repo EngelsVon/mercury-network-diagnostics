@@ -8,26 +8,29 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <a class="skip-link" href="#workspace">Skip to task workspace</a>
+  <a class="skip-link" href="#workspace" data-i18n="skip">Skip to task workspace</a>
   <div class="app-shell">
     <header class="masthead">
       <div class="brand-lockup">
         <span class="brand-mark" aria-hidden="true">M</span>
         <div>
-          <p class="eyebrow">Internal network diagnostics</p>
+          <p class="eyebrow" data-i18n="brand-eyebrow">Internal network diagnostics</p>
           <h1>Mercury</h1>
         </div>
       </div>
-      <p id="safety" class="scope-chip"><span aria-hidden="true"></span> Private-network scope active</p>
+      <div class="masthead-actions">
+        <p id="safety" class="scope-chip"><span aria-hidden="true"></span> <span data-i18n="scope">Private-network scope active</span></p>
+        <button id="language-toggle" class="language-toggle" type="button" aria-label="Switch to Chinese">中文</button>
+      </div>
     </header>
 
     <main>
       <section id="workspace" class="intro" aria-labelledby="workspace-heading">
         <div>
-          <p class="eyebrow">Operator workspace</p>
-          <h2 id="workspace-heading">Find the path that still gets through.</h2>
+          <p class="eyebrow" data-i18n="workspace-eyebrow">Operator workspace</p>
+          <h2 id="workspace-heading" data-i18n="workspace-title">Find the path that still gets through.</h2>
         </div>
-        <p>Run a bounded local check, internal mapping, or paired coverage assessment. Results retain the exact direction, profile, and evidence collected.</p>
+        <p data-i18n="workspace-copy">Run a bounded local check, internal mapping, or paired coverage assessment. Results retain the exact direction, profile, and evidence collected.</p>
       </section>
 
       <div class="workspace-grid">
@@ -35,165 +38,165 @@
           <section class="panel status-panel" aria-labelledby="status-heading">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">Read only</p>
-                <h2 id="status-heading">Local status</h2>
+                <p class="eyebrow" data-i18n="status-eyebrow">Read only</p>
+                <h2 id="status-heading" data-i18n="status-title">Local status</h2>
               </div>
               <span class="status-dot" aria-hidden="true"></span>
             </div>
-            <p>Collect interfaces, routes, DNS, neighbour and native-capability evidence without sending probes.</p>
-            <button id="status-button" class="button button-secondary" type="button">Collect passive status</button>
-            <pre id="status-output" class="console" aria-live="polite">Awaiting collection.</pre>
+            <p data-i18n="status-copy">Collect interfaces, routes, DNS, neighbour and native-capability evidence without sending probes.</p>
+            <button id="status-button" class="button button-secondary" type="button" data-i18n="status-button">Collect passive status</button>
+            <pre id="status-output" class="console" aria-live="polite" data-i18n="status-empty">Awaiting collection.</pre>
           </section>
 
           <section class="panel semantics-panel" aria-labelledby="evidence-heading">
-            <p class="eyebrow">Interpretation</p>
-            <h2 id="evidence-heading">Evidence stays precise</h2>
-            <p>Positive, negative, inconclusive, unavailable and error outcomes remain distinct. A gateway, neighbour cache entry or first route hop is not an observed switch.</p>
+            <p class="eyebrow" data-i18n="semantics-eyebrow">Interpretation</p>
+            <h2 id="evidence-heading" data-i18n="semantics-title">Evidence stays precise</h2>
+            <p data-i18n="semantics-copy">Positive, negative, inconclusive, unavailable and error outcomes remain distinct. A gateway, neighbour cache entry or first route hop is not an observed switch.</p>
           </section>
         </aside>
 
         <section class="panel task-panel" aria-labelledby="task-heading">
           <div class="section-heading task-title">
             <div>
-              <p class="eyebrow">Active work</p>
-              <h2 id="task-heading">Create an assessment</h2>
+              <p class="eyebrow" data-i18n="task-eyebrow">Active work</p>
+              <h2 id="task-heading" data-i18n="task-title">Create an assessment</h2>
             </div>
-            <p class="context-label" id="task-context" aria-live="polite">Choose a task to show its inputs.</p>
+            <p class="context-label" id="task-context" aria-live="polite"></p>
           </div>
           <form id="task-form">
             <div class="form-block form-block-wide">
-              <label for="kind">Task kind</label>
+              <label for="kind" data-i18n="kind-label">Task kind</label>
               <select id="kind" name="kind">
-                <option value="diagnose">Diagnose one endpoint</option>
-                <option value="discover_passive">Passive discovery</option>
-                <option value="discover">Authorized discovery</option>
-                <option value="trace">Trace an internal route</option>
-                <option value="paired">Paired diagnostic</option>
-                <option value="mapping">Internal mapping</option>
-                <option value="coverage">Two-endpoint coverage</option>
+                <option value="diagnose" data-i18n="kind-diagnose">Diagnose one endpoint</option>
+                <option value="discover_passive" data-i18n="kind-discover-passive">Passive discovery</option>
+                <option value="discover" data-i18n="kind-discover">Authorized discovery</option>
+                <option value="trace" data-i18n="kind-trace">Trace an internal route</option>
+                <option value="paired" data-i18n="kind-paired">Paired diagnostic</option>
+                <option value="mapping" data-i18n="kind-mapping">Internal mapping</option>
+                <option value="coverage" data-i18n="kind-coverage">Two-endpoint coverage</option>
               </select>
             </div>
 
             <div class="input-cluster" data-kinds="diagnose,discover,trace,paired,coverage">
               <div class="form-block">
-                <label for="target">Target, network, or peer address</label>
+                <label for="target" data-i18n="target-label">Target, network, or peer address</label>
                 <input id="target" name="target" autocomplete="off" placeholder="172.26.4.10">
               </div>
               <div class="form-block" data-kinds="discover,trace">
-                <label for="scope">Authorized CIDR scope</label>
+                <label for="scope" data-i18n="scope-label">Authorized CIDR scope</label>
                 <input id="scope" name="scope" autocomplete="off" placeholder="172.26.4.0/24">
               </div>
             </div>
 
             <div class="input-cluster" data-kinds="diagnose,discover,mapping">
               <div class="form-block" data-kinds="diagnose,discover">
-                <label for="profile">Profile</label>
+                <label for="profile" data-i18n="profile-label">Profile</label>
                 <select id="profile" name="profile"><option value="basic">Basic</option><option value="china">China</option><option value="common">Common TCP discovery</option><option value="custom">Custom TCP discovery</option><option value="full">Full TCP discovery (confirmation required)</option></select>
               </div>
               <div class="form-block" data-kinds="discover,mapping">
-                <label for="ports">Ports (comma-separated)</label>
+                <label for="ports" data-i18n="ports-label">Ports (comma-separated)</label>
                 <input id="ports" name="ports" inputmode="numeric" autocomplete="off" placeholder="53, 80, 443">
               </div>
               <div class="form-block" data-kinds="discover">
-                <label for="confirmation">Full discovery confirmation</label>
+                <label for="confirmation" data-i18n="confirmation-label">Full discovery confirmation</label>
                 <input id="confirmation" name="confirmation" autocomplete="off">
               </div>
             </div>
 
             <div class="input-cluster" data-kinds="mapping,coverage">
               <div class="form-block form-block-wide">
-                <label for="coverage-profiles">Profiles (comma-separated)</label>
+                <label for="coverage-profiles" data-i18n="coverage-profiles-label">Profiles (comma-separated)</label>
                 <input id="coverage-profiles" name="coverage-profiles" autocomplete="off" aria-describedby="mapping-note coverage-note" placeholder="tcp_connect, udp_tagged, nmap_udp">
               </div>
             </div>
 
             <div class="input-cluster" data-kinds="paired,coverage">
               <div class="form-block">
-                <label for="config-path">Paired configuration path</label>
+                <label for="config-path" data-i18n="config-path-label">Paired configuration path</label>
                 <input id="config-path" name="config-path" autocomplete="off" placeholder="peer.json">
               </div>
               <div class="form-block">
-                <label for="identity">Paired peer identity</label>
+                <label for="identity" data-i18n="identity-label">Paired peer identity</label>
                 <input id="identity" name="identity" autocomplete="off" placeholder="boundary-a-b">
               </div>
             </div>
 
             <div class="input-cluster" data-kinds="mapping">
               <div class="form-block form-block-wide">
-                <label for="ranges">Private CIDRs (comma-separated)</label>
+                <label for="ranges" data-i18n="ranges-label">Private CIDRs (comma-separated)</label>
                 <input id="ranges" name="ranges" autocomplete="off" aria-describedby="mapping-note" placeholder="172.26.4.0/24, 172.27.20.0/24">
               </div>
               <div class="form-block">
-                <label for="rate">Attempt-start rate</label>
+                <label for="rate" data-i18n="rate-label">Attempt-start rate</label>
                 <input id="rate" name="rate" type="number" min="1" value="10">
               </div>
               <div class="form-block">
-                <label for="concurrency">Concurrency</label>
+                <label for="concurrency" data-i18n="concurrency-label">Concurrency</label>
                 <input id="concurrency" name="concurrency" type="number" min="1" value="1">
               </div>
               <div class="form-block">
-                <label for="duration">Duration (seconds)</label>
+                <label for="duration" data-i18n="duration-label">Duration (seconds)</label>
                 <input id="duration" name="duration" type="number" min="0" value="0">
               </div>
             </div>
 
             <div class="input-cluster" data-kinds="coverage">
               <div class="form-block form-block-wide">
-                <label for="local-network">Local private CIDR (ARP/ND context)</label>
+                <label for="local-network" data-i18n="local-network-label">Local private CIDR (ARP/ND context)</label>
                 <input id="local-network" name="local-network" autocomplete="off" placeholder="172.26.4.0/24">
               </div>
               <div class="form-block form-block-wide">
-                <label for="peer-network">Peer private CIDR (ARP/ND context)</label>
+                <label for="peer-network" data-i18n="peer-network-label">Peer private CIDR (ARP/ND context)</label>
                 <input id="peer-network" name="peer-network" autocomplete="off" placeholder="172.27.20.0/24">
               </div>
             </div>
 
             <div class="form-footer">
-              <label class="authorization"><input id="authorized" name="authorized" type="checkbox"> <span>I am authorized to test this target</span></label>
-              <button class="button button-primary" type="submit">Start task</button>
+              <label class="authorization"><input id="authorized" name="authorized" type="checkbox"> <span data-i18n="authorized-label">I am authorized to test this target</span></label>
+              <button class="button button-primary" type="submit" data-i18n="start-task">Start task</button>
             </div>
           </form>
-          <p id="mapping-note" class="helper-note">Mapping accepts only private ranges and fixed profiles. Native Nmap profiles never accept free-form arguments. Duration <code>0</code> means no added operator cutoff, within hard ceilings.</p>
-          <p id="coverage-note" class="helper-note">Coverage reports the tested profile, direction, packet shape and time window; it does not claim every possible tunnel has been excluded.</p>
+          <p id="mapping-note" class="helper-note" data-i18n="mapping-note">Mapping accepts only private ranges and fixed profiles. Native Nmap profiles never accept free-form arguments. Duration <code>0</code> means no added operator cutoff, within hard ceilings.</p>
+          <p id="coverage-note" class="helper-note" data-i18n="coverage-note">Coverage reports the tested profile, direction, packet shape and time window; it does not claim every possible tunnel has been excluded.</p>
           <div class="task-feedback" aria-live="polite">
-            <p id="task-state">Ready for a new task.</p>
-            <button id="cancel-button" class="button button-quiet" type="button" disabled>Cancel active task</button>
+            <p id="task-state" data-i18n="task-ready">Ready for a new task.</p>
+            <button id="cancel-button" class="button button-quiet" type="button" disabled data-i18n="cancel-task">Cancel active task</button>
           </div>
-          <pre id="task-output" class="console task-console" aria-live="polite">Task output will appear here.</pre>
+          <pre id="task-output" class="console task-console" aria-live="polite" data-i18n="task-output">Task output will appear here.</pre>
         </section>
       </div>
 
       <section id="coverage-result" class="panel coverage-panel" hidden aria-labelledby="coverage-result-heading">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Assessment result</p>
-            <h2 id="coverage-result-heading">Coverage evidence and gaps</h2>
+            <p class="eyebrow" data-i18n="coverage-result-eyebrow">Assessment result</p>
+            <h2 id="coverage-result-heading" data-i18n="coverage-result-title">Coverage evidence and gaps</h2>
           </div>
-          <p id="coverage-result-note" class="context-label">Rows describe only emitted profiles, ports, directions and the recorded time window.</p>
+          <p id="coverage-result-note" class="context-label" data-i18n="coverage-result-note">Rows describe only emitted profiles, ports, directions and the recorded time window.</p>
         </div>
         <div class="table-scroll"><table>
-          <thead><tr><th scope="col">Profile</th><th scope="col">Direction</th><th scope="col">Port</th><th scope="col">Outcome</th><th scope="col">Evidence</th><th scope="col">Provenance</th></tr></thead>
+          <thead><tr><th scope="col" data-i18n="table-profile">Profile</th><th scope="col" data-i18n="table-direction">Direction</th><th scope="col" data-i18n="table-port">Port</th><th scope="col" data-i18n="table-outcome">Outcome</th><th scope="col" data-i18n="table-evidence">Evidence</th><th scope="col" data-i18n="table-provenance">Provenance</th></tr></thead>
           <tbody id="coverage-result-body"></tbody>
         </table></div>
         <div class="result-summary">
-          <section><p class="eyebrow">Signal</p><h3>Candidate carriers</h3><ul id="candidate-carriers"></ul></section>
-          <section><p class="eyebrow">Coverage boundary</p><h3>Coverage gaps</h3><ul id="coverage-gaps"></ul></section>
+          <section><p class="eyebrow" data-i18n="signal-eyebrow">Signal</p><h3 data-i18n="candidate-title">Candidate carriers</h3><ul id="candidate-carriers"></ul></section>
+          <section><p class="eyebrow" data-i18n="boundary-eyebrow">Coverage boundary</p><h3 data-i18n="gaps-title">Coverage gaps</h3><ul id="coverage-gaps"></ul></section>
         </div>
       </section>
 
       <section class="panel history-panel" aria-labelledby="history-heading">
         <div class="section-heading">
-          <div><p class="eyebrow">Local record</p><h2 id="history-heading">History and reports</h2></div>
-          <button id="history-button" class="button button-secondary" type="button">Refresh completed history</button>
+          <div><p class="eyebrow" data-i18n="history-eyebrow">Local record</p><h2 id="history-heading" data-i18n="history-title">History and reports</h2></div>
+          <button id="history-button" class="button button-secondary" type="button" data-i18n="history-button">Refresh completed history</button>
         </div>
         <div class="history-controls">
-          <div class="form-block"><label for="compare-left">Earlier task ID</label><input id="compare-left" autocomplete="off"></div>
-          <div class="form-block"><label for="compare-right">Later task ID</label><input id="compare-right" autocomplete="off"></div>
-          <button id="compare-button" class="button button-quiet" type="button">Compare tasks</button>
-          <div class="form-block"><label for="report-task">Task ID for redacted HTML report</label><input id="report-task" autocomplete="off"></div>
-          <button id="report-button" class="button button-quiet" type="button">Open redacted report</button>
+          <div class="form-block"><label for="compare-left" data-i18n="compare-left-label">Earlier task ID</label><input id="compare-left" autocomplete="off"></div>
+          <div class="form-block"><label for="compare-right" data-i18n="compare-right-label">Later task ID</label><input id="compare-right" autocomplete="off"></div>
+          <button id="compare-button" class="button button-quiet" type="button" data-i18n="compare-button">Compare tasks</button>
+          <div class="form-block"><label for="report-task" data-i18n="report-task-label">Task ID for redacted HTML report</label><input id="report-task" autocomplete="off"></div>
+          <button id="report-button" class="button button-quiet" type="button" data-i18n="report-button">Open redacted report</button>
         </div>
-        <pre id="history-output" class="console" aria-live="polite">No history requested yet.</pre>
+        <pre id="history-output" class="console" aria-live="polite" data-i18n="history-empty">No history requested yet.</pre>
       </section>
     </main>
   </div>

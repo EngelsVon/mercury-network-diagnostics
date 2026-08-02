@@ -15,7 +15,7 @@ button { cursor: pointer; }
 .skip-link:focus { top: 1rem; }
 .app-shell { width: min(92rem, calc(100% - 2rem)); margin: 0 auto; padding: 1.25rem 0 3rem; }
 .masthead { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .5rem 0 1.4rem; border-bottom: 1px solid #d8d5c9; }
-.brand-lockup, .section-heading, .form-footer, .task-feedback { display: flex; align-items: center; gap: .85rem; }
+.brand-lockup, .masthead-actions, .section-heading, .form-footer, .task-feedback { display: flex; align-items: center; gap: .85rem; }
 .brand-mark { display: grid; width: 2.65rem; height: 2.65rem; place-items: center; border-radius: .55rem; background: #1d2927; color: #f2a65a; font-weight: 800; letter-spacing: -.08em; }
 h1, h2, h3, p { margin: 0; }
 h1, h2, h3 { letter-spacing: -.035em; line-height: 1.12; }
@@ -25,6 +25,8 @@ h3 { font-size: 1rem; }
 .eyebrow { color: #58706a; font-size: .69rem; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
 .scope-chip { display: inline-flex; align-items: center; gap: .5rem; color: #456158; font-size: .84rem; font-weight: 700; }
 .scope-chip span, .status-dot { width: .55rem; height: .55rem; border-radius: 50%; background: #66845c; }
+.language-toggle { border: 1px solid #bfc7bb; border-radius: .42rem; background: #fffdf8; color: #2e463c; padding: .38rem .6rem; font-size: .78rem; font-weight: 750; }
+.language-toggle:hover { background: #edf0e8; }
 
 main { display: grid; gap: 1.15rem; padding-top: 2rem; }
 .intro { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(20rem, .9fr); gap: 2rem; align-items: end; padding: 1rem 0 .8rem; }
@@ -97,6 +99,7 @@ tbody tr:nth-child(even) { background: #fcfbf6; }
   .app-shell { width: min(100% - 1.1rem, 92rem); padding-top: .7rem; }
   .masthead, .intro, .workspace-grid, .result-summary { grid-template-columns: 1fr; }
   .masthead { align-items: flex-start; }
+  .masthead-actions { align-items: flex-end; flex-direction: column; gap: .4rem; }
   .scope-chip { margin-top: .4rem; }
   .intro { gap: .8rem; padding-top: .7rem; }
   .intro h2 { max-width: 13ch; }
