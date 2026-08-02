@@ -27,6 +27,8 @@
           <option value="discover">Authorized discovery</option>
           <option value="trace">Trace</option>
           <option value="paired">Paired diagnostic</option>
+          <option value="mapping">Internal mapping</option>
+          <option value="coverage">Two-endpoint coverage</option>
         </select>
         <label for="profile">Profile</label>
         <select id="profile" name="profile"><option value="basic">Basic</option><option value="china">China</option><option value="common">Common TCP discovery</option><option value="custom">Custom TCP discovery</option><option value="full">Full TCP discovery (confirmation required)</option></select>
@@ -42,9 +44,25 @@
         <input id="config-path" name="config-path" autocomplete="off">
         <label for="identity">Paired peer identity</label>
         <input id="identity" name="identity" autocomplete="off">
+        <label for="ranges">Private CIDRs (comma-separated, mapping)</label>
+        <input id="ranges" name="ranges" autocomplete="off" aria-describedby="mapping-note">
+        <label for="coverage-profiles">Coverage profiles (comma-separated)</label>
+        <input id="coverage-profiles" name="coverage-profiles" autocomplete="off" aria-describedby="coverage-note">
+        <label for="rate">Attempt-start rate (mapping)</label>
+        <input id="rate" name="rate" type="number" min="1" value="10">
+        <label for="concurrency">Concurrency (mapping)</label>
+        <input id="concurrency" name="concurrency" type="number" min="1" value="1">
+        <label for="duration">Duration seconds; 0 scans within hard ceilings</label>
+        <input id="duration" name="duration" type="number" min="0" value="0">
+        <label for="local-network">Local private CIDR (ARP/ND context)</label>
+        <input id="local-network" name="local-network" autocomplete="off">
+        <label for="peer-network">Peer private CIDR (ARP/ND context)</label>
+        <input id="peer-network" name="peer-network" autocomplete="off">
         <label><input id="authorized" name="authorized" type="checkbox"> I am authorized to test this target</label>
         <button type="submit">Start task</button>
       </form>
+      <p id="mapping-note">Mapping accepts only private ranges and fixed profiles. Native Nmap profiles never accept free-form arguments.</p>
+      <p id="coverage-note">Coverage reports the tested profile, direction, packet shape, time window, and any remaining gaps; it does not claim every possible tunnel has been excluded.</p>
       <p id="task-state" aria-live="polite"></p>
       <button id="cancel-button" type="button" disabled>Cancel active task</button>
       <pre id="task-output" aria-live="polite"></pre>

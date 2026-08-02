@@ -67,6 +67,14 @@ class FakeApplication:
         type(self).calls.append("paired")
         return result()
 
+    async def map_internal(self, request) -> TaskResult:
+        type(self).calls.append("mapping")
+        return result()
+
+    async def run_coverage(self, request) -> TaskResult:
+        type(self).calls.append("coverage")
+        return result()
+
     def history_list(self, *, limit: int):
         type(self).calls.append("history_list")
         return ()
@@ -192,6 +200,26 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(self.poll(diagnosis)["state"], "cancelled")
         self.assertEqual(FakeApplication.calls, ["status", "diagnose"])
 
+    def test_mapping_and_coverage_are_closed_facade_requests(self) -> None:
+        self.session()
+        mapping = self.submit({
+            "kind": "mapping", "cidrs": ["127.0.0.1/32"], "profiles": ["nmap_udp"],
+            "ports": [53], "rate": 2, "concurrency": 1, "duration_s": 0, "authorized": True,
+        })
+        self.assertEqual(self.poll(mapping)["state"], "completed")
+        coverage = self.submit({
+            "kind": "coverage", "config_path": "peer.json", "identity": "peer", "address": "127.0.0.1",
+            "profiles": ["tcp_tagged"], "authorized": True,
+        })
+        self.assertEqual(self.poll(coverage)["state"], "completed")
+        self.assertEqual(FakeApplication.calls, ["mapping", "coverage"])
+        status, _, raw = self.request("POST", "/api/tasks", body=json.dumps({
+            "kind": "mapping", "cidrs": ["127.0.0.1/32"], "profiles": ["nmap_udp"], "ports": [53],
+            "authorized": True, "nmap_args": "--script=default",
+        }).encode(), headers=self.task_headers())
+        self.assertEqual(status, 400)
+        self.assertIn("shape", json.loads(raw)["error"]["message"])
+
     def test_non_loopback_requires_tls_and_token_before_listener(self) -> None:
         with self.assertRaisesRegex(WebError, "TLS and a token"):
             WebConfig(bind_host="10.20.30.10")
@@ -206,6 +234,8 @@ class WebServerTests(unittest.TestCase):
         self.assertIn('aria-live="polite"', html)
         self.assertIn('for="kind"', html)
         self.assertIn('src="/static/app.js" defer', html)
+        self.assertIn('value="mapping"', html)
+        self.assertIn('value="coverage"', html)
         self.assertNotIn("onclick=", html)
 
     def test_history_routes_use_the_broker_facade_and_redact_by_default(self) -> None:

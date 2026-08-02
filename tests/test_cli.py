@@ -89,6 +89,21 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(CliError):
             parser.parse_args(("paired", "--config", "peer.json", "--identity", "peer", "--address", "127.0.0.1", "--port", "1"))
 
+    def test_coverage_parser_accepts_only_configured_closed_matrix_inputs(self) -> None:
+        parser = build_parser()
+        coverage = parser.parse_args((
+            "coverage", "--config", "peer.json", "--identity", "peer", "--address", "127.0.0.1",
+            "--profiles", "tcp_tagged,dns_udp,icmp_echo", "--authorized",
+        ))
+        self.assertEqual((coverage.command, coverage.profiles, coverage.authorized), (
+            "coverage", "tcp_tagged,dns_udp,icmp_echo", True,
+        ))
+        with self.assertRaises(CliError):
+            parser.parse_args((
+                "coverage", "--config", "peer.json", "--identity", "peer", "--address", "127.0.0.1",
+                "--profiles", "tcp_tagged", "--nmap-args", "--script=default",
+            ))
+
     def test_web_parser_exposes_only_lifecycle_and_transport_security_options(self) -> None:
         parser = build_parser()
         web = parser.parse_args(("web", "--bind", "127.0.0.1", "--port", "0", "--cert", "cert.pem", "--key", "key.pem", "--token-file", "token.txt"))

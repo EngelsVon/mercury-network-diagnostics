@@ -5,6 +5,8 @@ const state = document.querySelector("#task-state");
 const output = document.querySelector("#task-output");
 const historyOutput = document.querySelector("#history-output");
 function field(name) { return document.querySelector(name).value.trim(); }
+function csv(name) { return field(name) ? field(name).split(",").map((value) => value.trim()).filter(Boolean) : []; }
+function integer(name, fallback) { const value = Number(field(name)); return Number.isInteger(value) ? value : fallback; }
 async function request(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", ...options });
   const value = await response.json();
@@ -57,6 +59,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (kind === "trace") body = { ...body, target, scope };
     if (kind === "paired") body = { ...body, config_path: field("#config-path"), identity: field("#identity"), address: target };
+    if (kind === "mapping") body = {
+      ...body, cidrs: csv("#ranges"), profiles: csv("#coverage-profiles"),
+      ports: csv("#ports").map(Number), rate: integer("#rate", 10),
+      concurrency: integer("#concurrency", 1), duration_s: integer("#duration", 0),
+    };
+    if (kind === "coverage") body = {
+      ...body, config_path: field("#config-path"), identity: field("#identity"), address: target,
+      profiles: csv("#coverage-profiles"), local_network: field("#local-network") || null,
+      peer_network: field("#peer-network") || null,
+    };
     try { await start(body); } catch (error) { state.textContent = error.message; }
   });
   document.querySelector("#cancel-button").addEventListener("click", async () => {

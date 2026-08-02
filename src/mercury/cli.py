@@ -21,7 +21,7 @@ from .codec import dumps_document, result_to_wire
 from .discovery import DiscoveryRequest
 from .trace import TraceRequest
 from .web import WebConfig, serve_web
-from .reports import ReportError, html_report, json_report
+from .reports import ReportError, coverage_html_table, html_report, json_report
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
 from .app import MercuryApplication
 from .models import CoverageProfile, Disposition, EvidenceKind, Health, TaskResult, TaskState
@@ -37,7 +37,7 @@ from .planner import (
 )
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import DiagnosisRequest
-from .paired import PairedRequest
+from .paired import CoverageAssessmentRequest, PairedRequest
 from .render import render_diagnosis, render_discovery, render_history, render_paired, render_preview, render_result, render_status, render_trace
 from .tasks import SyntheticRunner, TaskService
 
@@ -182,6 +182,18 @@ def build_parser() -> argparse.ArgumentParser:
     paired_parser.add_argument("--authorized", action="store_true")
     paired_parser.add_argument("--unsafe-development", action="store_true")
     _add_json_option(paired_parser)
+
+    coverage_parser = subparsers.add_parser("coverage", help="run the configured two-endpoint coverage matrix")
+    coverage_parser.add_argument("--config", type=Path, required=True, help="operator-provisioned peer configuration path")
+    coverage_parser.add_argument("--identity", required=True, help="configured peer identity")
+    coverage_parser.add_argument("--address", required=True, help="configured peer numeric address")
+    coverage_parser.add_argument("--profiles", required=True, help="comma-separated configured coverage profiles")
+    coverage_parser.add_argument("--timeout", type=float, default=3.0)
+    coverage_parser.add_argument("--local-network", help="optional local private CIDR for ARP/ND applicability")
+    coverage_parser.add_argument("--peer-network", help="optional peer private CIDR for ARP/ND applicability")
+    coverage_parser.add_argument("--authorized", action="store_true")
+    coverage_parser.add_argument("--unsafe-development", action="store_true")
+    _add_json_option(coverage_parser)
 
     agent_parser = subparsers.add_parser("agent", help="serve authenticated paired control")
     agent_parser.add_argument("--config", type=Path, required=True, help="operator-provisioned peer configuration path")
@@ -488,7 +500,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
         return EXIT_OK
-    if args.command in {"status", "diagnose", "discover", "trace", "mapping"}:
+    if args.command in {"status", "diagnose", "discover", "trace", "mapping", "coverage"}:
         with HistoryStore(args.data_path) as history:
             application = MercuryApplication(history=history)
             if args.command == "status":
@@ -530,6 +542,20 @@ def _dispatch(args: argparse.Namespace) -> int:
                 )))
                 _emit(result_to_wire(result), render_result(result), as_json=as_json)
                 return task_exit_code(result)
+            if args.command == "coverage":
+                try:
+                    profiles = tuple(CoverageProfile(value.strip()) for value in args.profiles.split(",") if value.strip())
+                except ValueError as exc:
+                    raise CliError("--profiles contains an unsupported coverage profile") from exc
+                result = asyncio.run(application.run_coverage(CoverageAssessmentRequest(
+                    identity=args.identity, address=args.address, config_path=str(args.config),
+                    timeout_s=args.timeout, authorized=args.authorized, profiles=profiles,
+                    unsafe_development=args.unsafe_development, local_network=args.local_network,
+                    peer_network=args.peer_network,
+                )))
+                human = render_paired(result) + "\n\n" + coverage_html_table(result, requested=profiles)
+                _emit(result_to_wire(result), human, as_json=as_json)
+                return paired_exit_code(result)
             request = DiagnosisRequest(
                 profile="custom" if args.target else args.profile,
                 targets=tuple(args.target), timeout_s=args.timeout,

@@ -23,8 +23,9 @@ from ..app import MercuryApplication
 from ..codec import dumps_document, result_to_wire
 from ..discovery import DiscoveryRequest
 from ..history import HistoryStore, sanitize_exception
-from ..models import TaskResult
-from ..paired import PairedRequest
+from ..models import CoverageProfile, TaskResult
+from ..paired import CoverageAssessmentRequest, PairedRequest
+from ..planner import InternalMappingRequest
 from ..policy import PolicyError, TargetKind, parse_target
 from ..profiles import DiagnosisRequest
 from ..trace import TraceRequest
@@ -281,6 +282,33 @@ def _normalize_payload(payload: Mapping[str, object]) -> dict[str, object]:
         body["timeout_s"] = _finite_number(body.get("timeout_s"), "paired timeout", 3.0)
         body["authorized"] = _authorized(body["authorized"])
         return body
+    if kind == "mapping":
+        body = _require_shape(payload, keys=frozenset({"kind", "cidrs", "profiles", "ports", "rate", "concurrency", "duration_s", "authorized"}), required=frozenset({"kind", "cidrs", "profiles", "ports", "authorized"}))
+        cidrs, profiles, ports = body["cidrs"], body["profiles"], body["ports"]
+        if not isinstance(cidrs, list) or not 1 <= len(cidrs) <= 32 or not all(isinstance(item, str) and len(item) <= 64 for item in cidrs):
+            raise WebError("mapping CIDRs are invalid")
+        if not isinstance(profiles, list) or not profiles or not all(isinstance(item, str) and item in {profile.value for profile in CoverageProfile} for item in profiles):
+            raise WebError("mapping profiles are invalid")
+        if not isinstance(ports, list) or not ports or not all(type(item) is int and 1 <= item <= 65_535 for item in ports):
+            raise WebError("mapping ports are invalid")
+        body["rate"] = _bounded_int(body.get("rate"), "mapping rate", 10)
+        body["concurrency"] = _bounded_int(body.get("concurrency"), "mapping concurrency", 1)
+        body["duration_s"] = _bounded_int(body.get("duration_s"), "mapping duration", 0)
+        body["authorized"] = _authorized(body["authorized"])
+        return body
+    if kind == "coverage":
+        body = _require_shape(payload, keys=frozenset({"kind", "config_path", "identity", "address", "profiles", "timeout_s", "authorized", "local_network", "peer_network"}), required=frozenset({"kind", "config_path", "identity", "address", "profiles", "authorized"}))
+        for field in ("config_path", "identity", "address"):
+            body[field] = _string(body[field], field)
+        profiles = body["profiles"]
+        if not isinstance(profiles, list) or not profiles or not all(isinstance(item, str) and item in {profile.value for profile in CoverageProfile} for item in profiles):
+            raise WebError("coverage profiles are invalid")
+        for field in ("local_network", "peer_network"):
+            if body.get(field) is not None:
+                body[field] = _string(body[field], field)
+        body["timeout_s"] = _finite_number(body.get("timeout_s"), "coverage timeout", 3.0)
+        body["authorized"] = _authorized(body["authorized"])
+        return body
     raise WebError("task kind is not allowed")
 
 
@@ -300,6 +328,19 @@ async def _dispatch_facade(application: MercuryApplication, payload: Mapping[str
         return await application.trace(TraceRequest(target=payload["target"], scope=payload["scope"], max_hops=payload["max_hops"], repeats=payload["repeats"], timeout_s=payload["timeout_s"], authorized=payload["authorized"]))
     if kind == "paired":
         return await application.run_paired(PairedRequest(identity=payload["identity"], address=payload["address"], config_path=payload["config_path"], timeout_s=payload["timeout_s"], authorized=payload["authorized"]))
+    if kind == "mapping":
+        return await application.map_internal(InternalMappingRequest(
+            cidrs=tuple(payload["cidrs"]), profiles=tuple(CoverageProfile(item) for item in payload["profiles"]),
+            ports=tuple(payload["ports"]), rate=payload["rate"], concurrency=payload["concurrency"],
+            duration_s=payload["duration_s"], authorized=payload["authorized"],
+        ))
+    if kind == "coverage":
+        return await application.run_coverage(CoverageAssessmentRequest(
+            identity=payload["identity"], address=payload["address"], config_path=payload["config_path"],
+            timeout_s=payload["timeout_s"], authorized=payload["authorized"],
+            profiles=tuple(CoverageProfile(item) for item in payload["profiles"]),
+            local_network=payload.get("local_network"), peer_network=payload.get("peer_network"),
+        ))
     raise RuntimeError("normalized task kind is not allowed")
 
 
