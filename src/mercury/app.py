@@ -14,6 +14,7 @@ from .discovery import (
     run_discovery, run_internal_mapping,
 )
 from .history import HistoryStore
+from .nmap_adapter import run_nmap
 from .inventory import collect_status
 from .models import TaskResult
 from .peer import PeerAgent, PeerClient, PeerConfig, load_peer_config
@@ -78,6 +79,8 @@ class MercuryApplication:
         discovery_grant_factory=default_discovery_grant,
         trace_executor=run_trace,
         trace_grant_factory=default_trace_grant,
+        mapping_executor=run_internal_mapping,
+        nmap_executor=run_nmap,
     ) -> None:
         self.history = history
         self.status_collector = status_collector
@@ -95,6 +98,8 @@ class MercuryApplication:
         self.discovery_grant_factory = discovery_grant_factory
         self.trace_executor = trace_executor
         self.trace_grant_factory = trace_grant_factory
+        self.mapping_executor = mapping_executor
+        self.nmap_executor = nmap_executor
         self._peer_agent: PeerAgent | None = None
 
     async def status(self) -> TaskResult:
@@ -144,8 +149,9 @@ class MercuryApplication:
     async def map_internal(self, request: InternalMappingRequest) -> TaskResult:
         if type(request) is not InternalMappingRequest or not request.authorized:
             raise PolicyError("internal mapping requires explicit authorization attestation")
-        return await run_internal_mapping(
+        return await self.mapping_executor(
             request, history=self.history, service_factory=self.service_factory,
+            nmap_executor=self.nmap_executor,
         )
 
     async def discover(self, request: DiscoveryRequest) -> TaskResult:

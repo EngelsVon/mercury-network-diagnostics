@@ -39,6 +39,7 @@ class ConfirmationError(PermissionError):
 class Transport(StrEnum):
     TCP = "tcp"
     UDP = "udp"
+    SCTP = "sctp"
 
 
 _PRIVATE_V4 = (
@@ -166,6 +167,12 @@ def compile_internal_mapping(
     """Compile the finite cross-product into the existing immutable preview."""
     if type(request) is not InternalMappingRequest or type(limits) is not BudgetLimits:
         raise BudgetError("internal mapping compilation input is invalid")
+    native_profiles = {
+        CoverageProfile.NMAP_TCP_CONNECT, CoverageProfile.NMAP_TCP_SYN,
+        CoverageProfile.NMAP_UDP, CoverageProfile.NMAP_SCTP_INIT,
+    }
+    if any(profile in native_profiles for profile in request.profiles) and len(request.profiles) != 1:
+        raise BudgetError("a native Nmap mapping selects exactly one closed profile per task")
     networks = tuple(ipaddress.ip_network(value) for value in request.cidrs)
     host_count = sum(max(1, network.num_addresses - (2 if network.prefixlen < 31 else 0)) for network in networks)
     if host_count > limits.max_hosts:
@@ -184,6 +191,10 @@ def compile_internal_mapping(
         CoverageProfile.TLS_HANDSHAKE: (ProbeKind.TLS_HANDSHAKE, Transport.TCP),
         CoverageProfile.HTTP_EXCHANGE: (ProbeKind.HTTP_EXCHANGE, Transport.TCP),
         CoverageProfile.SSH_BANNER: (ProbeKind.TCP_CONNECT, Transport.TCP),
+        CoverageProfile.NMAP_TCP_CONNECT: (ProbeKind.NATIVE_PORT_SCAN, Transport.TCP),
+        CoverageProfile.NMAP_TCP_SYN: (ProbeKind.NATIVE_PORT_SCAN, Transport.TCP),
+        CoverageProfile.NMAP_UDP: (ProbeKind.NATIVE_PORT_SCAN, Transport.UDP),
+        CoverageProfile.NMAP_SCTP_INIT: (ProbeKind.NATIVE_PORT_SCAN, Transport.SCTP),
     }
     specs: list[ProbeSpec] = []
     for network in networks:
@@ -194,7 +205,7 @@ def compile_internal_mapping(
                     continue
                 kind, transport = selected
                 for port in request.ports:
-                    udp = transport is Transport.UDP
+                    udp = transport is Transport.UDP and kind is not ProbeKind.NATIVE_PORT_SCAN
                     payload = PayloadMetadata(
                         f"mapping-{profile.value}-outbound",
                         1 if udp else 0,
@@ -412,12 +423,16 @@ class ProbeStep:
         ported = {
             ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE,
             ProbeKind.TLS_HANDSHAKE, ProbeKind.HTTP_EXCHANGE,
+            ProbeKind.NATIVE_PORT_SCAN,
         }
         if self.probe_kind in ported:
             if address_target is None or type(self.port) is not int or not 1 <= self.port <= 65_535:
                 raise BudgetError("ported step requires a concrete address and port")
             expected = Transport.UDP if self.probe_kind is ProbeKind.UDP_EXCHANGE else Transport.TCP
-            if self.transport is not expected:
+            native_transport = self.probe_kind is ProbeKind.NATIVE_PORT_SCAN and self.transport in {
+                Transport.TCP, Transport.UDP, Transport.SCTP,
+            }
+            if self.transport is not expected and not native_transport:
                 raise BudgetError("step transport does not match probe kind")
         else:
             if self.port is not None or self.transport is not None:
@@ -586,7 +601,7 @@ class PlanPreview:
         if any(type(port) is not int or not 1 <= port <= 65_535 for port in self.ports):
             raise BudgetError("plan contains an invalid port")
         if any(
-            type(transport) is not str or transport not in {"tcp", "udp"}
+            type(transport) is not str or transport not in {"tcp", "udp", "sctp"}
             for transport in self.transports
         ):
             raise BudgetError("plan contains an invalid transport")

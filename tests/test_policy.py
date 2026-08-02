@@ -57,6 +57,7 @@ class SparseProbePlanTests(unittest.TestCase):
             ProbeSpec(ProbeKind.HTTP_EXCHANGE, "localhost", address="127.0.0.1", port=443, transport=Transport.TCP, server_name="localhost", http_scheme="https", cost=self._cost()),
             ProbeSpec(ProbeKind.NATIVE_PING, "127.0.0.1", address="127.0.0.1", cost=self._cost()),
             ProbeSpec(ProbeKind.NATIVE_PATH, "127.0.0.1", address="127.0.0.1", max_hops=8, cost=self._cost(observations=9, packets=8)),
+            ProbeSpec(ProbeKind.NATIVE_PORT_SCAN, "127.0.0.1", address="127.0.0.1", port=53, transport=Transport.SCTP, cost=self._cost()),
         )
         preview = preview_probe_plan(specs=specs, grant=ScopeGrant(networks=()), now=NOW)
         self.assertEqual({step.probe_kind for step in preview.steps}, set(ProbeKind))
@@ -593,7 +594,7 @@ class BudgetTests(unittest.TestCase):
             grant=ScopeGrant(networks=()),
             now=NOW,
         )
-        self.assertEqual({step.transport for step in preview.steps}, set(Transport))
+        self.assertEqual({step.transport for step in preview.steps}, {Transport.TCP, Transport.UDP})
 
     def test_cross_product_is_rejected_cheaply(self) -> None:
         grant = ScopeGrant(

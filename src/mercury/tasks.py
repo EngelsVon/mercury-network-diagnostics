@@ -100,6 +100,7 @@ _ALLOWED_EVIDENCE = {
     ProbeKind.HTTP_EXCHANGE: frozenset({EvidenceKind.HTTP_RESPONSE, EvidenceKind.TLS_VERIFICATION_FAILED, EvidenceKind.TLS_HANDSHAKE_FAILED, EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.TIMEOUT, EvidenceKind.EXECUTION_ERROR}),
     ProbeKind.NATIVE_PING: frozenset({EvidenceKind.NATIVE_PING_REPLY, EvidenceKind.NATIVE_PING_FAILURE, EvidenceKind.ICMP_UNREACHABLE, EvidenceKind.NETWORK_UNREACHABLE, EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
     ProbeKind.NATIVE_PATH: frozenset({EvidenceKind.PATH_HOP, EvidenceKind.PATH_HOP_UNANSWERED, EvidenceKind.PATH_COMPLETE, EvidenceKind.PATH_INCOMPLETE, EvidenceKind.TIMEOUT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
+    ProbeKind.NATIVE_PORT_SCAN: frozenset({EvidenceKind.NATIVE_PORT_STATE, EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.UNSUPPORTED, EvidenceKind.PERMISSION_DENIED, EvidenceKind.EXECUTION_ERROR}),
 }
 
 

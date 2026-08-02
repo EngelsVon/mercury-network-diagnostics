@@ -203,7 +203,7 @@ class ScopeGrant:
             canonical_ports.add(value)
         canonical_transports: set[str] = set()
         for value in self.transports:
-            if type(value) is not str or value.casefold() not in {"tcp", "udp"}:
+            if type(value) is not str or value.casefold() not in {"tcp", "udp", "sctp"}:
                 raise PolicyError(f"invalid scope transport {value!r}")
             canonical_transports.add(value.casefold())
         canonical_kinds: set[ProbeKind] = set()
@@ -266,6 +266,7 @@ class ScopeGrant:
             ProbeKind.UDP_EXCHANGE,
             ProbeKind.TLS_HANDSHAKE,
             ProbeKind.HTTP_EXCHANGE,
+            ProbeKind.NATIVE_PORT_SCAN,
         }
         if kind not in ported:
             return port is None and transport is None

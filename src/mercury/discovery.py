@@ -25,7 +25,9 @@ from .models import (
     Capability, CapabilityState, Conclusion, Confidence, Direction,
     Disposition, EffectiveConfig, EvidenceKind, Health, Observation,
     Progress, TaskResult, TaskState, utc_now,
+    CoverageProfile,
 )
+from .nmap_adapter import NativeNmapResult, NativePortState, run_nmap
 from .planner import (
     ABSOLUTE_CEILINGS, DEFAULT_LIMITS, BudgetLimits, InternalMappingRequest, PlanPreview, ProbePlan,
     confirmation_phrase, authorize_internal_mapping, authorize_plan, preview_plan,
@@ -386,13 +388,91 @@ class MappingRunner(DiscoveryRunner):
     """Run only the already-admitted port-capable mapping plan steps."""
 
 
+_NATIVE_NMAP_PROFILES = frozenset({
+    CoverageProfile.NMAP_TCP_CONNECT, CoverageProfile.NMAP_TCP_SYN,
+    CoverageProfile.NMAP_UDP, CoverageProfile.NMAP_SCTP_INIT,
+})
+
+
+class NativeMappingRunner:
+    """Bind one fixed native Nmap profile to each admitted plan step."""
+
+    def __init__(self, profile: CoverageProfile, *, executor=run_nmap) -> None:
+        if profile not in _NATIVE_NMAP_PROFILES:
+            raise ValueError("native mapping runner requires one closed Nmap profile")
+        self.profile = profile
+        self.executor = executor
+
+    async def __call__(self, context: TaskContext) -> None:
+        prepared = [await context.admit(step.id) for step in context.plan.preview.steps]
+        result = await self.executor(context.plan, self.profile)
+        if type(result) is not NativeNmapResult:
+            raise RuntimeError("native Nmap executor returned an invalid result")
+        states = {(item.address, item.port, item.protocol): item for item in result.ports}
+        capability_added = False
+        for item in prepared:
+            state = states.get((item.address or item.step.target, item.step.port, item.step.transport.value if item.step.transport else ""))
+            observation, capability = _native_mapping_observation(item, self.profile, result, state)
+            if capability is not None and not capability_added:
+                context.add_capability(capability, step_id=item.step.id)
+                capability_added = True
+            context.record(observation, step_id=item.step.id)
+            context.complete_attempt(item.step.id)
+
+
+def _native_mapping_observation(
+    prepared, profile: CoverageProfile, result: NativeNmapResult, state: NativePortState | None,
+) -> tuple[Observation, Capability | None]:
+    """Translate native state without calling it direct Mercury wire evidence."""
+    started = utc_now()
+    detail: dict[str, object] = {
+        "native_profile": profile.value,
+        "native_provenance": "nmap_xml_v1",
+    }
+    capability: Capability | None = None
+    if state is not None:
+        detail.update({"native_state": state.state, "native_reason": state.reason})
+        disposition = {
+            "open": Disposition.POSITIVE,
+            "closed": Disposition.NEGATIVE,
+            "filtered": Disposition.INCONCLUSIVE,
+            "open|filtered": Disposition.INCONCLUSIVE,
+        }[state.state]
+        kind = EvidenceKind.NATIVE_PORT_STATE
+    elif result.outcome is CommandOutcome.MISSING_TOOL:
+        kind, disposition = EvidenceKind.UNSUPPORTED, Disposition.UNAVAILABLE
+        detail["native_outcome"] = result.outcome.value
+        capability = Capability("nmap", CapabilityState.MISSING_TOOL, "mercury.nmap", result.diagnostic)
+    elif result.outcome is CommandOutcome.PERMISSION_DENIED:
+        kind, disposition = EvidenceKind.PERMISSION_DENIED, Disposition.UNAVAILABLE
+        detail["native_outcome"] = result.outcome.value
+        capability = Capability("nmap", CapabilityState.PERMISSION_DENIED, "mercury.nmap", result.diagnostic)
+    elif result.outcome is CommandOutcome.TIMEOUT:
+        kind, disposition = EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE
+        detail["native_outcome"] = result.outcome.value
+    elif result.outcome in {CommandOutcome.SUCCESS, CommandOutcome.NONZERO}:
+        kind, disposition = EvidenceKind.SILENT, Disposition.INCONCLUSIVE
+        detail["native_outcome"] = result.outcome.value
+    else:
+        kind, disposition = EvidenceKind.EXECUTION_ERROR, Disposition.ERROR
+        detail["native_outcome"] = result.outcome.value
+    return Observation(
+        id=f"nmap-{prepared.step.id[5:21]}", probe=prepared.step.probe_kind.value,
+        disposition=disposition, evidence_kind=kind, direction=Direction.OUTBOUND,
+        target=prepared.address or prepared.step.target, started_at=started, ended_at=utc_now(),
+        duration_ms=0, attempt=prepared.step.attempt, source="mercury.nmap", detail=detail,
+    ), capability
+
+
 async def run_internal_mapping(
     request: InternalMappingRequest, *, history: HistoryStore, service_factory=TaskService,
+    nmap_executor=run_nmap,
 ) -> TaskResult:
     plan = authorize_internal_mapping(request)
     service = service_factory(history)
+    native = request.profiles[0] if len(request.profiles) == 1 and request.profiles[0] in _NATIVE_NMAP_PROFILES else None
     task_id = service.submit(
-        plan, MappingRunner(), task_kind="internal_mapping",
+        plan, NativeMappingRunner(native, executor=nmap_executor) if native is not None else MappingRunner(), task_kind="internal_mapping",
         requested_config={
             "targets": list(request.cidrs), "profile": "internal-mapping-v1:" + ",".join(profile.value for profile in request.profiles),
             "ports": list(request.ports), "rate": request.rate, "concurrency": request.concurrency,

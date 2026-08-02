@@ -5,7 +5,9 @@ import unittest
 
 from mercury.app import MercuryApplication
 from mercury.history import HistoryStore
-from mercury.models import CoverageProfile
+from mercury.models import CoverageProfile, Disposition, EvidenceKind
+from mercury.nmap_adapter import NativeNmapResult, NativePortState
+from mercury.platform.common import CommandOutcome
 from mercury.planner import BudgetError, InternalMappingRequest, authorize_internal_mapping, compile_internal_mapping
 from mercury.policy import PolicyError
 
@@ -55,6 +57,20 @@ class InternalMappingRequestTests(unittest.TestCase):
                 ports=(443,), rate=1, concurrency=1, duration_s=0, authorized=True,
             ))
         self.assertEqual(plan.preview.profile, "internal-mapping-v1")
+
+    def test_native_profile_is_a_closed_single_profile_plan(self) -> None:
+        request = InternalMappingRequest(
+            cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.NMAP_SCTP_INIT,),
+            ports=(53,), rate=2, concurrency=1, duration_s=0, authorized=True,
+        )
+        step = compile_internal_mapping(request).steps[0]
+        self.assertEqual((step.probe_kind.value, step.transport.value), ("native_port_scan", "sctp"))
+        with self.assertRaisesRegex(BudgetError, "exactly one"):
+            compile_internal_mapping(InternalMappingRequest(
+                cidrs=("127.0.0.1/32",),
+                profiles=(CoverageProfile.NMAP_UDP, CoverageProfile.UDP_TAGGED),
+                ports=(53,), rate=2, concurrency=1, duration_s=0, authorized=True,
+            ))
 
 
 class InternalMappingExecutionTests(unittest.IsolatedAsyncioTestCase):
@@ -115,3 +131,29 @@ class InternalMappingExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("payload", result.observations[0].detail)
         finally:
             transport.close()
+
+    async def test_native_mapping_persists_native_provenance_without_command_or_xml(self) -> None:
+        async def native(plan, profile):
+            self.assertEqual(profile, CoverageProfile.NMAP_UDP)
+            return NativeNmapResult(
+                profile, CommandOutcome.SUCCESS,
+                (NativePortState("127.0.0.1", 53, "udp", "open|filtered", "no-response"),),
+            )
+
+        with HistoryStore(":memory:") as history:
+            result = await MercuryApplication(history=history, nmap_executor=native).map_internal(
+                InternalMappingRequest(
+                    cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.NMAP_UDP,),
+                    ports=(53,), rate=10, concurrency=1, duration_s=0, authorized=True,
+                )
+            )
+            stored = history.get_task(result.task_id)
+        observation = result.observations[0]
+        self.assertEqual(
+            (observation.evidence_kind, observation.disposition, observation.source),
+            (EvidenceKind.NATIVE_PORT_STATE, Disposition.INCONCLUSIVE, "mercury.nmap"),
+        )
+        self.assertEqual(observation.detail["native_state"], "open|filtered")
+        self.assertNotIn("argv", observation.detail)
+        self.assertNotIn("xml", observation.detail)
+        self.assertIsNotNone(stored)

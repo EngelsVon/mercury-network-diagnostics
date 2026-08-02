@@ -82,6 +82,7 @@ class EvidenceKind(StrEnum):
     DNS_QUERY = "dns_query"
     SSH_BANNER = "ssh_banner"
     NEIGHBOUR_FACT = "neighbour_fact"
+    NATIVE_PORT_STATE = "native_port_state"
 
 
 class CoverageProfile(StrEnum):
@@ -127,6 +128,7 @@ class ProbeKind(StrEnum):
     HTTP_EXCHANGE = "http_exchange"
     NATIVE_PING = "native_ping"
     NATIVE_PATH = "native_path"
+    NATIVE_PORT_SCAN = "native_port_scan"
 
 
 class Confidence(StrEnum):
@@ -190,6 +192,9 @@ _KIND_DISPOSITIONS: dict[EvidenceKind, frozenset[Disposition]] = {
     EvidenceKind.DNS_QUERY: frozenset({Disposition.POSITIVE}),
     EvidenceKind.SSH_BANNER: frozenset({Disposition.POSITIVE}),
     EvidenceKind.NEIGHBOUR_FACT: frozenset({Disposition.POSITIVE}),
+    EvidenceKind.NATIVE_PORT_STATE: frozenset({
+        Disposition.POSITIVE, Disposition.NEGATIVE, Disposition.INCONCLUSIVE,
+    }),
 }
 
 _SCHEMA_10_EVIDENCE_KINDS = frozenset(
@@ -198,6 +203,7 @@ _SCHEMA_10_EVIDENCE_KINDS = frozenset(
         "native_ping_failure", "path_hop", "path_hop_unanswered",
         "path_complete", "path_incomplete", "peer_acknowledgement", "dns_query",
         "ssh_banner", "neighbour_fact",
+        "native_port_state",
     }
 )
 _SCHEMA_EVIDENCE_KINDS: Mapping[str, frozenset[EvidenceKind]] = MappingProxyType({
