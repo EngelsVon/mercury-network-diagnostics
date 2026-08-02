@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
+import ipaddress
 import math
+import re
 from types import MappingProxyType
 from typing import Any, Mapping, TypeAlias
 
@@ -76,6 +78,42 @@ class EvidenceKind(StrEnum):
     PATH_HOP_UNANSWERED = "path_hop_unanswered"
     PATH_COMPLETE = "path_complete"
     PATH_INCOMPLETE = "path_incomplete"
+    PEER_ACKNOWLEDGEMENT = "peer_acknowledgement"
+    DNS_QUERY = "dns_query"
+    SSH_BANNER = "ssh_banner"
+    NEIGHBOUR_FACT = "neighbour_fact"
+
+
+class CoverageProfile(StrEnum):
+    """Closed protocol profiles available to a paired coverage assessment."""
+
+    TCP_CONNECT = "tcp_connect"
+    TCP_TAGGED = "tcp_tagged"
+    UDP_TAGGED = "udp_tagged"
+    DNS_UDP = "dns_udp"
+    DNS_TCP = "dns_tcp"
+    ICMP_ECHO = "icmp_echo"
+    TLS_HANDSHAKE = "tls_handshake"
+    HTTP_EXCHANGE = "http_exchange"
+    SSH_BANNER = "ssh_banner"
+    ARP = "arp"
+    IPV6_ND = "ipv6_nd"
+    NMAP_TCP_CONNECT = "nmap_tcp_connect"
+    NMAP_TCP_SYN = "nmap_tcp_syn"
+    NMAP_UDP = "nmap_udp"
+    NMAP_SCTP_INIT = "nmap_sctp_init"
+
+
+class CoverageOutcome(StrEnum):
+    """The finite, non-universal terminal labels for a coverage matrix row."""
+
+    CANDIDATE_CARRIER = "candidate_carrier"
+    DIRECT_NEGATIVE = "direct_negative"
+    INCONCLUSIVE = "inconclusive_silence_or_timeout"
+    UNSUPPORTED = "unsupported"
+    PERMISSION_DENIED = "permission_denied"
+    SKIPPED = "skipped"
+    NOT_APPLICABLE = "not_applicable"
 
 
 class ProbeKind(StrEnum):
@@ -148,13 +186,18 @@ _KIND_DISPOSITIONS: dict[EvidenceKind, frozenset[Disposition]] = {
     EvidenceKind.PATH_HOP_UNANSWERED: frozenset({Disposition.INCONCLUSIVE}),
     EvidenceKind.PATH_COMPLETE: frozenset({Disposition.POSITIVE}),
     EvidenceKind.PATH_INCOMPLETE: frozenset({Disposition.INCONCLUSIVE}),
+    EvidenceKind.PEER_ACKNOWLEDGEMENT: frozenset({Disposition.POSITIVE}),
+    EvidenceKind.DNS_QUERY: frozenset({Disposition.POSITIVE}),
+    EvidenceKind.SSH_BANNER: frozenset({Disposition.POSITIVE}),
+    EvidenceKind.NEIGHBOUR_FACT: frozenset({Disposition.POSITIVE}),
 }
 
 _SCHEMA_10_EVIDENCE_KINDS = frozenset(
     kind for kind in EvidenceKind if kind.value not in {
         "tls_verification_failed", "tls_handshake_failed", "native_ping_reply",
         "native_ping_failure", "path_hop", "path_hop_unanswered",
-        "path_complete", "path_incomplete",
+        "path_complete", "path_incomplete", "peer_acknowledgement", "dns_query",
+        "ssh_banner", "neighbour_fact",
     }
 )
 _SCHEMA_EVIDENCE_KINDS: Mapping[str, frozenset[EvidenceKind]] = MappingProxyType({
@@ -225,6 +268,50 @@ class Capability:
             raise ModelError("capability detail exceeds 4096 characters")
         if "\x00" in self.detail:
             raise ModelError("capability detail contains NUL")
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageReceipt:
+    """Bounded peer-side arrival evidence; it never retains a raw test tag."""
+
+    correlation_id: str
+    profile: CoverageProfile
+    source_address: str
+    source_port: int
+    destination_port: int
+    arrived_at: datetime
+    payload_sha256: str
+    payload_length: int
+    direction: Direction
+    provenance: str
+    reply_result: str
+
+    def __post_init__(self) -> None:
+        _validate_text(self.correlation_id, "receipt correlation", maximum=64)
+        if not self.correlation_id.isascii():
+            raise ModelError("receipt correlation must be ASCII")
+        if type(self.profile) is not CoverageProfile:
+            raise ModelError("receipt profile must be CoverageProfile")
+        try:
+            source = str(ipaddress.ip_address(self.source_address))
+        except ValueError as exc:
+            raise ModelError("receipt source address is invalid") from exc
+        object.__setattr__(self, "source_address", source)
+        for value, name in (
+            (self.source_port, "receipt source port"),
+            (self.destination_port, "receipt destination port"),
+        ):
+            if type(value) is not int or not 0 <= value <= 65_535:
+                raise ModelError(f"{name} is invalid")
+        _validate_datetime(self.arrived_at, "receipt arrival time")
+        if not isinstance(self.payload_sha256, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.payload_sha256):
+            raise ModelError("receipt payload digest is invalid")
+        if type(self.payload_length) is not int or not 0 <= self.payload_length <= 65_535:
+            raise ModelError("receipt payload length is invalid")
+        if type(self.direction) is not Direction:
+            raise ModelError("receipt direction must be Direction")
+        _validate_text(self.provenance, "receipt provenance", maximum=256)
+        _validate_text(self.reply_result, "receipt reply result", maximum=128)
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,6 +574,9 @@ __all__ = [
     "CapabilityState",
     "Conclusion",
     "Confidence",
+    "CoverageOutcome",
+    "CoverageProfile",
+    "CoverageReceipt",
     "Direction",
     "Disposition",
     "EffectiveConfig",

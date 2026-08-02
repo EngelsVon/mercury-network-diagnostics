@@ -13,7 +13,7 @@ from mercury.codec import result_from_json, result_to_json
 from mercury.app import MercuryApplication
 from mercury.history import HistoryStore
 from mercury.models import (
-    Direction, Disposition, EffectiveConfig, EvidenceKind,
+    CoverageOutcome, CoverageProfile, Direction, Disposition, EffectiveConfig, EvidenceKind,
     Health, Observation, Progress, TaskResult, TaskState, utc_now,
 )
 from mercury.paired import (
@@ -28,6 +28,7 @@ from mercury.paired import (
     PairedRunner,
     encode_tcp_tag,
     encode_udp_tag,
+    coverage_matrix,
     is_valid_udp_tag,
     paired_matrix,
 )
@@ -288,6 +289,21 @@ class UdpProfileTests(unittest.TestCase):
 
 
 class MatrixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_coverage_matrix_requires_arrival_or_response_for_candidate_carrier(self) -> None:
+        result = _role_result("local", Disposition.POSITIVE, EvidenceKind.PEER_OBSERVED_ARRIVAL)
+        observation = replace(
+            result.observations[0],
+            detail={"coverage_profile": CoverageProfile.TCP_TAGGED.value, "paired_phase": "A-to-B"},
+        )
+        rows = coverage_matrix(
+            replace(result, observations=(observation,)),
+            requested=(CoverageProfile.TCP_TAGGED,),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].outcome, CoverageOutcome.CANDIDATE_CARRIER)
+        self.assertEqual(rows[0].direction, "A-to-B")
+        self.assertIn("profile, port/packet shape", rows[0].limitations[0])
+
     async def test_matrix_is_cited_and_preserves_directional_phases(self) -> None:
         lease = _lease()
         temporary = tempfile.TemporaryDirectory()

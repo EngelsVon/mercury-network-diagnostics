@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import FrozenInstanceError, replace
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mercury.codec import (
     CodecError,
@@ -17,6 +17,9 @@ from mercury.models import (
     CapabilityState,
     Conclusion,
     Confidence,
+    CoverageOutcome,
+    CoverageProfile,
+    CoverageReceipt,
     Direction,
     Disposition,
     EffectiveConfig,
@@ -33,6 +36,24 @@ from tests.helpers import sample_observation, sample_result
 
 
 class ModelTests(unittest.TestCase):
+    def test_coverage_receipt_requires_bound_arrival_fields(self) -> None:
+        receipt = CoverageReceipt(
+            correlation_id="coverage-1", profile=CoverageProfile.UDP_TAGGED,
+            source_address="127.0.0.1", source_port=53000, destination_port=53001,
+            arrived_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+            payload_sha256="sha256:" + "a" * 64, payload_length=48,
+            direction=Direction.INBOUND, provenance="mercury.receiver", reply_result="echoed",
+        )
+        self.assertEqual(receipt.profile, CoverageProfile.UDP_TAGGED)
+        self.assertEqual(CoverageOutcome.CANDIDATE_CARRIER.value, "candidate_carrier")
+        for field, value in (
+            ("correlation_id", ""), ("source_address", "not-an-address"),
+            ("payload_sha256", "sha256:short"), ("payload_length", -1),
+            ("provenance", ""),
+        ):
+            with self.subTest(field=field), self.assertRaises(ModelError):
+                replace(receipt, **{field: value})
+
     def test_round_trip_is_stable(self) -> None:
         original = sample_result()
         encoded = result_to_json(original)

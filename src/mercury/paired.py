@@ -22,6 +22,8 @@ from .codec import result_from_wire, result_to_wire
 from .models import (
     Confidence,
     Conclusion,
+    CoverageOutcome,
+    CoverageProfile,
     Direction,
     Disposition,
     EvidenceKind,
@@ -43,6 +45,7 @@ _TCP_REPLY = b"MRP1A"
 _MAX_PAYLOAD = 1_400
 _MATRIX_ORDER = {"local_snapshot": 0, "system_dns": 1, "native_path": 2, "tcp_connect": 3, "udp_exchange": 4, "tls_handshake": 5, "http_exchange": 6}
 _PAIRED_MANIFEST = "paired-v1"
+_COVERAGE_MANIFEST = "coverage-v2"
 _ROLE_A_TO_B = "A-to-B"
 _ROLE_B_TO_A = "B-to-A"
 # The data-plane lease remains bounded by the configured profile.  Control gets
@@ -90,6 +93,33 @@ class PairedMatrixRow:
     confidence: Confidence
     observation_ids: tuple[str, ...]
     limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageMatrixRow:
+    """One finite profile/direction conclusion with its exact evidence scope."""
+
+    profile: CoverageProfile
+    direction: str
+    outcome: CoverageOutcome
+    observation_ids: tuple[str, ...]
+    provenance: tuple[str, ...]
+    limitations: tuple[str, ...]
+
+
+DEFAULT_COVERAGE_PROFILES = (
+    CoverageProfile.TCP_CONNECT,
+    CoverageProfile.TCP_TAGGED,
+    CoverageProfile.UDP_TAGGED,
+    CoverageProfile.DNS_UDP,
+    CoverageProfile.DNS_TCP,
+    CoverageProfile.ICMP_ECHO,
+    CoverageProfile.TLS_HANDSHAKE,
+    CoverageProfile.HTTP_EXCHANGE,
+    CoverageProfile.SSH_BANNER,
+    CoverageProfile.ARP,
+    CoverageProfile.IPV6_ND,
+)
 
 
 class PairedRunner:
@@ -388,6 +418,106 @@ def paired_matrix(result: TaskResult) -> tuple[PairedMatrixRow, ...]:
             limitations=limitations,
         ))
     return tuple(rows)
+
+
+def coverage_matrix(
+    result: TaskResult,
+    *,
+    requested: tuple[CoverageProfile, ...] = DEFAULT_COVERAGE_PROFILES,
+) -> tuple[CoverageMatrixRow, ...]:
+    """Project finite profile evidence without inferring an untested carrier.
+
+    A row is positive only when the canonical observations include a receiver
+    arrival, peer acknowledgement, or protocol response.  Merely having a
+    receiver lease is not evidence that a packet crossed the boundary.
+    """
+    if type(result) is not TaskResult:
+        raise PairedError("coverage matrix requires a canonical task result")
+    if not isinstance(requested, tuple) or not requested or any(
+        type(profile) is not CoverageProfile for profile in requested
+    ) or len(set(requested)) != len(requested):
+        raise PairedError("coverage profiles must be a non-empty unique tuple")
+    grouped: dict[tuple[CoverageProfile, str], list[Observation]] = {}
+    for observation in result.observations:
+        profile = _coverage_profile_for(observation)
+        if profile is None or profile not in requested:
+            continue
+        direction = str(observation.detail.get("paired_phase", "local"))
+        grouped.setdefault((profile, direction), []).append(observation)
+    rows: list[CoverageMatrixRow] = []
+    directions = (_ROLE_A_TO_B, _ROLE_B_TO_A)
+    for profile in requested:
+        profile_directions = tuple(
+            direction for candidate, direction in grouped if candidate is profile
+        ) or directions
+        for direction in profile_directions:
+            observations = grouped.get((profile, direction), [])
+            if not observations:
+                outcome = CoverageOutcome.SKIPPED
+                limitations = ("This selected profile/direction has no emitted evidence.",)
+            else:
+                outcome = _coverage_outcome(observations)
+                limitations = _coverage_limitations(profile, outcome)
+            rows.append(CoverageMatrixRow(
+                profile=profile, direction=direction, outcome=outcome,
+                observation_ids=tuple(item.id for item in observations),
+                provenance=tuple(sorted({item.source for item in observations})),
+                limitations=limitations,
+            ))
+    return tuple(rows)
+
+
+def _coverage_profile_for(observation: Observation) -> CoverageProfile | None:
+    configured = observation.detail.get("coverage_profile")
+    if isinstance(configured, str):
+        try:
+            return CoverageProfile(configured)
+        except ValueError:
+            return None
+    return {
+        ProbeKind.TCP_CONNECT.value: CoverageProfile.TCP_CONNECT,
+        ProbeKind.UDP_EXCHANGE.value: CoverageProfile.UDP_TAGGED,
+        ProbeKind.TLS_HANDSHAKE.value: CoverageProfile.TLS_HANDSHAKE,
+        ProbeKind.HTTP_EXCHANGE.value: CoverageProfile.HTTP_EXCHANGE,
+        ProbeKind.NATIVE_PING.value: CoverageProfile.ICMP_ECHO,
+    }.get(observation.probe)
+
+
+def _coverage_outcome(observations: list[Observation]) -> CoverageOutcome:
+    kinds = {item.evidence_kind for item in observations}
+    if kinds & {
+        EvidenceKind.PEER_OBSERVED_ARRIVAL, EvidenceKind.PEER_ACKNOWLEDGEMENT,
+        EvidenceKind.DNS_ANSWER, EvidenceKind.DNS_QUERY, EvidenceKind.TLS_HANDSHAKE,
+        EvidenceKind.HTTP_RESPONSE, EvidenceKind.SSH_BANNER,
+        EvidenceKind.UDP_APPLICATION_REPLY, EvidenceKind.TCP_CONNECTED,
+        EvidenceKind.NATIVE_PING_REPLY,
+    }:
+        return CoverageOutcome.CANDIDATE_CARRIER
+    if EvidenceKind.PERMISSION_DENIED in kinds:
+        return CoverageOutcome.PERMISSION_DENIED
+    if EvidenceKind.UNSUPPORTED in kinds:
+        return CoverageOutcome.UNSUPPORTED
+    if kinds & {EvidenceKind.TIMEOUT, EvidenceKind.SILENT, EvidenceKind.PATH_HOP_UNANSWERED}:
+        return CoverageOutcome.INCONCLUSIVE
+    if kinds & {
+        EvidenceKind.TCP_REFUSED, EvidenceKind.TCP_RESET, EvidenceKind.NETWORK_UNREACHABLE,
+        EvidenceKind.HOST_UNREACHABLE, EvidenceKind.ICMP_UNREACHABLE,
+        EvidenceKind.ADMIN_PROHIBITED, EvidenceKind.TLS_VERIFICATION_FAILED,
+        EvidenceKind.TLS_HANDSHAKE_FAILED, EvidenceKind.NATIVE_PING_FAILURE,
+    }:
+        return CoverageOutcome.DIRECT_NEGATIVE
+    return CoverageOutcome.SKIPPED
+
+
+def _coverage_limitations(profile: CoverageProfile, outcome: CoverageOutcome) -> tuple[str, ...]:
+    scoped = "The outcome applies only to this emitted profile, port/packet shape, direction, and time window."
+    if profile in {CoverageProfile.ARP, CoverageProfile.IPV6_ND}:
+        return ("ARP/ND is local-link evidence only and cannot establish cross-subnet remote reachability.", scoped)
+    if outcome is CoverageOutcome.INCONCLUSIVE:
+        return ("Silence or timeout does not identify the blocking device or cause.", scoped)
+    if outcome in {CoverageOutcome.UNSUPPORTED, CoverageOutcome.PERMISSION_DENIED, CoverageOutcome.SKIPPED}:
+        return ("This is a coverage gap, not negative reachability evidence.", scoped)
+    return (scoped,)
 
 
 def _address(value: str, label: str) -> str:
@@ -933,7 +1063,7 @@ def _paired_observation(
 
 
 __all__ = [
-    "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
-    "PairedMatrixRow", "PairedRequest", "PairedRunner", "paired_matrix",
+    "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageMatrixRow", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
+    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "paired_matrix",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]
