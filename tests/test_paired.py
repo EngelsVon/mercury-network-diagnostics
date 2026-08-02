@@ -307,6 +307,9 @@ class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
         )
         registry = CoverageLeaseRegistry(config)
         service = PairedPeerService(lambda _role, _correlation: _role_result("unused", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED), coverage_registry=registry)
+        self.assertIn(f"coverage-v2:tcp_tagged:{port}", (await service.capabilities(PeerFrame(
+            1, "capabilities", "coverage-correlation", "coverage-peer", utc_now(), utc_now() + timedelta(seconds=1), "nonce-capability", {},
+        )))["capabilities"])
         now = utc_now()
         frame = PeerFrame(
             1, "submit", "coverage-correlation", "coverage-peer", now, now + timedelta(seconds=1), "nonce-coverage", {"manifest": "coverage-v2", "role": "B-to-A"},

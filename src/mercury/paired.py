@@ -197,7 +197,7 @@ class PairedPeerService:
     async def capabilities(self, _frame: PeerFrame) -> dict[str, object]:
         capabilities = [_PAIRED_MANIFEST]
         if self._coverage_registry is not None:
-            capabilities.append(_COVERAGE_MANIFEST)
+            capabilities.extend(self._coverage_registry.capabilities)
         return {"capabilities": capabilities}
 
     async def submit(self, frame: PeerFrame) -> dict[str, object]:
@@ -1327,6 +1327,13 @@ class CoverageLeaseRegistry:
     @property
     def receipts(self) -> tuple[CoverageReceipt, ...]:
         return tuple(receipt for services in self._services.values() for service in services for receipt in service.receipts)
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        return (_COVERAGE_MANIFEST,) + tuple(
+            f"{_COVERAGE_MANIFEST}:{receiver.profile.value}:{receiver.port}"
+            for receiver in self._config.receiver_profiles
+        )
 
     def receipts_for(self, correlation_id: str) -> tuple[CoverageReceipt, ...] | None:
         services = self._services.get(correlation_id)
