@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import ssl
 import tempfile
 import unittest
 from dataclasses import replace
@@ -292,6 +293,26 @@ class UdpProfileTests(unittest.TestCase):
 
 
 class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tls_receiver_requires_a_configured_certificate_and_records_handshake(self) -> None:
+        port = _port(socket.SOCK_STREAM)
+        receiver = ReceiverProfileConfig(CoverageProfile.TLS_HANDSHAKE, "127.0.0.1", port, 1.0)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        fixture = Path(__file__).parent / "fixtures" / "tls"
+        context.load_cert_chain(fixture / "localhost-cert.pem", fixture / "localhost-key.pem")
+        service = CoverageReceiverService(CoverageReceiverLease(
+            receiver, "coverage-correlation", "127.0.0.1", utc_now() + timedelta(seconds=2),
+        ), ssl_context=context)
+        await service.start()
+        try:
+            client = ssl.create_default_context(cafile=str(fixture / "test-ca.pem"))
+            reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=client, server_hostname="localhost")
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.sleep(0)
+            self.assertEqual(service.receipts[0].profile, CoverageProfile.TLS_HANDSHAKE)
+        finally:
+            await service.stop()
+
     async def test_dns_tcp_receiver_answers_the_same_fixed_query(self) -> None:
         port = _port(socket.SOCK_STREAM)
         receiver = ReceiverProfileConfig(CoverageProfile.DNS_TCP, "127.0.0.1", port, 1.0)

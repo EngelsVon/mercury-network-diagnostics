@@ -13,6 +13,7 @@ import hashlib
 import ipaddress
 import math
 import secrets
+import ssl
 import struct
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -1103,14 +1104,14 @@ class CoverageReceiverService:
 
     _IMPLEMENTED = frozenset({
         CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
-        CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP,
+        CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP, CoverageProfile.TLS_HANDSHAKE,
         CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER,
     })
 
-    def __init__(self, lease: CoverageReceiverLease, *, now: Callable[[], datetime] = utc_now) -> None:
+    def __init__(self, lease: CoverageReceiverLease, *, now: Callable[[], datetime] = utc_now, ssl_context: ssl.SSLContext | None = None) -> None:
         if type(lease) is not CoverageReceiverLease:
             raise PairedError("coverage receiver requires a lease")
-        self.lease, self._now = lease, now
+        self.lease, self._now, self._ssl_context = lease, now, ssl_context
         self._tcp: asyncio.AbstractServer | None = None
         self._udp: asyncio.DatagramTransport | None = None
         self._expiry: asyncio.Task[None] | None = None
@@ -1126,6 +1127,8 @@ class CoverageReceiverService:
         lease.assert_current(self._now())
         if lease.receiver.profile not in self._IMPLEMENTED:
             raise PairedError(f"coverage receiver profile is unavailable: {lease.receiver.profile.value}")
+        if lease.receiver.profile is CoverageProfile.TLS_HANDSHAKE and self._ssl_context is None:
+            raise PairedError("TLS coverage receiver needs a configured certificate context")
         if lease.receiver.profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP}:
             transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
                 lambda: _CoverageDatagram(self), local_addr=(lease.receiver.bind_host, lease.receiver.port),
@@ -1134,6 +1137,7 @@ class CoverageReceiverService:
         else:
             self._tcp = await asyncio.start_server(
                 self._handle_tcp, host=lease.receiver.bind_host, port=lease.receiver.port,
+                ssl=self._ssl_context if lease.receiver.profile is CoverageProfile.TLS_HANDSHAKE else None,
             )
         self._expiry = asyncio.create_task(self._expire(), name=f"mercury:coverage:{lease.correlation_id}")
 
@@ -1161,7 +1165,9 @@ class CoverageReceiverService:
             profile = self.lease.receiver.profile
             tag = encode_coverage_tag(self.lease)
             async with asyncio.timeout(self.lease.receiver.timeout_s):
-                if profile is CoverageProfile.DNS_TCP:
+                if profile is CoverageProfile.TLS_HANDSHAKE:
+                    tag = encode_coverage_tag(self.lease)
+                elif profile is CoverageProfile.DNS_TCP:
                     size = int.from_bytes(await reader.readexactly(2), "big")
                     query = await reader.readexactly(size)
                     reply = _dns_coverage_reply(self.lease, query)
