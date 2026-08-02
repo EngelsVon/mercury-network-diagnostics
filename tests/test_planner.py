@@ -68,3 +68,6 @@ class InternalMappingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.task_kind, "internal_mapping")
         self.assertIsNotNone(stored)
         self.assertEqual(result.effective_config.profile, "internal-mapping-v1")
+        self.assertEqual(result.effective_config.budget["limits"]["max_global_rate"], 1)
+        self.assertEqual(stored.request["duration_s"], 0)
+        self.assertEqual(stored.request["duration_semantics"], "zero means no operator early cutoff within immutable ceilings")
