@@ -404,13 +404,18 @@ class NativeMappingRunner:
         self.executor = executor
 
     async def __call__(self, context: TaskContext) -> None:
-        prepared = [await context.admit(step.id) for step in context.plan.preview.steps]
+        # Nmap is one plan-derived native operation for the complete target/port
+        # matrix.  It revalidates that immutable plan before subprocess launch;
+        # individual logical attempts are then admitted, recorded, and completed
+        # serially so a many-port native result never pretends to have thousands
+        # of simultaneous Mercury socket operations.
         result = await self.executor(context.plan, self.profile)
         if type(result) is not NativeNmapResult:
             raise RuntimeError("native Nmap executor returned an invalid result")
         states = {(item.address, item.port, item.protocol): item for item in result.ports}
         capability_added = False
-        for item in prepared:
+        for step in context.plan.preview.steps:
+            item = await context.admit(step.id)
             state = states.get((item.address or item.step.target, item.step.port, item.step.transport.value if item.step.transport else ""))
             observation, capability = _native_mapping_observation(item, self.profile, result, state)
             if capability is not None and not capability_added:

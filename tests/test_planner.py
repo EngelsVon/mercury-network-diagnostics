@@ -5,7 +5,7 @@ import unittest
 
 from mercury.app import MercuryApplication
 from mercury.history import HistoryStore
-from mercury.models import CoverageProfile, Disposition, EvidenceKind
+from mercury.models import CapabilityState, CoverageProfile, Disposition, EvidenceKind
 from mercury.nmap_adapter import NativeNmapResult, NativePortState
 from mercury.platform.common import CommandOutcome
 from mercury.planner import BudgetError, InternalMappingRequest, authorize_internal_mapping, compile_internal_mapping
@@ -157,3 +157,46 @@ class InternalMappingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("argv", observation.detail)
         self.assertNotIn("xml", observation.detail)
         self.assertIsNotNone(stored)
+
+    async def test_native_mapping_handles_multiple_ports_with_one_native_invocation(self) -> None:
+        calls = 0
+
+        async def native(plan, profile):
+            nonlocal calls
+            calls += 1
+            self.assertEqual((profile, plan.preview.ports), (CoverageProfile.NMAP_TCP_CONNECT, (53, 443)))
+            return NativeNmapResult(profile, CommandOutcome.SUCCESS, (
+                NativePortState("127.0.0.1", 53, "tcp", "open", "syn-ack"),
+                NativePortState("127.0.0.1", 443, "tcp", "closed", "reset"),
+            ))
+
+        with HistoryStore(":memory:") as history:
+            result = await MercuryApplication(history=history, nmap_executor=native).map_internal(
+                InternalMappingRequest(
+                    cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.NMAP_TCP_CONNECT,),
+                    ports=(53, 443), rate=100, concurrency=1, duration_s=0, authorized=True,
+                )
+            )
+        self.assertEqual(calls, 1)
+        self.assertEqual(result.progress.completed, 2)
+        self.assertEqual(
+            [(item.detail["port"], item.detail["native_state"]) for item in result.observations],
+            [(53, "open"), (443, "closed")],
+        )
+
+    async def test_native_mapping_preserves_missing_nmap_as_a_capability_gap(self) -> None:
+        async def missing(_plan, profile):
+            return NativeNmapResult(profile, CommandOutcome.MISSING_TOOL, (), "nmap executable unavailable")
+
+        with HistoryStore(":memory:") as history:
+            result = await MercuryApplication(history=history, nmap_executor=missing).map_internal(
+                InternalMappingRequest(
+                    cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.NMAP_TCP_SYN,),
+                    ports=(443,), rate=10, concurrency=1, duration_s=0, authorized=True,
+                )
+            )
+        self.assertEqual(
+            (result.observations[0].evidence_kind, result.observations[0].disposition),
+            (EvidenceKind.UNSUPPORTED, Disposition.UNAVAILABLE),
+        )
+        self.assertEqual([(item.name, item.state) for item in result.capabilities], [("nmap", CapabilityState.MISSING_TOOL)])
