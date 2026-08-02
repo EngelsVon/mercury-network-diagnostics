@@ -67,6 +67,10 @@ _REQUEST_KEYS = frozenset(
         "datagrams",
         "timeout_s",
         "purpose",
+        "rate",
+        "concurrency",
+        "duration_s",
+        "duration_semantics",
     }
 )
 _PLAN_KEYS = frozenset(
@@ -329,11 +333,13 @@ def project_history_request(value: Mapping[str, Any]) -> dict[str, Any]:
                     raise HistoryError("history request transport is invalid")
                 transports.append(transport.casefold())
             projected[key] = transports
-        elif key in {"steps", "repeats", "datagrams"}:
+        elif key in {"steps", "repeats", "datagrams", "rate", "concurrency"}:
             maximum = {
                 "steps": 100_000,
                 "repeats": 100,
                 "datagrams": 200_000,
+                "rate": 1_000,
+                "concurrency": 256,
             }[key]
             if type(item) is not int or not 1 <= item <= maximum:
                 raise HistoryError(f"history request {key} is invalid")
@@ -359,6 +365,14 @@ def project_history_request(value: Mapping[str, Any]) -> dict[str, Any]:
             ):
                 raise HistoryError(f"history request {key} is invalid")
             projected[key] = number
+        elif key == "duration_s":
+            if type(item) is not int or not 0 <= item <= 3_600:
+                raise HistoryError("history request duration_s is invalid")
+            projected[key] = item
+        elif key == "duration_semantics":
+            if type(item) is not str or item != "zero means no operator early cutoff within immutable ceilings":
+                raise HistoryError("history request duration_semantics is invalid")
+            projected[key] = item
         elif key == "network_io":
             if type(item) is not bool:
                 raise HistoryError("history request network_io is invalid")

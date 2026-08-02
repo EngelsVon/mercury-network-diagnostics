@@ -394,7 +394,7 @@ async def run_internal_mapping(
     task_id = service.submit(
         plan, MappingRunner(), task_kind="internal_mapping",
         requested_config={
-            "cidrs": list(request.cidrs), "profiles": [profile.value for profile in request.profiles],
+            "targets": list(request.cidrs), "profile": "internal-mapping-v1:" + ",".join(profile.value for profile in request.profiles),
             "ports": list(request.ports), "rate": request.rate, "concurrency": request.concurrency,
             "duration_s": request.duration_s, "duration_semantics": "zero means no operator early cutoff within immutable ceilings",
             "network_io": True,

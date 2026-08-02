@@ -54,3 +54,17 @@ class InternalMappingRequestTests(unittest.TestCase):
                 ports=(443,), rate=1, concurrency=1, duration_s=0, authorized=True,
             ))
         self.assertEqual(plan.preview.profile, "internal-mapping-v1")
+
+
+class InternalMappingExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_application_executes_loopback_mapping_through_task_service(self) -> None:
+        with HistoryStore(":memory:") as history:
+            application = MercuryApplication(history=history)
+            result = await application.map_internal(InternalMappingRequest(
+                cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.TCP_CONNECT,),
+                ports=(9,), rate=1, concurrency=1, duration_s=0, authorized=True,
+            ))
+            stored = history.get_task(result.task_id)
+        self.assertEqual(result.task_kind, "internal_mapping")
+        self.assertIsNotNone(stored)
+        self.assertEqual(result.effective_config.profile, "internal-mapping-v1")
