@@ -14,12 +14,14 @@ from pathlib import Path
 
 from mercury.app import MercuryApplication
 from mercury.history import HistoryStore
+from mercury.models import CoverageProfile
 from mercury.peer import (
     PeerAgent,
     PeerClient,
     PeerConfig,
     PeerConfigurationError,
     PeerFrame,
+    ReceiverProfileConfig,
     load_peer_config,
 )
 
@@ -36,6 +38,26 @@ class _FakeServer:
 
 
 class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_receiver_profiles_are_local_fixed_private_bindings(self) -> None:
+        receiver = ReceiverProfileConfig(
+            profile=CoverageProfile.DNS_UDP,
+            bind_host="127.0.0.1", port=53053, timeout_s=1.0,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            token = Path(temporary) / "token"
+            token.write_text("controlled-token", encoding="utf-8")
+            config = PeerConfig(
+                identity="loopback-peer", bind_host="127.0.0.1", control_port=0,
+                certificate_path=None, key_path=None, ca_path=None, token_path=token,
+                peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+                receiver_profiles=(receiver,),
+            )
+        self.assertTrue(config.coverage_enabled)
+        with self.assertRaisesRegex(PeerConfigurationError, "receiver bind host"):
+            ReceiverProfileConfig(profile=receiver.profile, bind_host="8.8.8.8", port=53054, timeout_s=1.0)
+        with self.assertRaisesRegex(PeerConfigurationError, "receiver profile table"):
+            replace(config, receiver_profiles=(receiver, receiver))
+
     async def test_strict_file_config_keeps_only_secret_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "peer.json"

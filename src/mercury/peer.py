@@ -23,6 +23,7 @@ from types import MappingProxyType
 from typing import Mapping, Protocol
 
 from .codec import CodecError, result_from_wire
+from .models import CoverageProfile
 from .policy import PolicyError, TargetKind, parse_target
 
 
@@ -49,6 +50,14 @@ class PeerProtocolError(PeerError):
     """An untrusted peer-control frame was rejected before dispatch."""
 
 
+_RECEIVER_CAPABLE_PROFILES = frozenset({
+    CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+    CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP,
+    CoverageProfile.TLS_HANDSHAKE, CoverageProfile.HTTP_EXCHANGE,
+    CoverageProfile.SSH_BANNER,
+})
+
+
 class _Server(Protocol):
     def close(self) -> None: ...
 
@@ -58,6 +67,32 @@ class _Server(Protocol):
 ServerFactory = Callable[..., Awaitable[_Server]]
 WallClock = Callable[[], datetime]
 MonotonicClock = Callable[[], float]
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiverProfileConfig:
+    """One administrator-provisioned local receiver; never a peer-frame input."""
+
+    profile: CoverageProfile
+    bind_host: str
+    port: int
+    timeout_s: float
+
+    def __post_init__(self) -> None:
+        if type(self.profile) is not CoverageProfile or self.profile not in _RECEIVER_CAPABLE_PROFILES:
+            raise PeerConfigurationError("receiver profile is not receiver-capable")
+        try:
+            target = parse_target(self.bind_host)
+        except PolicyError as exc:
+            raise PeerConfigurationError("receiver bind host must be a private IP address") from exc
+        if target.kind is not TargetKind.ADDRESS:
+            raise PeerConfigurationError("receiver bind host must be an IP address")
+        if isinstance(self.port, bool) or type(self.port) is not int or not 1 <= self.port <= 65535:
+            raise PeerConfigurationError("receiver port is invalid")
+        if type(self.timeout_s) not in (int, float) or not math.isfinite(float(self.timeout_s)) or not 0.1 <= float(self.timeout_s) <= 30.0:
+            raise PeerConfigurationError("receiver timeout is invalid")
+        object.__setattr__(self, "bind_host", target.canonical)
+        object.__setattr__(self, "timeout_s", float(self.timeout_s))
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +113,7 @@ class PeerConfig:
     paired_tcp_port: int | None = None
     paired_udp_port: int | None = None
     paired_timeout_s: float | None = None
+    receiver_profiles: tuple[ReceiverProfileConfig, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, str) or not _IDENTITY.fullmatch(self.identity):
@@ -104,6 +140,16 @@ class PeerConfig:
             canonical_peers.add(target.canonical)
         object.__setattr__(self, "bind_host", bind_target.canonical)
         object.__setattr__(self, "peer_addresses", tuple(sorted(canonical_peers)))
+        if not isinstance(self.receiver_profiles, (tuple, list)) or any(
+            type(item) is not ReceiverProfileConfig for item in self.receiver_profiles
+        ):
+            raise PeerConfigurationError("receiver profile table is invalid")
+        receivers = tuple(self.receiver_profiles)
+        if len(receivers) > 16 or len({item.profile for item in receivers}) != len(receivers):
+            raise PeerConfigurationError("receiver profile table is invalid")
+        if len({(item.bind_host, item.port) for item in receivers}) != len(receivers):
+            raise PeerConfigurationError("receiver ports must not overlap")
+        object.__setattr__(self, "receiver_profiles", tuple(sorted(receivers, key=lambda item: item.profile.value)))
         for pin in self.peer_pins:
             if not isinstance(pin, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", pin):
                 raise PeerConfigurationError("peer certificate pin is invalid")
@@ -154,6 +200,10 @@ class PeerConfig:
     def paired_enabled(self) -> bool:
         return self.paired_tcp_port is not None
 
+    @property
+    def coverage_enabled(self) -> bool:
+        return bool(self.receiver_profiles)
+
     def validate_for_start(self) -> None:
         """Check all trusted files before constructing a listener."""
         if self.unsafe_development:
@@ -187,7 +237,7 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
     required = {"identity", "bind_host", "control_port", "peer_pins", "peer_addresses"}
     optional = {
         "certificate_path", "key_path", "ca_path", "token_path", "server_hostname",
-        "paired",
+        "paired", "receivers",
     }
     if set(value) - required - optional or required - set(value):
         raise PeerConfigurationError("peer configuration fields are invalid")
@@ -207,6 +257,20 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
         or set(paired) != {"tcp_port", "udp_port", "timeout_s"}
     ):
         raise PeerConfigurationError("paired configuration fields are invalid")
+    receivers = value.get("receivers", [])
+    if not isinstance(receivers, list) or len(receivers) > 16:
+        raise PeerConfigurationError("receiver configuration fields are invalid")
+    receiver_profiles: list[ReceiverProfileConfig] = []
+    for receiver in receivers:
+        if not isinstance(receiver, dict) or set(receiver) != {"profile", "bind_host", "port", "timeout_s"}:
+            raise PeerConfigurationError("receiver configuration fields are invalid")
+        try:
+            profile = CoverageProfile(receiver["profile"])
+        except (TypeError, ValueError) as exc:
+            raise PeerConfigurationError("receiver profile is invalid") from exc
+        receiver_profiles.append(ReceiverProfileConfig(
+            profile=profile, bind_host=receiver["bind_host"], port=receiver["port"], timeout_s=receiver["timeout_s"],
+        ))
     return PeerConfig(
         identity=value["identity"], bind_host=value["bind_host"], control_port=value["control_port"],
         certificate_path=path_value("certificate_path"), key_path=path_value("key_path"),
@@ -216,6 +280,7 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
         paired_tcp_port=None if paired is None else paired["tcp_port"],
         paired_udp_port=None if paired is None else paired["udp_port"],
         paired_timeout_s=None if paired is None else paired["timeout_s"],
+        receiver_profiles=tuple(receiver_profiles),
     )
 
 
@@ -744,6 +809,7 @@ __all__ = [
     "PeerError",
     "PeerFrame",
     "PeerProtocolError",
+    "ReceiverProfileConfig",
     "create_client_ssl_context",
     "create_server_ssl_context",
     "load_peer_config",
