@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+from mercury.app import MercuryApplication
+from mercury.history import HistoryStore
 from mercury.models import CoverageProfile
 from mercury.planner import BudgetError, InternalMappingRequest, authorize_internal_mapping, compile_internal_mapping
 from mercury.policy import PolicyError
@@ -43,3 +45,12 @@ class InternalMappingRequestTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(BudgetError, "host estimate"):
             compile_internal_mapping(request)
+
+    def test_application_routes_mapping_to_shared_authorization_service(self) -> None:
+        with HistoryStore(":memory:") as history:
+            application = MercuryApplication(history=history)
+            plan = application.authorize_mapping(InternalMappingRequest(
+                cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.TCP_TAGGED,),
+                ports=(443,), rate=1, concurrency=1, duration_s=0, authorized=True,
+            ))
+        self.assertEqual(plan.preview.profile, "internal-mapping-v1")

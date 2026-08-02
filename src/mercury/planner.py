@@ -202,7 +202,8 @@ def compile_internal_mapping(
                     specs.append(ProbeSpec(kind, str(host), address=str(host), port=port, transport=transport, payload_metadata=payload, cost=cost, **kwargs))
     if not specs:
         raise BudgetError("internal mapping selected no port-capable profiles")
-    grant = ScopeGrant(networks=networks, ports=request.ports, transports=("tcp", "udp"), attested=True, purpose="internal mapping")
+    transports = tuple(sorted({spec.transport.value for spec in specs if spec.transport is not None}))
+    grant = ScopeGrant(networks=networks, ports=request.ports, transports=transports, attested=True, purpose="internal mapping")
     return preview_probe_plan(specs=tuple(specs), grant=grant, profile="internal-mapping-v1", limits=effective)
 
 
@@ -1365,6 +1366,8 @@ def validate_preview(
     # with a fixed built-in UDP payload.  Recompile their exact step list
     # rather than forcing the legacy Cartesian payload summary to flatten it.
     if (
+        preview.profile == "internal-mapping-v1"
+        or
         any(step.probe_kind not in {ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE} for step in preview.steps)
         or len({step.payload for step in preview.steps}) > 1
     ):

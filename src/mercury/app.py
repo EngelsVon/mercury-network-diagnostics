@@ -17,6 +17,7 @@ from .history import HistoryStore
 from .inventory import collect_status
 from .models import TaskResult
 from .peer import PeerAgent, PeerClient, PeerConfig, load_peer_config
+from .planner import InternalMappingRequest, ProbePlan, authorize_internal_mapping
 from .paired import (
     AuthenticatedPairedRunner, ConfiguredPairedExecutor, CoverageLeaseRegistry, PairedError, PairedPeerService,
     PairedRequest,
@@ -131,6 +132,12 @@ class MercuryApplication:
         if type(result) is not TaskResult:
             raise RuntimeError("passive discovery collector returned an invalid result")
         return result
+
+    def authorize_mapping(self, request: InternalMappingRequest) -> ProbePlan:
+        """Compile the operator's private ranges through the shared service boundary."""
+        if type(request) is not InternalMappingRequest or not request.authorized:
+            raise PolicyError("internal mapping requires explicit authorization attestation")
+        return authorize_internal_mapping(request)
 
     async def discover(self, request: DiscoveryRequest) -> TaskResult:
         """Run the fixed TCP-only discovery service through this shared facade."""
