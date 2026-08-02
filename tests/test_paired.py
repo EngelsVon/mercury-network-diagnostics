@@ -508,6 +508,84 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_coverage_runner_correlates_configured_tcp_udp_receivers_in_both_directions(self) -> None:
+        """Each direction needs a sender fact *and* the peer receiver receipt."""
+        from mercury.paired import AuthenticatedCoverageRunner, CoverageAssessmentRequest, ConfiguredCoverageExecutor
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        token_path = Path(temporary.name) / "token"
+        token_path.write_text("controlled-loopback-token", encoding="utf-8")
+        tcp_port, udp_port = _port(socket.SOCK_STREAM), _port(socket.SOCK_DGRAM)
+        receivers = (
+            ReceiverProfileConfig(CoverageProfile.TCP_TAGGED, "127.0.0.1", tcp_port, 1.0),
+            ReceiverProfileConfig(CoverageProfile.UDP_TAGGED, "127.0.0.1", udp_port, 1.0),
+            ReceiverProfileConfig(CoverageProfile.DNS_UDP, "127.0.0.1", _port(socket.SOCK_DGRAM), 1.0),
+            ReceiverProfileConfig(CoverageProfile.DNS_TCP, "127.0.0.1", _port(socket.SOCK_STREAM), 1.0),
+            ReceiverProfileConfig(CoverageProfile.HTTP_EXCHANGE, "127.0.0.1", _port(socket.SOCK_STREAM), 1.0),
+            ReceiverProfileConfig(CoverageProfile.SSH_BANNER, "127.0.0.1", _port(socket.SOCK_STREAM), 1.0),
+        )
+        remote_config = PeerConfig(
+            identity="coverage-pair", bind_host="127.0.0.1", control_port=0,
+            certificate_path=None, key_path=None, ca_path=None, token_path=token_path,
+            peer_pins=(), peer_addresses=("127.0.0.2",), unsafe_development=True,
+            receiver_profiles=receivers,
+        )
+        remote_history = HistoryStore(":memory:")
+        self.addCleanup(remote_history.close)
+        remote_app = MercuryApplication(
+            history=remote_history,
+            paired_peer_service=PairedPeerService(
+                lambda _role, _correlation: _role_result("unused", Disposition.POSITIVE, EvidenceKind.TCP_CONNECTED),
+                coverage_registry=CoverageLeaseRegistry(remote_config),
+                coverage_sender_executor=ConfiguredCoverageExecutor(remote_config, remote_history),
+            ),
+        )
+        agent = await remote_app.start_agent(remote_config)
+        try:
+            server = agent.server
+            assert server is not None
+            control_port = server.sockets[0].getsockname()[1]
+            local_receivers = tuple(
+                replace(receiver, bind_host="127.0.0.2") for receiver in receivers
+            )
+            local_config = PeerConfig(
+                identity="coverage-pair", bind_host="127.0.0.2", control_port=control_port,
+                certificate_path=None, key_path=None, ca_path=None, token_path=token_path,
+                peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+                receiver_profiles=local_receivers,
+            )
+            local_history = HistoryStore(":memory:")
+            self.addCleanup(local_history.close)
+            runner = AuthenticatedCoverageRunner(PeerClient(local_config), local_config, local_history)
+            result = await runner.run(CoverageAssessmentRequest(
+                identity="coverage-pair", address="127.0.0.1", config_path="peer.json",
+                timeout_s=1.0, authorized=True,
+                profiles=(
+                    CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+                    CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP,
+                    CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER,
+                ),
+                unsafe_development=True,
+            ))
+        finally:
+            await remote_app.stop_agent()
+        rows = coverage_matrix(result, requested=(
+            CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+            CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP,
+            CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER,
+        ))
+        self.assertEqual({row.direction for row in rows}, {"A-to-B", "B-to-A"})
+        self.assertTrue(all(row.outcome is CoverageOutcome.CANDIDATE_CARRIER for row in rows))
+        self.assertTrue(any(item.evidence_kind is EvidenceKind.PEER_OBSERVED_ARRIVAL for item in result.observations))
+        self.assertTrue({
+            CoverageProfile.DNS_UDP.value, CoverageProfile.DNS_TCP.value,
+            CoverageProfile.HTTP_EXCHANGE.value, CoverageProfile.SSH_BANNER.value,
+        }.issubset({str(item.detail.get("coverage_profile")) for item in result.observations}))
+        self.assertTrue({EvidenceKind.DNS_QUERY, EvidenceKind.HTTP_RESPONSE, EvidenceKind.SSH_BANNER}.issubset(
+            {item.evidence_kind for item in result.observations}
+        ))
+
     async def test_configured_runtime_performs_fixed_loopback_tcp_udp_profile(self) -> None:
         """The bare runtime composes only configured data-plane endpoints."""
         temporary = tempfile.TemporaryDirectory()

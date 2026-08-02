@@ -59,6 +59,7 @@ _ROLE_B_TO_A = "B-to-A"
 _CONTROL_RESULT_GRACE_S = 2.0
 
 RoleExecutor = Callable[[str, str], Awaitable[TaskResult]]
+CoverageSenderExecutor = Callable[[str, str], Awaitable[TaskResult]]
 
 
 class PairedError(RuntimeError):
@@ -179,9 +180,16 @@ class PairedPeerService:
     listener use; the authenticated peer never supplies any of those values.
     """
 
-    def __init__(self, role_executor: RoleExecutor, *, coverage_registry: "CoverageLeaseRegistry | None" = None) -> None:
+    def __init__(
+        self,
+        role_executor: RoleExecutor,
+        *,
+        coverage_registry: "CoverageLeaseRegistry | None" = None,
+        coverage_sender_executor: CoverageSenderExecutor | None = None,
+    ) -> None:
         self._role_executor = role_executor
         self._coverage_registry = coverage_registry
+        self._coverage_sender_executor = coverage_sender_executor
         self._results: dict[str, TaskResult] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -208,6 +216,20 @@ class PairedPeerService:
         if manifest == _COVERAGE_MANIFEST:
             if self._coverage_registry is None:
                 raise PairedError("coverage manifest was not admitted")
+            # The two role names retain their paired meaning: the peer accepts
+            # A-to-B by opening only its own configured receivers, while a
+            # configured B-to-A executor sends only to its fixed peer address.
+            # Legacy receiver-only agents intentionally keep accepting B-to-A
+            # as a lease, which makes an upgrade a local configuration change.
+            if role == _ROLE_B_TO_A and self._coverage_sender_executor is not None:
+                if frame.correlation_id in self._tasks or frame.correlation_id in self._results:
+                    raise PairedError("coverage correlation is already active")
+                task = asyncio.create_task(
+                    self._run_coverage_sender(role, frame.correlation_id),
+                    name=f"mercury:coverage-send:{frame.correlation_id}",
+                )
+                self._tasks[frame.correlation_id] = task
+                return {"status": "accepted"}
             await self._coverage_registry.start(frame.correlation_id, frame.expires_at)
             return {"status": "accepted"}
         if manifest != _PAIRED_MANIFEST:
@@ -225,6 +247,13 @@ class PairedPeerService:
         result = await self._role_executor(role, correlation)
         if type(result) is not TaskResult or result.task_kind != "paired":
             raise PairedError("paired role executor returned an invalid result")
+        self._results[correlation] = result
+
+    async def _run_coverage_sender(self, role: str, correlation: str) -> None:
+        assert self._coverage_sender_executor is not None
+        result = await self._coverage_sender_executor(role, correlation)
+        if type(result) is not TaskResult or result.task_kind != "coverage":
+            raise PairedError("coverage sender executor returned an invalid result")
         self._results[correlation] = result
 
     async def read_result(self, frame: PeerFrame) -> dict[str, object]:
@@ -339,6 +368,148 @@ class AuthenticatedPairedRunner:
         ))
 
 
+@dataclass(frozen=True, slots=True)
+class CoverageAssessmentRequest:
+    """One authorized, finite two-endpoint coverage assessment."""
+
+    identity: str
+    address: str
+    config_path: str
+    timeout_s: float
+    authorized: bool
+    profiles: tuple[CoverageProfile, ...]
+    unsafe_development: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, str) or not self.identity or len(self.identity) > 64:
+            raise PairedError("coverage identity is invalid")
+        object.__setattr__(self, "address", _address(self.address, "coverage address"))
+        if not isinstance(self.config_path, str) or not self.config_path or len(self.config_path) > 4096:
+            raise PairedError("coverage configuration path is invalid")
+        if type(self.timeout_s) not in (int, float) or not 0.1 <= float(self.timeout_s) <= 30:
+            raise PairedError("coverage timeout must be within 0.1..30 seconds")
+        object.__setattr__(self, "timeout_s", float(self.timeout_s))
+        if type(self.authorized) is not bool or type(self.unsafe_development) is not bool:
+            raise PairedError("coverage authorization is invalid")
+        if not isinstance(self.profiles, (tuple, list)) or not self.profiles or any(
+            type(item) is not CoverageProfile for item in self.profiles
+        ) or len(set(self.profiles)) != len(self.profiles):
+            raise PairedError("coverage profiles must be a non-empty unique sequence")
+        unsupported = set(self.profiles) - CoverageReceiverService._IMPLEMENTED
+        if unsupported:
+            raise PairedError("coverage assessment profiles need configured receivers")
+        object.__setattr__(self, "profiles", tuple(self.profiles))
+
+
+class AuthenticatedCoverageRunner:
+    """Coordinate fixed receiver leases and fixed sends in both directions.
+
+    The control frames contain only a manifest and role.  Destinations, ports,
+    payload shapes, local bind addresses, and profile selection all originate
+    from the two local peer configurations and are cross-checked through the
+    peer capability advertisement before data-plane I/O begins.
+    """
+
+    def __init__(self, client: PeerClient, config: PeerConfig, history) -> None:
+        if type(client) is not PeerClient or type(config) is not PeerConfig or not config.coverage_enabled:
+            raise PairedError("coverage runner requires configured receivers")
+        self._client, self._config, self._history = client, config, history
+        self._sender = ConfiguredCoverageExecutor(config, history)
+
+    async def run(self, request: CoverageAssessmentRequest) -> TaskResult:
+        if type(request) is not CoverageAssessmentRequest or not request.authorized:
+            raise PairedError("coverage assessment requires explicit authorization")
+        if request.identity != self._config.identity or request.address != self._config.peer_addresses[0]:
+            raise PairedError("coverage request does not match its configured peer")
+        correlation = "c" + secrets.token_urlsafe(16)
+        forward, reverse = correlation + "f", correlation + "r"
+        # Each profile has its configured receive window.  Control must remain
+        # available across both sequential directions, not just the first one.
+        control_expires_at = utc_now() + timedelta(
+            seconds=request.timeout_s * len(request.profiles) * 2 + _CONTROL_RESULT_GRACE_S
+        )
+        local_registry = CoverageLeaseRegistry(self._config)
+        submitted: list[str] = []
+        local_started = False
+        try:
+            # A short capability frame is the only remote configuration fact
+            # used here.  It can advertise fixed profile/port pairs but cannot
+            # select a destination, listener, payload, or arbitrary command.
+            capabilities = (await self._request("capabilities", correlation, control_expires_at, {})).body.get("capabilities")
+            remote_ports = _coverage_capability_ports(capabilities)
+            local_ports = {item.profile: item.port for item in self._config.receiver_profiles}
+            for profile in request.profiles:
+                if remote_ports.get(profile) != local_ports.get(profile):
+                    raise PairedError("configured peers do not agree on a coverage receiver profile/port")
+            async with asyncio.timeout(request.timeout_s * len(request.profiles) * 2 + _CONTROL_RESULT_GRACE_S):
+                forward_expires_at = utc_now() + timedelta(seconds=request.timeout_s)
+                admitted = await self._request(
+                    "submit", forward, forward_expires_at,
+                    {"manifest": _COVERAGE_MANIFEST, "role": _ROLE_A_TO_B},
+                )
+                if admitted.body != {"status": "accepted"}:
+                    raise PairedError("configured peer did not admit the coverage receiver lease")
+                submitted.append(forward)
+                local_forward = await self._sender(_ROLE_A_TO_B, forward, profiles=request.profiles)
+                remote_receipts = await self._read_receipts(forward, control_expires_at)
+
+                reverse_expires_at = utc_now() + timedelta(seconds=request.timeout_s)
+                await local_registry.start(reverse, reverse_expires_at)
+                local_started = True
+                admitted = await self._request(
+                    "submit", reverse, reverse_expires_at,
+                    {"manifest": _COVERAGE_MANIFEST, "role": _ROLE_B_TO_A},
+                )
+                if admitted.body != {"status": "accepted"}:
+                    raise PairedError("configured peer did not admit the reverse coverage role")
+                submitted.append(reverse)
+                remote_reverse = await self._read_coverage_result(reverse, control_expires_at)
+                local_receipts = local_registry.receipts_for(reverse) or ()
+                return _combine_coverage_results(
+                    request, local_forward, remote_reverse,
+                    remote_receipts=remote_receipts, local_receipts=local_receipts,
+                    forward_correlation=forward, reverse_correlation=reverse,
+                )
+        except TimeoutError as exc:
+            raise PairedError("coverage assessment exceeded its finite deadline") from exc
+        finally:
+            if local_started:
+                await local_registry.stop(reverse)
+            for item in submitted:
+                try:
+                    await asyncio.shield(self._request("cancel", item, control_expires_at, {}))
+                except (PeerError, OSError):
+                    pass
+
+    async def _read_receipts(self, correlation: str, expires_at: datetime) -> tuple[CoverageReceipt, ...]:
+        frame = await self._request("read-result", correlation, expires_at, {})
+        receipts = frame.body.get("receipts")
+        if not isinstance(receipts, list):
+            raise PairedError("configured peer did not return coverage receipts")
+        return tuple(_receipt_from_wire(item) for item in receipts)
+
+    async def _read_coverage_result(self, correlation: str, expires_at: datetime) -> TaskResult:
+        while True:
+            frame = await self._request("read-result", correlation, expires_at, {})
+            if frame.body == {"status": "pending"}:
+                await asyncio.sleep(0.01)
+                continue
+            if set(frame.body) != {"result"}:
+                raise PairedError("configured peer returned an invalid coverage result state")
+            result = result_from_wire(frame.body["result"])
+            if result.task_kind != "coverage":
+                raise PairedError("configured peer returned an invalid coverage result")
+            return result
+
+    async def _request(self, operation: str, correlation: str, expires_at: datetime, body: dict[str, object]) -> PeerFrame:
+        now = utc_now()
+        return await self._client.request(PeerFrame(
+            version=PEER_PROTOCOL_VERSION, operation=operation, correlation_id=correlation,
+            identity=self._client.config.identity, issued_at=now, expires_at=expires_at,
+            nonce=secrets.token_urlsafe(16), body=body,
+        ))
+
+
 def _combine_role_results(
     request: PairedRequest,
     local: TaskResult,
@@ -390,6 +561,139 @@ def _combine_role_results(
         capabilities=(*local.capabilities, *remote.capabilities),
         errors=(*local.errors, *remote.errors),
     )
+
+
+def _coverage_capability_ports(value: object) -> dict[CoverageProfile, int]:
+    if not isinstance(value, (list, tuple)) or _COVERAGE_MANIFEST not in value:
+        raise PairedError("configured peer does not admit the coverage manifest")
+    ports: dict[CoverageProfile, int] = {}
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        parts = item.split(":")
+        if len(parts) != 3 or parts[0] != _COVERAGE_MANIFEST:
+            continue
+        try:
+            profile, port = CoverageProfile(parts[1]), int(parts[2])
+        except (ValueError, TypeError):
+            continue
+        if profile in CoverageReceiverService._IMPLEMENTED and 1 <= port <= 65_535:
+            ports[profile] = port
+    return ports
+
+
+def _receipt_from_wire(value: object) -> CoverageReceipt:
+    if not isinstance(value, dict) or set(value) != {
+        "correlation_id", "profile", "source_address", "source_port", "destination_port",
+        "arrived_at", "payload_sha256", "payload_length", "direction", "provenance", "reply_result",
+    }:
+        raise PairedError("configured peer returned an invalid coverage receipt")
+    try:
+        return CoverageReceipt(
+            correlation_id=value["correlation_id"], profile=CoverageProfile(value["profile"]),
+            source_address=value["source_address"], source_port=value["source_port"],
+            destination_port=value["destination_port"],
+            arrived_at=datetime.fromisoformat(value["arrived_at"]),
+            payload_sha256=value["payload_sha256"], payload_length=value["payload_length"],
+            direction=Direction(value["direction"]), provenance=value["provenance"],
+            reply_result=value["reply_result"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise PairedError("configured peer returned an invalid coverage receipt") from exc
+
+
+def _combine_coverage_results(
+    request: CoverageAssessmentRequest,
+    local_forward: TaskResult,
+    remote_reverse: TaskResult,
+    *,
+    remote_receipts: tuple[CoverageReceipt, ...],
+    local_receipts: tuple[CoverageReceipt, ...],
+    forward_correlation: str,
+    reverse_correlation: str,
+) -> TaskResult:
+    if local_forward.task_kind != "coverage" or remote_reverse.task_kind != "coverage":
+        raise PairedError("coverage roles returned an invalid task result")
+    observations = [
+        *_label_coverage_sender(local_forward.observations, _ROLE_A_TO_B, forward_correlation, "A"),
+        *_label_coverage_sender(remote_reverse.observations, _ROLE_B_TO_A, reverse_correlation, "B"),
+    ]
+    observations.extend(_receipt_observations(remote_receipts, _ROLE_A_TO_B, forward_correlation, request.address, "B"))
+    observations.extend(_receipt_observations(local_receipts, _ROLE_B_TO_A, reverse_correlation, request.address, "A"))
+    if not observations:
+        raise PairedError("coverage assessment produced no evidence")
+    provisional = TaskResult(
+        task_id=f"coverage-{forward_correlation[:-1]}", task_kind="coverage", direction=Direction.OUTBOUND,
+        target=request.address, state=local_forward.state,
+        started_at=min(local_forward.started_at, remote_reverse.started_at),
+        ended_at=max(local_forward.ended_at, remote_reverse.ended_at),
+        requested_config={
+            "coverage_manifest": _COVERAGE_MANIFEST, "peer_identity": request.identity,
+            "profiles": [item.value for item in request.profiles], "network_io": True,
+        },
+        effective_config=replace(local_forward.effective_config, profile=_COVERAGE_MANIFEST),
+        progress=replace(
+            local_forward.progress,
+            admitted=local_forward.progress.admitted + remote_reverse.progress.admitted,
+            completed=local_forward.progress.completed + remote_reverse.progress.completed,
+            total=local_forward.progress.total + remote_reverse.progress.total,
+        ),
+        observations=tuple(observations), capabilities=(*local_forward.capabilities, *remote_reverse.capabilities),
+        errors=(*local_forward.errors, *remote_reverse.errors),
+    )
+    rows = coverage_matrix(provisional, requested=request.profiles)
+    candidates = tuple(row for row in rows if row.outcome is CoverageOutcome.CANDIDATE_CARRIER)
+    gaps = tuple(row for row in rows if row.outcome is not CoverageOutcome.CANDIDATE_CARRIER)
+    health = Health.HEALTHY if not gaps else Health.PARTIAL
+    conclusion = Conclusion(
+        id="coverage-assessment", title="Paired coverage assessment",
+        summary=(
+            f"{len(candidates)} tested profile/direction carrier(s) had direct arrival or reply evidence; "
+            f"{len(gaps)} profile/direction row(s) remain gaps."
+        ),
+        health=health, confidence=Confidence.HIGH if candidates else Confidence.LOW,
+        observation_ids=tuple(item.id for item in observations),
+        limitations=(
+            "This conclusion covers only the emitted profile, port/packet shape, direction, and time window.",
+            "Untested packet formats, payloads, state sequences, and tunnel implementations remain outside this assessment.",
+        ),
+    )
+    return replace(provisional, conclusions=(conclusion,))
+
+
+def _label_coverage_sender(
+    observations: tuple[Observation, ...], role: str, correlation: str, endpoint: str,
+) -> tuple[Observation, ...]:
+    labelled: list[Observation] = []
+    for index, observation in enumerate(observations):
+        detail = dict(observation.detail)
+        detail.update({"paired_phase": role, "paired_correlation": correlation, "paired_endpoint": endpoint})
+        labelled.append(replace(observation, id=f"{endpoint}-coverage-{index}-{observation.id}", detail=detail))
+    return tuple(labelled)
+
+
+def _receipt_observations(
+    receipts: tuple[CoverageReceipt, ...], role: str, correlation: str, target: str, endpoint: str,
+) -> tuple[Observation, ...]:
+    observations: list[Observation] = []
+    for index, receipt in enumerate(receipts):
+        if receipt.correlation_id != correlation:
+            continue
+        kind = ProbeKind.UDP_EXCHANGE.value if receipt.profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP} else ProbeKind.TCP_CONNECT.value
+        observations.append(Observation(
+            id=f"{endpoint}-coverage-receipt-{index}-{receipt.profile.value}", probe=kind,
+            disposition=Disposition.POSITIVE, evidence_kind=EvidenceKind.PEER_OBSERVED_ARRIVAL,
+            direction=Direction.INBOUND, target=target, started_at=receipt.arrived_at,
+            ended_at=receipt.arrived_at, duration_ms=0.0, source=receipt.provenance,
+            detail={
+                "coverage_profile": receipt.profile.value, "paired_phase": role,
+                "paired_correlation": correlation, "paired_endpoint": endpoint,
+                "receiver_source_address": receipt.source_address, "receiver_source_port": receipt.source_port,
+                "receiver_destination_port": receipt.destination_port, "payload_sha256": receipt.payload_sha256,
+                "payload_length": receipt.payload_length, "reply_result": receipt.reply_result,
+            },
+        ))
+    return tuple(observations)
 
 
 def _label_role_observations(
@@ -1057,6 +1361,189 @@ class ConfiguredPairedExecutor:
         context.complete_attempt(step.id)
 
 
+class ConfiguredCoverageExecutor:
+    """Send only the locally configured coverage records to the fixed peer.
+
+    This deliberately has no public destination, port, payload, or profile
+    argument.  The optional ``profiles`` argument is accepted solely from the
+    in-process authenticated coordinator after it matched the remote capability
+    table to this same immutable configuration.
+    """
+
+    def __init__(self, config: PeerConfig, history) -> None:
+        if type(config) is not PeerConfig or not config.coverage_enabled:
+            raise PairedError("coverage runtime requires configured receivers")
+        self._config, self._history = config, history
+
+    async def __call__(
+        self, role: str, correlation: str, *, profiles: tuple[CoverageProfile, ...] | None = None,
+    ) -> TaskResult:
+        if role not in {_ROLE_A_TO_B, _ROLE_B_TO_A}:
+            raise PairedError("coverage role is invalid")
+        selected = tuple(item.profile for item in self._config.receiver_profiles) if profiles is None else profiles
+        configured = {item.profile: item for item in self._config.receiver_profiles}
+        if not selected or any(profile not in configured for profile in selected):
+            raise PairedError("coverage profile is not locally configured")
+        plan = _coverage_runtime_plan(self._config, correlation, selected)
+        service = TaskService(self._history)
+
+        async def runner(context: TaskContext) -> None:
+            for step, profile in zip(plan.preview.steps, selected, strict=True):
+                await self._send(context, step, configured[profile], correlation)
+
+        return await service.run(
+            plan, runner, task_kind="coverage",
+            requested_config={"purpose": "configured paired coverage sender", "profile": _COVERAGE_MANIFEST},
+        )
+
+    async def _send(
+        self, context: TaskContext, step: ProbeStep, receiver: ReceiverProfileConfig, correlation: str,
+    ) -> None:
+        prepared = await context.admit(step.id)
+        started = context.wall_clock()
+        profile = receiver.profile
+        kind, disposition = EvidenceKind.EXECUTION_ERROR, Disposition.ERROR
+        try:
+            if profile is CoverageProfile.TCP_TAGGED:
+                reader, writer = await asyncio.open_connection(
+                    self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
+                )
+                try:
+                    writer.write(f"MRC2:{profile.value}:{correlation}".encode("ascii"))
+                    await writer.drain()
+                    if await asyncio.wait_for(reader.readexactly(len(_COVERAGE_REPLY)), step.timeout_s) != _COVERAGE_REPLY:
+                        raise OSError("coverage TCP acknowledgement was invalid")
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                kind, disposition = EvidenceKind.PEER_ACKNOWLEDGEMENT, Disposition.POSITIVE
+            elif profile is CoverageProfile.UDP_TAGGED:
+                protocol = _PairedReply()
+                transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                    lambda: protocol, local_addr=(self._config.bind_host, 0),
+                )
+                try:
+                    transport.sendto(
+                        f"MRC2:{profile.value}:{correlation}".encode("ascii"),
+                        (self._config.peer_addresses[0], receiver.port),
+                    )
+                    if await asyncio.wait_for(protocol.reply, step.timeout_s) != _COVERAGE_REPLY:
+                        raise OSError("coverage UDP acknowledgement was invalid")
+                finally:
+                    transport.close()
+                kind, disposition = EvidenceKind.PEER_ACKNOWLEDGEMENT, Disposition.POSITIVE
+            elif profile is CoverageProfile.DNS_UDP:
+                protocol = _PairedReply()
+                transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                    lambda: protocol, local_addr=(self._config.bind_host, 0),
+                )
+                try:
+                    query = _dns_coverage_query(correlation)
+                    transport.sendto(query, (self._config.peer_addresses[0], receiver.port))
+                    reply = await asyncio.wait_for(protocol.reply, step.timeout_s)
+                    if reply[2:4] != b"\x81\x80":
+                        raise OSError("coverage DNS reply was invalid")
+                finally:
+                    transport.close()
+                kind, disposition = EvidenceKind.DNS_QUERY, Disposition.POSITIVE
+            elif profile is CoverageProfile.DNS_TCP:
+                reader, writer = await asyncio.open_connection(
+                    self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
+                )
+                try:
+                    query = _dns_coverage_query(correlation)
+                    writer.write(len(query).to_bytes(2, "big") + query)
+                    await writer.drain()
+                    reply = await asyncio.wait_for(reader.readexactly(int.from_bytes(await reader.readexactly(2), "big")), step.timeout_s)
+                    if reply[2:4] != b"\x81\x80":
+                        raise OSError("coverage DNS reply was invalid")
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                kind, disposition = EvidenceKind.DNS_QUERY, Disposition.POSITIVE
+            elif profile is CoverageProfile.HTTP_EXCHANGE:
+                reader, writer = await asyncio.open_connection(
+                    self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
+                )
+                try:
+                    marker = correlation.encode("ascii")
+                    writer.write(b"GET /mercury/" + marker + b" HTTP/1.1\r\nHost: mercury.test\r\nX-Mercury-Correlation: " + marker + b"\r\n\r\n")
+                    await writer.drain()
+                    if not (await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), step.timeout_s)).startswith(b"HTTP/1.1 204"):
+                        raise OSError("coverage HTTP response was invalid")
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                kind, disposition = EvidenceKind.HTTP_RESPONSE, Disposition.POSITIVE
+            elif profile is CoverageProfile.SSH_BANNER:
+                reader, writer = await asyncio.open_connection(
+                    self._config.peer_addresses[0], receiver.port, local_addr=(self._config.bind_host, 0),
+                )
+                try:
+                    if await asyncio.wait_for(reader.readline(), step.timeout_s) != b"SSH-2.0-MercuryCoverage\r\n":
+                        raise OSError("coverage SSH banner was invalid")
+                    writer.write(b"SSH-2.0-Mercury-" + correlation.encode("ascii") + b"\r\n")
+                    await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                kind, disposition = EvidenceKind.SSH_BANNER, Disposition.POSITIVE
+            else:
+                kind, disposition = EvidenceKind.UNSUPPORTED, Disposition.UNAVAILABLE
+        except TimeoutError:
+            kind, disposition = EvidenceKind.TIMEOUT, Disposition.INCONCLUSIVE
+        except OSError as exc:
+            kind, disposition = _paired_socket_failure(exc, udp=profile is CoverageProfile.UDP_TAGGED)
+        ended = context.wall_clock()
+        context.record(Observation(
+            id=f"coverage-send-{correlation[-12:]}-{profile.value}",
+            probe=step.probe_kind.value, disposition=disposition, evidence_kind=kind,
+            direction=Direction.OUTBOUND, target=prepared.address or step.target,
+            started_at=started, ended_at=ended,
+            duration_ms=max(0.0, (ended - started).total_seconds() * 1000),
+            attempt=step.attempt, source="mercury.coverage_sender",
+            detail={"coverage_profile": profile.value, "coverage_role": "fixed_send"},
+        ), step_id=step.id)
+        context.complete_attempt(step.id)
+
+
+def _coverage_runtime_plan(config: PeerConfig, correlation: str, profiles: tuple[CoverageProfile, ...]) -> ProbePlan:
+    receivers = {item.profile: item for item in config.receiver_profiles}
+    specs: list[ProbeSpec] = []
+    for profile in profiles:
+        receiver = receivers[profile]
+        if profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP}:
+            kind, transport = ProbeKind.UDP_EXCHANGE, Transport.UDP
+        elif profile is CoverageProfile.HTTP_EXCHANGE:
+            kind, transport = ProbeKind.HTTP_EXCHANGE, Transport.TCP
+        else:
+            kind, transport = ProbeKind.TCP_CONNECT, Transport.TCP
+        tag_length = len(f"MRC2:{profile.value}:{correlation}".encode("ascii"))
+        # ponytail: one legacy UDP payload slot cannot represent DNS and tag
+        # shapes; StepCost retains exact byte accounting.  Upgrade when the
+        # versioned plan model supports per-step payload metadata summaries.
+        payload = PayloadMetadata("coverage-v2", 0)
+        specs.append(ProbeSpec(
+            kind, config.peer_addresses[0], address=config.peer_addresses[0], port=receiver.port,
+            transport=transport, timeout_s=receiver.timeout_s, payload_metadata=payload,
+            server_name=config.peer_addresses[0] if kind is ProbeKind.HTTP_EXCHANGE else None,
+            http_scheme="http" if kind is ProbeKind.HTTP_EXCHANGE else None,
+            cost=StepCost(1, 1 if transport is Transport.UDP else 0, tag_length, logical_packets=1),
+        ))
+    grant = ScopeGrant(
+        networks=(ipaddress.ip_network(f"{config.peer_addresses[0]}/{32 if ':' not in config.peer_addresses[0] else 128}"),),
+        ports=tuple(receiver.port for receiver in (receivers[item] for item in profiles)),
+        transports=tuple(sorted({"udp" if item in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP} else "tcp" for item in profiles})),
+        attested=True, purpose="configured paired coverage sender",
+        expires_at=utc_now() + timedelta(seconds=max(receiver.timeout_s for receiver in (receivers[item] for item in profiles))),
+    )
+    preview = preview_probe_plan(
+        specs=tuple(specs), grant=grant, profile=_COVERAGE_MANIFEST,
+        limits=replace(DEFAULT_LIMITS, max_duration_s=max(1, math.ceil(sum(receivers[item].timeout_s for item in profiles)))),
+    )
+    return authorize_plan(preview)
+
+
 def _runtime_pair_tag(correlation: str, left: str, right: str, tcp_port: int, udp_port: int) -> bytes:
     material = "|".join((correlation, *sorted((left, right)), str(tcp_port), str(udp_port)))
     return hashlib.sha256(material.encode("ascii")).digest()[:16]
@@ -1365,8 +1852,14 @@ def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | N
     return header + question + answer
 
 
+def _dns_coverage_query(correlation: str) -> bytes:
+    labels = (correlation, "mercury", "test")
+    encoded = b"".join(bytes((len(label),)) + label.encode("ascii") for label in labels) + b"\x00"
+    return b"\x4d\x43\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + encoded + b"\x00\x01\x00\x01"
+
+
 __all__ = [
-    "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageLeaseRegistry", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
+    "AuthenticatedCoverageRunner", "AuthenticatedPairedRunner", "ConfiguredCoverageExecutor", "ConfiguredPairedExecutor", "CoverageAssessmentRequest", "CoverageLeaseRegistry", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
     "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "icmp_coverage_evidence", "local_link_applicability", "paired_matrix",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]
