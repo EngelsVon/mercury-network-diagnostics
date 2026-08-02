@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 
 from mercury.app import MercuryApplication
@@ -71,3 +72,27 @@ class InternalMappingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.effective_config.budget["limits"]["max_global_rate"], 1)
         self.assertEqual(stored.request["duration_s"], 0)
         self.assertEqual(stored.request["duration_semantics"], "zero means no operator early cutoff within immutable ceilings")
+
+    async def test_udp_mapping_preserves_reply_evidence_without_an_arbitrary_payload(self) -> None:
+        class Echo(asyncio.DatagramProtocol):
+            def connection_made(self, transport: asyncio.BaseTransport) -> None:
+                self.transport = transport
+
+            def datagram_received(self, _data: bytes, address: tuple[str, int]) -> None:
+                self.transport.sendto(b"ok", address)
+
+        transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            Echo, local_addr=("127.0.0.1", 0),
+        )
+        try:
+            port = transport.get_extra_info("sockname")[1]
+            with HistoryStore(":memory:") as history:
+                result = await MercuryApplication(history=history).map_internal(InternalMappingRequest(
+                    cidrs=("127.0.0.1/32",), profiles=(CoverageProfile.UDP_TAGGED,),
+                    ports=(port,), rate=10, concurrency=1, duration_s=0, authorized=True,
+                ))
+            self.assertEqual(result.observations[0].evidence_kind.value, "udp_application_reply")
+            self.assertEqual(result.observations[0].detail["payload_metadata"]["length"], 1)
+            self.assertNotIn("payload", result.observations[0].detail)
+        finally:
+            transport.close()

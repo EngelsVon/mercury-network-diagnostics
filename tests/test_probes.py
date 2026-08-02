@@ -12,9 +12,9 @@ import unittest
 from mercury.models import Disposition, EvidenceKind, ProbeKind
 from mercury.platform.common import CommandOutcome
 from mercury.platform.common import CommandResult
-from mercury.planner import PreparedStep, ProbeSpec, StepCost, Transport, preview_probe_plan
+from mercury.planner import PayloadMetadata, PreparedStep, ProbeSpec, StepCost, Transport, preview_probe_plan
 from mercury.policy import ScopeGrant
-from mercury.probes import dns_probe, http_probe, tcp_probe, tls_probe
+from mercury.probes import dns_probe, http_probe, tcp_probe, tls_probe, udp_probe
 from mercury.profiles import DiagnosisRequest, compile_diagnosis
 from mercury.resolver import MAX_RESOLUTION_ADDRESSES, MAX_RESOLUTION_ROWS, ResolutionResult
 from mercury.resolver import resolve_addresses
@@ -189,6 +189,57 @@ class TcpProbeTests(unittest.IsolatedAsyncioTestCase):
                     raise failure
                 observation = await tcp_probe(prepared, connector=connector)
                 self.assertEqual((observation.evidence_kind, observation.disposition), (kind, disposition))
+
+
+class UdpProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_and_silence_are_distinct_without_retaining_payload(self) -> None:
+        class Echo(asyncio.DatagramProtocol):
+            def connection_made(self, transport: asyncio.BaseTransport) -> None:
+                self.transport = transport
+
+            def datagram_received(self, _data: bytes, address: tuple[str, int]) -> None:
+                self.transport.sendto(b"ok", address)
+
+        transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            Echo, local_addr=("127.0.0.1", 0),
+        )
+        try:
+            port = transport.get_extra_info("sockname")[1]
+            preview = preview_probe_plan(
+                specs=(ProbeSpec(
+                    ProbeKind.UDP_EXCHANGE, "127.0.0.1", address="127.0.0.1",
+                    port=port, transport=Transport.UDP, timeout_s=0.1,
+                    payload_metadata=PayloadMetadata("mapping-udp-outbound", 1),
+                    cost=StepCost(1, 1, 1, logical_packets=1),
+                ),),
+                grant=ScopeGrant(networks=(ipaddress.ip_network("127.0.0.0/8"),), ports=(port,), transports=("udp",), attested=True),
+                profile="udp-loopback-test-v1",
+            )
+            reply = await udp_probe(PreparedStep(preview.steps[0], "127.0.0.1"))
+            self.assertEqual((reply.evidence_kind, reply.disposition), (EvidenceKind.UDP_APPLICATION_REPLY, Disposition.POSITIVE))
+            self.assertEqual(reply.detail["payload_length"], 1)
+        finally:
+            transport.close()
+
+        silent_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            asyncio.DatagramProtocol, local_addr=("127.0.0.1", 0),
+        )
+        try:
+            silent_port = silent_transport.get_extra_info("sockname")[1]
+            silent_preview = preview_probe_plan(
+                specs=(ProbeSpec(
+                    ProbeKind.UDP_EXCHANGE, "127.0.0.1", address="127.0.0.1",
+                    port=silent_port, transport=Transport.UDP, timeout_s=0.1,
+                    payload_metadata=PayloadMetadata("mapping-udp-outbound", 1),
+                    cost=StepCost(1, 1, 1, logical_packets=1),
+                ),),
+                grant=ScopeGrant(networks=(ipaddress.ip_network("127.0.0.0/8"),), ports=(silent_port,), transports=("udp",), attested=True),
+                profile="udp-silence-test-v1",
+            )
+            silent = await udp_probe(PreparedStep(silent_preview.steps[0], "127.0.0.1"))
+            self.assertEqual((silent.evidence_kind, silent.disposition), (EvidenceKind.SILENT, Disposition.INCONCLUSIVE))
+        finally:
+            silent_transport.close()
 
 
 class ConnectorBindingTests(unittest.IsolatedAsyncioTestCase):

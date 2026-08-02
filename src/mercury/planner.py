@@ -194,11 +194,15 @@ def compile_internal_mapping(
                     continue
                 kind, transport = selected
                 for port in request.ports:
-                    payload = PayloadMetadata(f"coverage-{profile.value}", 0)
+                    udp = transport is Transport.UDP
+                    payload = PayloadMetadata(
+                        f"mapping-{profile.value}-outbound",
+                        1 if udp else 0,
+                    )
                     kwargs: dict[str, object] = {}
                     if kind in {ProbeKind.TLS_HANDSHAKE, ProbeKind.HTTP_EXCHANGE}:
                         kwargs = {"server_name": str(host), "http_scheme": "https" if kind is ProbeKind.HTTP_EXCHANGE else None}
-                    cost = StepCost(1, 1 if transport is Transport.UDP else 0, 0, logical_packets=1)
+                    cost = StepCost(1, 1 if udp else 0, 1 if udp else 0, logical_packets=1)
                     specs.append(ProbeSpec(kind, str(host), address=str(host), port=port, transport=transport, payload_metadata=payload, cost=cost, **kwargs))
     if not specs:
         raise BudgetError("internal mapping selected no port-capable profiles")

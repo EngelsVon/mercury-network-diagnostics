@@ -18,6 +18,8 @@ from .planner import PreparedStep
 from .resolver import ResolutionResult, resolve_addresses
 from .tasks import TaskContext
 
+_GENERIC_UDP_PROBE = b"M"
+
 Connector = Callable[..., Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]]]
 Resolver = Callable[..., Awaitable[ResolutionResult]]
 
@@ -55,6 +57,7 @@ def _failure(
     *,
     started_at: datetime,
     elapsed_s: float,
+    udp: bool = False,
 ) -> Observation:
     if isinstance(exc, TimeoutError):
         return _observation(
@@ -65,7 +68,10 @@ def _failure(
     if code is None:
         code = getattr(exc, "winerror", None)
     if code in {errno.ECONNREFUSED, 10061}:
-        kind, disposition, category = EvidenceKind.TCP_REFUSED, Disposition.NEGATIVE, "refused"
+        kind, disposition, category = (
+            (EvidenceKind.ICMP_UNREACHABLE, Disposition.NEGATIVE, "icmp_unreachable")
+            if udp else (EvidenceKind.TCP_REFUSED, Disposition.NEGATIVE, "refused")
+        )
     elif code in {errno.ECONNRESET, 10054}:
         kind, disposition, category = EvidenceKind.TCP_RESET, Disposition.NEGATIVE, "reset"
     elif code in {errno.ENETUNREACH, 10051}:
@@ -176,6 +182,68 @@ async def tcp_probe(
         await _close_writer(writer)
 
 
+class _UdpReplyProtocol(asyncio.DatagramProtocol):
+    """One bounded UDP reply waiter; it retains neither payload nor peer data."""
+
+    def __init__(self) -> None:
+        self.reply: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    def datagram_received(self, _data: bytes, _address: tuple[str, int]) -> None:
+        if not self.reply.done():
+            self.reply.set_result(None)
+
+    def error_received(self, exc: Exception) -> None:
+        if not self.reply.done():
+            self.reply.set_exception(exc)
+
+
+async def udp_probe(
+    prepared: PreparedStep,
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
+    wall_clock: Callable[[], datetime] = utc_now,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Observation:
+    """Send the plan-reserved empty UDP datagram and classify one outcome.
+
+    This is deliberately only generic UDP reachability mapping.  Tagged UDP
+    and DNS profile correlation remain the configured two-peer coverage path.
+    """
+    if prepared.step.probe_kind is not ProbeKind.UDP_EXCHANGE:
+        raise ValueError("UDP probe requires a udp_exchange prepared step")
+    if prepared.address is None or prepared.step.port is None:
+        raise ValueError("UDP probe requires a prepared numeric destination")
+    started_at, started = wall_clock(), monotonic()
+    transport: asyncio.DatagramTransport | None = None
+    try:
+        protocol = _UdpReplyProtocol()
+        active_loop = asyncio.get_running_loop() if loop is None else loop
+        transport, _ = await active_loop.create_datagram_endpoint(
+            lambda: protocol,
+            remote_addr=(prepared.address, prepared.step.port),
+        )
+        transport.sendto(_GENERIC_UDP_PROBE)
+        await asyncio.wait_for(protocol.reply, prepared.step.timeout_s)
+        return _observation(
+            prepared, EvidenceKind.UDP_APPLICATION_REPLY, Disposition.POSITIVE,
+            started_at=started_at, elapsed_s=monotonic() - started,
+            detail={"category": "generic_udp_reply", "payload_length": len(_GENERIC_UDP_PROBE)},
+        )
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError:
+        return _observation(
+            prepared, EvidenceKind.SILENT, Disposition.INCONCLUSIVE,
+            started_at=started_at, elapsed_s=monotonic() - started,
+            detail={"category": "generic_udp_silence", "payload_length": len(_GENERIC_UDP_PROBE)},
+        )
+    except BaseException as exc:
+        return _failure(prepared, exc, started_at=started_at, elapsed_s=monotonic() - started, udp=True)
+    finally:
+        if transport is not None:
+            transport.close()
+
+
 async def tls_probe(
     prepared: PreparedStep,
     *,
@@ -277,6 +345,9 @@ async def run_protocol_probe(
     elif kind is ProbeKind.TCP_CONNECT:
         observation = await tcp_probe(prepared, connector=connector, wall_clock=context.wall_clock,
                                       monotonic=context.monotonic)
+    elif kind is ProbeKind.UDP_EXCHANGE:
+        observation = await udp_probe(prepared, wall_clock=context.wall_clock,
+                                      monotonic=context.monotonic)
     elif kind is ProbeKind.TLS_HANDSHAKE:
         observation = await tls_probe(prepared, connector=connector, wall_clock=context.wall_clock,
                                       monotonic=context.monotonic)
@@ -289,4 +360,4 @@ async def run_protocol_probe(
     context.complete_attempt(step_id)
 
 
-__all__ = ["dns_probe", "http_probe", "run_protocol_probe", "tcp_probe", "tls_probe"]
+__all__ = ["dns_probe", "http_probe", "run_protocol_probe", "tcp_probe", "tls_probe", "udp_probe"]
