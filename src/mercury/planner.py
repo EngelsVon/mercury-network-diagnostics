@@ -6,7 +6,7 @@ import hashlib
 import ipaddress
 import math
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Iterable, Mapping
@@ -158,6 +158,52 @@ DEFAULT_LIMITS = BudgetLimits(
     max_output_bytes=8 * 1024 * 1024,
     max_logical_packets=10_000,
 )
+
+
+def compile_internal_mapping(
+    request: InternalMappingRequest, *, limits: BudgetLimits = DEFAULT_LIMITS,
+) -> "PlanPreview":
+    """Compile the finite cross-product into the existing immutable preview."""
+    if type(request) is not InternalMappingRequest or type(limits) is not BudgetLimits:
+        raise BudgetError("internal mapping compilation input is invalid")
+    networks = tuple(ipaddress.ip_network(value) for value in request.cidrs)
+    host_count = sum(max(1, network.num_addresses - (2 if network.prefixlen < 31 else 0)) for network in networks)
+    if host_count > limits.max_hosts:
+        raise BudgetError("internal mapping host estimate exceeds the configured ceiling")
+    effective = replace(
+        limits, max_global_rate=request.rate, max_target_rate=min(request.rate, limits.max_target_rate),
+        max_concurrency=request.concurrency, max_duration_s=request.duration_s or limits.max_duration_s,
+    )
+    effective.assert_within(ABSOLUTE_CEILINGS)
+    mapping = {
+        CoverageProfile.UDP_TAGGED: (ProbeKind.UDP_EXCHANGE, Transport.UDP),
+        CoverageProfile.DNS_UDP: (ProbeKind.UDP_EXCHANGE, Transport.UDP),
+        CoverageProfile.TCP_CONNECT: (ProbeKind.TCP_CONNECT, Transport.TCP),
+        CoverageProfile.TCP_TAGGED: (ProbeKind.TCP_CONNECT, Transport.TCP),
+        CoverageProfile.DNS_TCP: (ProbeKind.TCP_CONNECT, Transport.TCP),
+        CoverageProfile.TLS_HANDSHAKE: (ProbeKind.TLS_HANDSHAKE, Transport.TCP),
+        CoverageProfile.HTTP_EXCHANGE: (ProbeKind.HTTP_EXCHANGE, Transport.TCP),
+        CoverageProfile.SSH_BANNER: (ProbeKind.TCP_CONNECT, Transport.TCP),
+    }
+    specs: list[ProbeSpec] = []
+    for network in networks:
+        for host in network.hosts():
+            for profile in request.profiles:
+                selected = mapping.get(profile)
+                if selected is None:
+                    continue
+                kind, transport = selected
+                for port in request.ports:
+                    payload = PayloadMetadata(f"coverage-{profile.value}", 0)
+                    kwargs: dict[str, object] = {}
+                    if kind in {ProbeKind.TLS_HANDSHAKE, ProbeKind.HTTP_EXCHANGE}:
+                        kwargs = {"server_name": str(host), "http_scheme": "https" if kind is ProbeKind.HTTP_EXCHANGE else None}
+                    cost = StepCost(1, 1 if transport is Transport.UDP else 0, 0, logical_packets=1)
+                    specs.append(ProbeSpec(kind, str(host), address=str(host), port=port, transport=transport, payload_metadata=payload, cost=cost, **kwargs))
+    if not specs:
+        raise BudgetError("internal mapping selected no port-capable profiles")
+    grant = ScopeGrant(networks=networks, ports=request.ports, transports=("tcp", "udp"), attested=True, purpose="internal mapping")
+    return preview_probe_plan(specs=tuple(specs), grant=grant, profile="internal-mapping-v1", limits=effective)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1453,6 +1499,7 @@ __all__ = [
     "Transport",
     "WorkEstimate",
     "authorize_plan",
+    "compile_internal_mapping",
     "confirmation_phrase",
     "preview_plan",
     "preview_probe_plan",
