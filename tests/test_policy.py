@@ -82,13 +82,13 @@ class SparseProbePlanTests(unittest.TestCase):
 
     def test_non_port_probe_scope_is_explicit(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             probe_kinds=(ProbeKind.TCP_CONNECT,), attested=True,
         )
         self.assertFalse(grant.permits_probe(ProbeKind.NATIVE_PING, None, None))
         with self.assertRaises(ConfirmationError):
             preview_probe_plan(
-                specs=(ProbeSpec(ProbeKind.NATIVE_PING, "192.0.2.9", address="192.0.2.9", cost=self._cost()),),
+                specs=(ProbeSpec(ProbeKind.NATIVE_PING, "10.20.30.9", address="10.20.30.9", cost=self._cost()),),
                 grant=grant, now=NOW,
             )
 
@@ -124,6 +124,52 @@ class TargetPolicyTests(unittest.TestCase):
             ["192.168.1.0/24", "192.168.1.4", "example.com"],
         )
 
+    def test_only_explicit_internal_address_spaces_are_admitted(self) -> None:
+        for value in (
+            "127.0.0.1",
+            "10.20.30.40",
+            "172.27.20.195",
+            "192.168.1.4",
+            "::1",
+            "fc00::1",
+            "fe80::1%Ethernet_2",
+        ):
+            with self.subTest(accepted=value):
+                parse_target(value)
+        for value in (
+            "192.0.2.10",
+            "198.51.100.0/24",
+            "203.0.113.7",
+            "8.8.8.8",
+            "2001:db8::1",
+        ):
+            with self.subTest(rejected=value), self.assertRaisesRegex(PolicyError, "private"):
+                parse_target(value)
+        with self.assertRaisesRegex(PolicyError, "private"):
+            ScopeGrant(
+                networks=(ipaddress.ip_network("198.51.100.0/24"),),
+                attested=True,
+            )
+
+    def test_public_dns_answer_fails_before_resolution_is_returned(self) -> None:
+        grant = ScopeGrant(
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
+            hostnames=("internal.test",),
+            attested=True,
+        )
+        target = parse_target("internal.test")
+        with self.assertRaisesRegex(PolicyError, "private"):
+            resolve_for_plan(
+                target, grant, resolver=lambda _: ("203.0.113.7",), now=NOW,
+            )
+        snapshot = resolve_for_plan(
+            target, grant, resolver=lambda _: ("10.20.30.10",), now=NOW,
+        )
+        with self.assertRaisesRegex(PolicyError, "private"):
+            recheck_resolution(
+                snapshot, grant, resolver=lambda _: ("198.51.100.8",), now=NOW,
+            )
+
     def test_urls_and_ambiguous_numeric_addresses_are_rejected(self) -> None:
         for value in (
             "https://example.com",
@@ -153,7 +199,7 @@ class TargetPolicyTests(unittest.TestCase):
                 parse_target(value)
 
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             hostnames=("unsafe.test",),
             attested=True,
         )
@@ -190,21 +236,21 @@ class TargetPolicyTests(unittest.TestCase):
         self.assertEqual(snapshot.addresses, ("fe80::1%7",))
 
     def test_nonloopback_requires_attestation_and_containment(self) -> None:
-        target = parse_target("192.0.2.10")
+        target = parse_target("10.20.30.10")
         without_attestation = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             attested=False,
         )
         with self.assertRaisesRegex(PolicyError, "attestation"):
             authorize_targets((target,), without_attestation, now=NOW)
         outside = ScopeGrant(
-            networks=(ipaddress.ip_network("198.51.100.0/24"),),
+            networks=(ipaddress.ip_network("10.20.31.0/24"),),
             attested=True,
         )
         with self.assertRaisesRegex(PolicyError, "outside"):
             authorize_targets((target,), outside, now=NOW)
         inside = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             attested=True,
         )
         authorize_targets((target,), inside, now=NOW)
@@ -218,16 +264,16 @@ class TargetPolicyTests(unittest.TestCase):
 
     def test_expired_scope_fails_closed(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             attested=True,
             expires_at=NOW - timedelta(seconds=1),
         )
         with self.assertRaisesRegex(PolicyError, "expired"):
-            authorize_targets((parse_target("192.0.2.1"),), grant, now=NOW)
+            authorize_targets((parse_target("10.20.30.1"),), grant, now=NOW)
 
     def test_dns_answer_must_remain_in_scope(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.10/32"),),
+            networks=(ipaddress.ip_network("10.20.30.10/32"),),
             hostnames=("example.test",),
             ports=(443,),
             transports=("tcp",),
@@ -237,30 +283,30 @@ class TargetPolicyTests(unittest.TestCase):
         snapshot = resolve_for_plan(
             target,
             grant,
-            resolver=lambda _: ("192.0.2.10",),
+            resolver=lambda _: ("10.20.30.10",),
             now=NOW,
         )
-        self.assertEqual(snapshot.addresses, ("192.0.2.10",))
+        self.assertEqual(snapshot.addresses, ("10.20.30.10",))
         self.assertEqual(
             recheck_resolution(
                 snapshot,
                 grant,
-                resolver=lambda _: ("192.0.2.10",),
+                resolver=lambda _: ("10.20.30.10",),
                 now=NOW,
             ),
-            ("192.0.2.10",),
+            ("10.20.30.10",),
         )
         with self.assertRaisesRegex(PolicyError, "escaped scope"):
             recheck_resolution(
                 snapshot,
                 grant,
-                resolver=lambda _: ("192.0.2.11",),
+                resolver=lambda _: ("10.20.30.11",),
                 now=NOW,
             )
 
     def test_authorized_plan_rechecks_dns_at_socket_boundary(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.10/32"),),
+            networks=(ipaddress.ip_network("10.20.30.10/32"),),
             hostnames=("example.test",),
             ports=(443,),
             transports=("tcp",),
@@ -271,7 +317,7 @@ class TargetPolicyTests(unittest.TestCase):
             ports=(443,),
             transports=("tcp",),
             grant=grant,
-            resolver=lambda _: ("192.0.2.10",),
+            resolver=lambda _: ("10.20.30.10",),
             now=NOW,
         )
         plan = authorize_plan(preview, now=NOW)
@@ -279,43 +325,43 @@ class TargetPolicyTests(unittest.TestCase):
         self.assertEqual(
             plan.preflight_addresses(
                 target,
-                resolver=lambda _: ("192.0.2.10",),
+                resolver=lambda _: ("10.20.30.10",),
                 now=NOW,
             ),
-            ("192.0.2.10",),
+            ("10.20.30.10",),
         )
         with self.assertRaisesRegex(PolicyError, "escaped scope"):
             plan.preflight_addresses(
                 target,
-                resolver=lambda _: ("192.0.2.11",),
+                resolver=lambda _: ("10.20.30.11",),
                 now=NOW,
             )
 
     def test_dns_rotation_is_allowed_inside_the_granted_network(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             hostnames=("rotate.test",),
             attested=True,
         )
         snapshot = resolve_for_plan(
             parse_target("rotate.test"),
             grant,
-            resolver=lambda _: ("192.0.2.10",),
+            resolver=lambda _: ("10.20.30.10",),
             now=NOW,
         )
         self.assertEqual(
             recheck_resolution(
                 snapshot,
                 grant,
-                resolver=lambda _: ("192.0.2.11",),
+                resolver=lambda _: ("10.20.30.11",),
                 now=NOW,
             ),
-            ("192.0.2.11",),
+            ("10.20.30.11",),
         )
 
     def test_dns_rotation_cannot_increase_reserved_step_slots(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             hostnames=("rotate.test",),
             ports=(443,),
             transports=("tcp",),
@@ -326,30 +372,30 @@ class TargetPolicyTests(unittest.TestCase):
             ports=(443,),
             transports=("tcp",),
             grant=grant,
-            resolver=lambda _: ("192.0.2.10",),
+            resolver=lambda _: ("10.20.30.10",),
             now=NOW,
         )
         plan = authorize_plan(preview, now=NOW)
         with self.assertRaisesRegex(ConfirmationError, "cardinality"):
             plan.preflight_step(
                 preview.steps[0].id,
-                resolver=lambda _: ("192.0.2.11", "192.0.2.12"),
+                resolver=lambda _: ("10.20.30.11", "10.20.30.12"),
                 now=NOW,
             )
         with self.assertRaisesRegex(ConfirmationError, "digest-bound"):
             plan.preflight_step(
                 preview.steps[0].id,
-                resolver=lambda _: ("192.0.2.11",),
+                resolver=lambda _: ("10.20.30.11",),
                 now=NOW,
             )
 
     def test_dns_out_of_scope_is_rejected_before_plan(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/24"),),
+            networks=(ipaddress.ip_network("10.20.30.0/24"),),
             hostnames=("example.test",),
             attested=True,
         )
-        with self.assertRaisesRegex(PolicyError, "outside"):
+        with self.assertRaisesRegex(PolicyError, "private"):
             resolve_for_plan(
                 parse_target("example.test"),
                 grant,
@@ -388,13 +434,13 @@ class BudgetTests(unittest.TestCase):
 
     def test_networks_compile_to_concrete_finite_steps(self) -> None:
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.0/30"),),
+            networks=(ipaddress.ip_network("10.20.30.0/30"),),
             ports=(443,),
             transports=("tcp",),
             attested=True,
         )
         preview = preview_plan(
-            target_values=("192.0.2.0/30",),
+            target_values=("10.20.30.0/30",),
             ports=(443,),
             transports=("tcp",),
             grant=grant,
@@ -403,11 +449,11 @@ class BudgetTests(unittest.TestCase):
         )
         self.assertEqual(
             {step.address for step in preview.steps},
-            {"192.0.2.1", "192.0.2.2"},
+            {"10.20.30.1", "10.20.30.2"},
         )
         self.assertEqual(len(preview.steps), 4)
         self.assertTrue(
-            all(step.target == "192.0.2.0/30" for step in preview.steps)
+            all(step.target == "10.20.30.0/30" for step in preview.steps)
         )
 
     def test_every_budget_dimension_enforces_absolute_boundary(self) -> None:
@@ -474,7 +520,7 @@ class BudgetTests(unittest.TestCase):
             "grant": ScopeGrant(networks=()),
             "now": NOW,
         }
-        network = ipaddress.ip_network("192.0.2.0/30")
+        network = ipaddress.ip_network("10.20.30.0/30")
         cases = (
             (
                 "max_hosts",
@@ -536,7 +582,7 @@ class BudgetTests(unittest.TestCase):
     def test_target_and_transport_enums_have_public_examples(self) -> None:
         targets = (
             parse_target("127.0.0.1"),
-            parse_target("192.0.2.0/24"),
+            parse_target("10.20.30.0/24"),
             parse_target("example.test"),
         )
         self.assertEqual({target.kind for target in targets}, set(TargetKind))
@@ -660,18 +706,18 @@ class BudgetTests(unittest.TestCase):
         with self.assertRaises(PolicyError):
             ScopeGrant(networks=(), attested="false")  # type: ignore[arg-type]
         with self.assertRaises(PolicyError):
-            ScopeGrant(networks=("192.0.2.0/24",))  # type: ignore[arg-type]
+            ScopeGrant(networks=("10.20.30.0/24",))  # type: ignore[arg-type]
         with self.assertRaises(PolicyError):
             ScopeGrant(networks=(ipaddress.ip_network("0.0.0.0/0"),))
 
         grant = ScopeGrant(
-            networks=(ipaddress.ip_network("192.0.2.10/32"),),
+            networks=(ipaddress.ip_network("10.20.30.10/32"),),
             ports=(443,),
             transports=("tcp",),
             attested=True,
         )
         preview_plan(
-            target_values=("192.0.2.10",),
+            target_values=("10.20.30.10",),
             ports=(443,),
             transports=("tcp",),
             grant=grant,
@@ -682,7 +728,7 @@ class BudgetTests(unittest.TestCase):
                 ConfirmationError
             ):
                 preview_plan(
-                    target_values=("192.0.2.10",),
+                    target_values=("10.20.30.10",),
                     ports=(port,),
                     transports=(transport,),
                     grant=grant,
@@ -707,7 +753,7 @@ class BudgetTests(unittest.TestCase):
             authorize_plan(replace(preview, estimate=forged_estimate), now=NOW)
         forged_scope = replace(
             preview,
-            targets=(parse_target("203.0.113.9"),),
+            targets=(parse_target("10.20.31.9"),),
             scope=ScopeGrant(networks=()),
         )
         with self.assertRaises((PolicyError, ConfirmationError)):

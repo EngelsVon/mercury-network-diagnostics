@@ -29,6 +29,15 @@ _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _IPV4_MULTICAST = ipaddress.ip_network("224.0.0.0/4")
 _IPV6_MULTICAST = ipaddress.ip_network("ff00::/8")
 _LIMITED_BROADCAST = ipaddress.ip_address("255.255.255.255")
+_IPV4_INTERNAL_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+_IPV4_LOOPBACK_NETWORK = ipaddress.ip_network("127.0.0.0/8")
+_IPV6_LOOPBACK_NETWORK = ipaddress.ip_network("::1/128")
+_IPV6_ULA_NETWORK = ipaddress.ip_network("fc00::/7")
+_IPV6_LINK_LOCAL_NETWORK = ipaddress.ip_network("fe80::/10")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +65,7 @@ class Target:
                 ipaddress.IPv6Address,
             ):
                 raise PolicyError("address target must contain an IP address")
-            _assert_destination_address(self.address)
+            _assert_destination_address(self.address, scope_id=self.scope_id)
             if self.scope_id is not None:
                 if (
                     type(self.scope_id) is not str
@@ -290,6 +299,8 @@ Resolver = Callable[[str], Sequence[object]]
 
 def _assert_destination_address(
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    *,
+    scope_id: str | None = None,
 ) -> None:
     if address.is_unspecified:
         raise PolicyError("unspecified destinations are not allowed")
@@ -297,6 +308,14 @@ def _assert_destination_address(
         raise PolicyError("multicast destinations are not allowed")
     if address == _LIMITED_BROADCAST:
         raise PolicyError("limited-broadcast destinations are not allowed")
+    if address.version == 4:
+        if any(address in network for network in (*_IPV4_INTERNAL_NETWORKS, _IPV4_LOOPBACK_NETWORK)):
+            return
+    elif address in _IPV6_LOOPBACK_NETWORK or address in _IPV6_ULA_NETWORK:
+        return
+    elif address in _IPV6_LINK_LOCAL_NETWORK and scope_id is not None:
+        return
+    raise PolicyError("active destinations must use an explicit private address range")
 
 
 def _assert_destination_network(
@@ -312,6 +331,13 @@ def _assert_destination_network(
         raise PolicyError(
             "networks containing the limited-broadcast destination are not allowed"
         )
+    allowed = (
+        (*_IPV4_INTERNAL_NETWORKS, _IPV4_LOOPBACK_NETWORK)
+        if network.version == 4
+        else (_IPV6_LOOPBACK_NETWORK, _IPV6_ULA_NETWORK, _IPV6_LINK_LOCAL_NETWORK)
+    )
+    if not any(network.subnet_of(candidate) for candidate in allowed):
+        raise PolicyError("active destination networks must use an explicit private address range")
 
 
 def _canonical_hostname(value: str) -> str:
@@ -379,7 +405,7 @@ def parse_target(value: str) -> Target:
     if scope_id is not None:
         if not isinstance(address, ipaddress.IPv6Address) or not address.is_link_local:
             raise PolicyError("scope ID is allowed only on IPv6 link-local literals")
-    _assert_destination_address(address)
+    _assert_destination_address(address, scope_id=scope_id)
     canonical = f"{address}%{scope_id}" if scope_id else str(address)
     return Target(
         kind=TargetKind.ADDRESS,
@@ -464,7 +490,9 @@ def _addresses_from_resolution(values: Sequence[object]) -> tuple[str, ...]:
         try:
             target = parse_target(candidate)
         except PolicyError as exc:
-            raise PolicyError(f"resolver returned invalid address {raw!r}") from exc
+            raise PolicyError(
+                f"resolver returned invalid or non-private address {raw!r}"
+            ) from exc
         if target.kind is not TargetKind.ADDRESS or target.address is None:
             raise PolicyError(f"resolver returned non-address {raw!r}")
         addresses.add(target.canonical)
