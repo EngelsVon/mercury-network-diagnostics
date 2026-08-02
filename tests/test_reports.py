@@ -4,8 +4,8 @@ import unittest
 from datetime import datetime, timezone
 
 from mercury.history import HistoryRecord
-from mercury.models import TaskState
-from mercury.reports import ReportError, compare_records, html_report, redact, report_wire
+from mercury.models import CoverageProfile, TaskState
+from mercury.reports import ReportError, compare_records, coverage_html_table, html_report, redact, report_wire
 from tests.test_web import result
 
 
@@ -18,6 +18,12 @@ def record(identifier: str, *, kind: str = "web") -> HistoryRecord:
 
 
 class ReportTests(unittest.TestCase):
+    def test_coverage_table_is_accessible_and_scopes_negative_claims(self) -> None:
+        document = coverage_html_table(result(), requested=(CoverageProfile.TCP_TAGGED,))
+        self.assertIn('<th scope="col">Profile</th>', document)
+        self.assertIn("untested tunnel mechanisms remain outside", document)
+        self.assertIn("skipped", document)
+
     def test_default_redaction_is_recursive_but_never_retains_secrets(self) -> None:
         value = {"token": "abc", "target": "203.0.113.2", "nested": {"mac": "aa:bb:cc:dd:ee:ff", "payload": "hello", "value": "private.example"}}
         self.assertEqual(redact(value), {"token": "[redacted secret]", "target": "[redacted identifier]", "nested": {"mac": "[redacted identifier]", "payload": "[redacted payload]", "value": "[redacted identifier]"}})

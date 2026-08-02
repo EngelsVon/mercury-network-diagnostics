@@ -10,6 +10,7 @@ from typing import Any
 
 from .codec import dumps_document, result_to_wire
 from .history import HistoryRecord
+from .models import CoverageProfile, TaskResult
 
 
 class ReportError(ValueError):
@@ -70,6 +71,24 @@ def html_report(record: HistoryRecord, *, retain_sensitive: bool = False) -> str
     return f"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title></head><body><main><h1>{title}</h1><pre>{document}</pre></main></body></html>"
 
 
+def coverage_html_table(result: TaskResult, *, requested: tuple[CoverageProfile, ...]) -> str:
+    """Render the finite coverage matrix without claiming a universal negative."""
+    from .paired import coverage_matrix
+    rows = coverage_matrix(result, requested=requested)
+    headings = ("Profile", "Direction", "Outcome", "Evidence", "Provenance", "Limitations")
+    body: list[str] = []
+    for row in rows:
+        cells = (
+            row.profile.value, row.direction, row.outcome.value,
+            ", ".join(row.observation_ids) or "—", ", ".join(row.provenance) or "—",
+            " ".join(row.limitations),
+        )
+        body.append("<tr>" + "".join(f"<td>{html.escape(value, quote=True)}</td>" for value in cells) + "</tr>")
+    head = "".join(f"<th scope=\"col\">{html.escape(value)}</th>" for value in headings)
+    note = "Results cover only the emitted profile, port/packet shape, direction, and time window; untested tunnel mechanisms remain outside this assessment."
+    return "<section aria-labelledby=\"coverage-title\"><h2 id=\"coverage-title\">Coverage assessment</h2><p>" + html.escape(note) + "</p><table><thead><tr>" + head + "</tr></thead><tbody>" + "".join(body) + "</tbody></table></section>"
+
+
 def _observation_key(value: Mapping[str, Any]) -> tuple[object, ...]:
     return (value["probe"], value["target"], value["attempt"], value["direction"])
 
@@ -109,4 +128,4 @@ def compare_records(left: HistoryRecord, right: HistoryRecord) -> dict[str, obje
     }
 
 
-__all__ = ["ReportError", "compare_records", "html_report", "json_report", "redact", "report_wire"]
+__all__ = ["ReportError", "compare_records", "coverage_html_table", "html_report", "json_report", "redact", "report_wire"]
