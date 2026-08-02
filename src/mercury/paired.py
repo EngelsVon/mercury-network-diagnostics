@@ -523,6 +523,16 @@ def _coverage_limitations(profile: CoverageProfile, outcome: CoverageOutcome) ->
     return (scoped,)
 
 
+def local_link_applicability(left_network: str, right_network: str) -> CoverageOutcome:
+    """Return the only valid ARP/ND scope classification for a remote pair."""
+    try:
+        left = ipaddress.ip_network(left_network, strict=False)
+        right = ipaddress.ip_network(right_network, strict=False)
+    except ValueError as exc:
+        raise PairedError("local-link networks are invalid") from exc
+    return CoverageOutcome.SKIPPED if left.version == right.version and left.overlaps(right) else CoverageOutcome.NOT_APPLICABLE
+
+
 def _address(value: str, label: str) -> str:
     try:
         return str(ipaddress.ip_address(value))
@@ -1260,6 +1270,6 @@ def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | N
 
 __all__ = [
     "AuthenticatedPairedRunner", "ConfiguredPairedExecutor", "CoverageMatrixRow", "CoverageReceiverLease", "CoverageReceiverService", "DEFAULT_COVERAGE_PROFILES", "PairedEndpoint", "PairedError", "PairedLease", "PairedListenerService",
-    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "paired_matrix",
+    "PairedMatrixRow", "PairedRequest", "PairedRunner", "coverage_matrix", "encode_coverage_tag", "local_link_applicability", "paired_matrix",
     "PairedPeerService", "encode_tcp_tag", "encode_udp_tag", "is_valid_udp_tag",
 ]

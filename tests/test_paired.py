@@ -32,6 +32,7 @@ from mercury.paired import (
     encode_tcp_tag,
     encode_udp_tag,
     encode_coverage_tag,
+    local_link_applicability,
     coverage_matrix,
     is_valid_udp_tag,
     paired_matrix,
@@ -419,6 +420,10 @@ class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MatrixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cross_subnet_arp_nd_is_not_applicable_to_remote_pair(self) -> None:
+        self.assertEqual(local_link_applicability("172.26.0.0/16", "172.27.0.0/16"), CoverageOutcome.NOT_APPLICABLE)
+        self.assertEqual(local_link_applicability("10.20.30.0/24", "10.20.30.0/24"), CoverageOutcome.SKIPPED)
+
     async def test_coverage_matrix_requires_arrival_or_response_for_candidate_carrier(self) -> None:
         result = _role_result("local", Disposition.POSITIVE, EvidenceKind.PEER_OBSERVED_ARRIVAL)
         observation = replace(
