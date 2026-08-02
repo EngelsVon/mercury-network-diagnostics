@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 from mercury.models import CoverageProfile
-from mercury.nmap_adapter import MAX_NMAP_XML_BYTES, NmapError, build_nmap_argv, parse_nmap_xml
+from mercury.nmap_adapter import MAX_NMAP_XML_BYTES, NmapError, build_nmap_argv, parse_nmap_xml, run_nmap
 from mercury.planner import InternalMappingRequest, authorize_internal_mapping
+from mercury.platform.common import CommandOutcome, CommandResult
 
 
 def plan():
@@ -16,7 +17,7 @@ def plan():
     ))
 
 
-class NmapAdapterTests(unittest.TestCase):
+class NmapAdapterTests(unittest.IsolatedAsyncioTestCase):
     def test_argv_is_fixed_and_plan_derived_for_each_native_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "nmap.exe"
@@ -60,3 +61,30 @@ class NmapAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(NmapError, "byte ceiling"):
             parse_nmap_xml(b"x" * (MAX_NMAP_XML_BYTES + 1))
 
+    async def test_execution_reads_only_owned_temporary_xml_and_cleans_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "nmap.exe"
+            binary.write_bytes(b"fixture")
+            seen: list[Path] = []
+
+            async def runner(argv: tuple[str, ...], _timeout: float, _maximum: int) -> CommandResult:
+                output = Path(argv[argv.index("-oX") + 1])
+                seen.append(output)
+                output.write_text("<nmaprun><host><address addr='127.0.0.1' addrtype='ipv4'/><ports><port protocol='tcp' portid='53'><state state='open' reason='syn-ack'/></port></ports></host></nmaprun>", encoding="utf-8")
+                return CommandResult(argv, 0, "", "", CommandOutcome.SUCCESS)
+
+            result = await run_nmap(
+                plan(), CoverageProfile.NMAP_TCP_CONNECT, executable=binary,
+                command_runner=runner, temporary_directory=temporary,
+            )
+            self.assertEqual(result.outcome, CommandOutcome.SUCCESS)
+            self.assertEqual([(item.port, item.state) for item in result.ports], [(53, "open")])
+            self.assertEqual(len(seen), 1)
+            self.assertFalse(seen[0].exists())
+
+    async def test_execution_reports_missing_tool_without_subprocess(self) -> None:
+        async def runner(*_args: object) -> CommandResult:
+            self.fail("runner must not execute when Nmap is absent")
+
+        result = await run_nmap(plan(), CoverageProfile.NMAP_UDP, executable="missing-nmap", command_runner=runner)
+        self.assertEqual((result.outcome, result.ports), (CommandOutcome.MISSING_TOOL, ()))

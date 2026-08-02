@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import ipaddress
 import shutil
+import tempfile
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from pathlib import Path
 
 from .models import CoverageProfile
 from .planner import ProbePlan, validate_plan
+from .platform.common import CommandOutcome, CommandResult, run_command
 
 MAX_NMAP_XML_BYTES = 1_048_576
 MAX_NMAP_PORTS = 65_535
@@ -56,6 +58,25 @@ class NativePortState:
             raise NmapError("Nmap XML has an unsupported port state")
         if self.reason is not None and (not isinstance(self.reason, str) or len(self.reason) > 128):
             raise NmapError("Nmap XML has an invalid state reason")
+
+
+@dataclass(frozen=True, slots=True)
+class NativeNmapResult:
+    """Bounded native result without retaining argv, XML, or command output."""
+
+    profile: CoverageProfile
+    outcome: CommandOutcome
+    ports: tuple[NativePortState, ...]
+    diagnostic: str = ""
+
+    def __post_init__(self) -> None:
+        if self.profile not in _NATIVE_PROFILES or type(self.outcome) is not CommandOutcome:
+            raise NmapError("native Nmap result is invalid")
+        if not isinstance(self.ports, (tuple, list)) or any(type(item) is not NativePortState for item in self.ports):
+            raise NmapError("native Nmap port evidence is invalid")
+        object.__setattr__(self, "ports", tuple(self.ports))
+        if not isinstance(self.diagnostic, str) or len(self.diagnostic) > 1_024:
+            raise NmapError("native Nmap diagnostic is invalid")
 
 
 def find_nmap(executable: str | Path | None = None) -> Path | None:
@@ -141,7 +162,40 @@ def parse_nmap_xml(document: bytes | str) -> tuple[NativePortState, ...]:
     return tuple(observations)
 
 
+async def run_nmap(
+    plan: ProbePlan,
+    profile: CoverageProfile,
+    *,
+    executable: str | Path | None = None,
+    command_runner=run_command,
+    temporary_directory: str | Path | None = None,
+) -> NativeNmapResult:
+    """Run one fixed native profile and return only bounded parsed evidence."""
+    binary = find_nmap(executable)
+    if binary is None:
+        return NativeNmapResult(profile, CommandOutcome.MISSING_TOOL, (), "nmap executable unavailable")
+    root_argument = None if temporary_directory is None else str(Path(temporary_directory).resolve())
+    with tempfile.TemporaryDirectory(prefix="mercury-nmap-", dir=root_argument) as directory:
+        root = Path(directory).resolve()
+        xml_path = root / "result.xml"
+        argv = build_nmap_argv(plan, profile, executable=binary, xml_path=xml_path)
+        result: CommandResult = await command_runner(argv, min(30.0, float(plan.preview.limits.max_duration_s)), MAX_NMAP_XML_BYTES)
+        if type(result) is not CommandResult:
+            raise NmapError("native command runner returned an invalid result")
+        if result.outcome not in {CommandOutcome.SUCCESS, CommandOutcome.NONZERO}:
+            return NativeNmapResult(profile, result.outcome, (), result.diagnostic)
+        resolved = xml_path.resolve()
+        if resolved.parent != root or not resolved.is_file():
+            return NativeNmapResult(profile, CommandOutcome.ERROR, (), "nmap did not produce bounded XML output")
+        try:
+            document = resolved.read_bytes()
+            ports = parse_nmap_xml(document)
+        except (OSError, NmapError) as exc:
+            return NativeNmapResult(profile, CommandOutcome.ERROR, (), type(exc).__name__)
+        return NativeNmapResult(profile, result.outcome, ports, "")
+
+
 __all__ = [
-    "MAX_NMAP_XML_BYTES", "NativePortState", "NmapError", "build_nmap_argv",
-    "find_nmap", "parse_nmap_xml",
+    "MAX_NMAP_XML_BYTES", "NativeNmapResult", "NativePortState", "NmapError",
+    "build_nmap_argv", "find_nmap", "parse_nmap_xml", "run_nmap",
 ]
