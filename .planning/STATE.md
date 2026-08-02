@@ -40,7 +40,7 @@ See: `.planning/PROJECT.md` (updated 2026-08-02)
 | Phase | Name | Status | Requirements |
 |-------|------|--------|--------------|
 | 1 | Private-Scope Policy Migration | Complete (2026-08-02) | SCOPE-01..03 |
-| 2 | Peer Receivers and Coverage Matrix | Planned | COVER-01..08 |
+| 2 | Peer Receivers and Coverage Matrix | In progress | COVER-01..08 |
 | 3 | Multi-Range Internal Mapping Engine | Planned | MAP-01..04 |
 | 4 | Native Coverage and Operator Surfaces | Planned | NMAP-01..03, SURF-01..02, PEER-01, HIST-01 |
 | 5 | Verification, Documentation, and Release Migration | Planned | QUAL-01..03, DOC-01 |
