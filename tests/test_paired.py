@@ -292,6 +292,29 @@ class UdpProfileTests(unittest.TestCase):
 
 
 class CoverageReceiverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dns_udp_receiver_answers_only_its_correlation_test_zone(self) -> None:
+        port = _port(socket.SOCK_DGRAM)
+        receiver = ReceiverProfileConfig(CoverageProfile.DNS_UDP, "127.0.0.1", port, 1.0)
+        service = CoverageReceiverService(CoverageReceiverLease(
+            receiver, "coverage-correlation", "127.0.0.1", utc_now() + timedelta(seconds=2),
+        ))
+        await service.start()
+        try:
+            name = b"\x14coverage-correlation\x07mercury\x04test\x00"
+            query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x01\x00\x01"
+            protocol = _UdpClient()
+            transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                lambda: protocol, remote_addr=("127.0.0.1", port),
+            )
+            try:
+                transport.sendto(query)
+                self.assertEqual((await asyncio.wait_for(protocol.reply, 1))[2:4], b"\x81\x80")
+            finally:
+                transport.close()
+            self.assertEqual(service.receipts[0].reply_result, "dns_answered")
+        finally:
+            await service.stop()
+
     async def test_http_and_ssh_receivers_require_the_fixed_correlation(self) -> None:
         for profile in (CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER):
             with self.subTest(profile=profile):

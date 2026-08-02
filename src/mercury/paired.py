@@ -1103,6 +1103,7 @@ class CoverageReceiverService:
 
     _IMPLEMENTED = frozenset({
         CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED,
+        CoverageProfile.DNS_UDP, CoverageProfile.DNS_TCP,
         CoverageProfile.HTTP_EXCHANGE, CoverageProfile.SSH_BANNER,
     })
 
@@ -1125,7 +1126,7 @@ class CoverageReceiverService:
         lease.assert_current(self._now())
         if lease.receiver.profile not in self._IMPLEMENTED:
             raise PairedError(f"coverage receiver profile is unavailable: {lease.receiver.profile.value}")
-        if lease.receiver.profile is CoverageProfile.UDP_TAGGED:
+        if lease.receiver.profile in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP}:
             transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
                 lambda: _CoverageDatagram(self), local_addr=(lease.receiver.bind_host, lease.receiver.port),
             )
@@ -1160,7 +1161,15 @@ class CoverageReceiverService:
             profile = self.lease.receiver.profile
             tag = encode_coverage_tag(self.lease)
             async with asyncio.timeout(self.lease.receiver.timeout_s):
-                if profile is CoverageProfile.HTTP_EXCHANGE:
+                if profile is CoverageProfile.DNS_TCP:
+                    size = int.from_bytes(await reader.readexactly(2), "big")
+                    query = await reader.readexactly(size)
+                    reply = _dns_coverage_reply(self.lease, query)
+                    if reply is None:
+                        return
+                    writer.write(len(reply).to_bytes(2, "big") + reply)
+                    tag = query
+                elif profile is CoverageProfile.HTTP_EXCHANGE:
                     request = await reader.readuntil(b"\r\n\r\n")
                     expected = b"GET /mercury/" + self.lease.correlation_id.encode("ascii") + b" HTTP/1.1\r\n"
                     if not request.startswith(expected) or b"X-Mercury-Correlation: " + self.lease.correlation_id.encode("ascii") not in request:
@@ -1187,15 +1196,22 @@ class CoverageReceiverService:
                 pass
 
     def _receive_datagram(self, data: bytes, address: tuple[str, int]) -> None:
-        if self._claimed or not self._source_matches(address) or data != encode_coverage_tag(self.lease):
+        if self._claimed or not self._source_matches(address):
             return
         try:
             self.lease.assert_current(self._now())
         except PairedError:
             return
         assert self._udp is not None
-        self._udp.sendto(_COVERAGE_REPLY, address)
-        self._record(address, data, "acknowledged")
+        if self.lease.receiver.profile is CoverageProfile.DNS_UDP:
+            reply = _dns_coverage_reply(self.lease, data)
+            if reply is None:
+                return
+            self._udp.sendto(reply, address)
+            self._record(address, data, "dns_answered")
+        elif data == encode_coverage_tag(self.lease):
+            self._udp.sendto(_COVERAGE_REPLY, address)
+            self._record(address, data, "acknowledged")
 
     def _record(self, peer: object, payload: bytes, reply_result: str) -> None:
         if self._claimed or not isinstance(peer, tuple) or len(peer) < 2 or not isinstance(peer[0], str) or type(peer[1]) is not int:
@@ -1220,6 +1236,20 @@ class _CoverageDatagram(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, address: tuple[str, int]) -> None:
         self._service._receive_datagram(data, address)
+
+
+def _dns_coverage_reply(lease: CoverageReceiverLease, query: bytes) -> bytes | None:
+    """Validate one normal A query for `<correlation>.mercury.test`."""
+    if len(query) < 17 or query[2:4] != b"\x01\x00":
+        return None
+    labels = (lease.correlation_id, "mercury", "test")
+    encoded_name = b"".join(bytes((len(label),)) + label.encode("ascii") for label in labels) + b"\x00"
+    question = encoded_name + b"\x00\x01\x00\x01"
+    if query[12:] != question:
+        return None
+    header = query[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00"
+    answer = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x00\x00\x04\x7f\x00\x00\x01"
+    return header + question + answer
 
 
 __all__ = [
