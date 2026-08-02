@@ -44,10 +44,10 @@
 
 ### Verification and Documentation
 
-- [ ] **QUAL-01**: Controlled tests prove that public and DNS-escaped targets fail before I/O, private multi-range mapping respects rate/duration/output ceilings, and cancellation is safe.
-- [ ] **QUAL-02**: Controlled tests prove sender/receiver correlation and directional semantics for every supported coverage profile, including receiver-capability gaps and cross-subnet ARP/ND non-applicability.
-- [ ] **QUAL-03**: Controlled tests prove Nmap argv/XML handling, CLI/Web shared-service routing, history safety, and peer trust controls without a real non-loopback scan.
-- [ ] **DOC-01**: README, CLI help, Web copy, and release smoke instructions describe the supported coverage matrix, peer receiver prerequisites, hard ceilings, zero-duration semantics, Nmap capability limits, ARP/ND boundary, and assessment-gap semantics accurately.
+- [x] **QUAL-01**: Controlled tests prove that public and DNS-escaped targets fail before I/O, private multi-range mapping respects rate/duration/output ceilings, and cancellation is safe. *(83 tests: policy, planner, discovery, tasks; 2026-08-02.)*
+- [x] **QUAL-02**: Controlled tests prove sender/receiver correlation and directional semantics for every supported coverage profile, including receiver-capability gaps and cross-subnet ARP/ND non-applicability. *(53 tests: paired, peer, reports; 2026-08-02.)*
+- [x] **QUAL-03**: Controlled tests prove Nmap argv/XML handling, CLI/Web shared-service routing, history safety, and peer trust controls without a real non-loopback scan. *(70 tests plus a wheel-install/import/help smoke; 2026-08-02.)*
+- [x] **DOC-01**: README, CLI help, Web copy, and release smoke instructions describe the supported coverage matrix, peer receiver prerequisites, hard ceilings, zero-duration semantics, Nmap capability limits, ARP/ND boundary, and assessment-gap semantics accurately. *(Documentation and UI/CLI tests; 2026-08-02.)*
 
 ## v2 Requirements
 
@@ -94,10 +94,10 @@
 | SURF-02 | Phase 4 | Complete |
 | PEER-01 | Phase 4 | Complete |
 | HIST-01 | Phase 4 | Complete |
-| QUAL-01 | Phase 5 | Pending |
-| QUAL-02 | Phase 5 | Pending |
-| QUAL-03 | Phase 5 | Pending |
-| DOC-01 | Phase 5 | Pending |
+| QUAL-01 | Phase 5 | Complete |
+| QUAL-02 | Phase 5 | Complete |
+| QUAL-03 | Phase 5 | Complete |
+| DOC-01 | Phase 5 | Complete |
 
 **Coverage:**
 
@@ -108,4 +108,4 @@
 ---
 
 *Requirements defined: 2026-08-02*
-*Last updated: 2026-08-02 after Phase 4 native-profile and operator-surface verification*
+*Last updated: 2026-08-02 after Phase 5 controlled verification and release smoke*

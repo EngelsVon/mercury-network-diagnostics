@@ -21,7 +21,7 @@ Within an explicitly declared private-network scope, show reproducible evidence 
 - ✅ **BASE-05**: Non-loopback peer control uses TLS, token authentication, certificate pinning, and a closed paired operation profile.
 - ✅ **SCOPE-01..03**: Active destinations, resolved answers, profiles, peer configuration, CLI/Web guidance, and service entry points enforce the explicit private-only admission rule. *(Validated in Phase 1, 2026-08-02.)*
 
-### Active
+### Completed Pivot Work
 
 - [x] Provide one private mapping request that accepts multiple internal CIDRs, finite transport/port profiles, rate, concurrency, and duration parameters. *(Phase 3, 2026-08-02.)*
 - ✅ Use paired, correlation-bound Mercury receivers to witness inbound TCP, UDP, DNS, ICMP (where the platform can observe it), TLS, HTTP, SSH-banner, and local-link ARP/ND coverage profiles in both directions. *(Phase 2, 2026-08-02.)*
@@ -42,9 +42,9 @@ Within an explicitly declared private-network scope, show reproducible evidence 
 ## Context
 
 - The existing product already has a strong evidence model: TCP refusal, timeout, UDP application reply, ICMP unreachable, silent, unsupported, permission denied, and execution error are distinct values.
-- `src/mercury/discovery.py` currently offers one IPv4 CIDR and TCP-only profiles; `src/mercury/policy.py` currently permits public addresses when attested.
-- The current README states that Mercury is not a scanner and includes public-profile examples. Both the implementation and documentation need a coordinated product-pivot migration.
-- Nmap is installed at `D:\\Nmap\\nmap.exe` on this development system, but it is not currently a project dependency or integration.
+- `src/mercury/discovery.py` provides canonical private multi-CIDR mapping with fixed TCP/UDP/application profiles; `src/mercury/policy.py` rejects public destinations before I/O.
+- README, CLI, and WebUI describe internal mapping and the finite two-endpoint coverage matrix without public active examples.
+- Nmap is an optional local capability integrated through `src/mercury/nmap_adapter.py`; it has no generic argument or target interface.
 - The user supplied a private peer test endpoint, but it is not recorded in project files and must not be contacted by automated tests or by this planning task.
 
 ## Constraints
@@ -65,12 +65,12 @@ Within an explicitly declared private-network scope, show reproducible evidence 
 |----------|-----------|---------|
 | Reposition Mercury as an internal-network mapping tool | The target use case is ACL/isolation leak detection, not public endpoint diagnosis | Adopted in Phase 1 |
 | Enforce private-only scope at the canonical policy layer | All presenters and future native adapters then receive the same rejection behavior | Adopted in Phase 1 |
-| Keep a minimum attestation, audit trail, and immutable ceilings | These are mandatory repository trust and safety invariants; private address space alone does not establish authority | Pending |
-| Interpret requested duration `0` as “no operator-selected early cutoff” within hard ceilings | Preserves scan-to-completion intent without offering an unbounded operation | Pending |
-| Implement a peer-correlated coverage matrix | TCP, UDP, DNS, ICMP, TLS, HTTP, SSH-banner, local ARP/ND, and fixed native Nmap profiles need receiver-side evidence and directional results | Pending |
-| Treat positive coverage as a tunnel-carrier finding, not a proof of a deployed tunnel | A confirmed carrier establishes bypass potential; no finite test proves every conceivable packet sequence absent | Pending |
-| Make Nmap optional and policy-derived | The installed native binary can add value without becoming a generic command-execution bypass | Pending |
-| Preserve peer mTLS and fixed peer destination rules | Peer-to-peer communication needs authenticated trust and must not enable third-party scanning | Pending |
+| Keep a minimum attestation, audit trail, and immutable ceilings | These are mandatory repository trust and safety invariants; private address space alone does not establish authority | Adopted in Phases 1-5 |
+| Interpret requested duration `0` as “no operator-selected early cutoff” within hard ceilings | Preserves scan-to-completion intent without offering an unbounded operation | Adopted in Phase 3 |
+| Implement a peer-correlated coverage matrix | TCP, UDP, DNS, ICMP, TLS, HTTP, SSH-banner, and local ARP/ND need receiver-side evidence and directional results; Nmap remains local native evidence | Adopted in Phases 2 and 4 |
+| Treat positive coverage as a tunnel-carrier finding, not a proof of a deployed tunnel | A confirmed carrier establishes bypass potential; no finite test proves every conceivable packet sequence absent | Adopted in Phase 2 |
+| Make Nmap optional and policy-derived | The installed native binary adds bounded evidence without becoming a generic command-execution bypass | Adopted in Phase 4 |
+| Preserve peer mTLS and fixed peer destination rules | Peer-to-peer communication needs authenticated trust and must not enable third-party scanning | Adopted in Phase 2 |
 
 ## Evolution
 
@@ -93,4 +93,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-08-02 after Phase 4 native mapping and operator-surface implementation*
+*Last updated: 2026-08-02 after Phase 5 controlled verification and release smoke*

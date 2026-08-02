@@ -85,7 +85,7 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 
 ## Phase 5: Verification, Documentation, and Release Migration
 
-**Status:** In progress (2026-08-02)
+**Status:** Complete (2026-08-02)
 
 **Goal:** Demonstrate the private-only boundary and the exact coverage contract with controlled tests and accurate operator guidance.
 
@@ -98,7 +98,7 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 3. Packaging, compilation, and supported-platform-safe smoke commands pass.
 4. README, CLI, and Web copy enumerate the actual coverage matrix, receiver prerequisites, ARP/ND cross-subnet boundary, native capability gaps, and the scoped meaning of a negative result.
 
-**Plans:** 1 in progress
+**Plans:** 1 complete
 **UI hint:** yes
 
 ## Requirement Coverage
