@@ -6,7 +6,7 @@ See: `.planning/PROJECT.md` (updated 2026-08-02)
 
 **Core value:** Within an explicitly declared private-network scope, identify every tested transport or application carrier that can convey a correlated message between two configured endpoints, and show the exact coverage gaps.
 
-**Current focus:** Phase 2 — Peer Receivers and Coverage Matrix (implement configured receiver leases and directional correlations).
+**Current focus:** Phase 3 — Multi-Range Internal Mapping Engine (compile one bounded aggregate mapping request).
 
 ## Current Position
 
@@ -16,6 +16,7 @@ See: `.planning/PROJECT.md` (updated 2026-08-02)
 - The requested internal-coverage pivot has been captured as five unstarted phases, twenty-six v1 requirements, and one executable plan per phase.
 - The peer-receiver and tunnel-exposure contract is recorded in .planning/TUNNEL-COVERAGE.md.
 - Phase 1 is complete: every active entry point now admits only the explicit private-address allowlist, including post-resolution rechecks; public profiles and examples were removed.
+- Phase 2 is complete: configured coverage receivers and senders exercise the finite TCP, UDP, DNS, ICMP, TLS, HTTP and SSH matrix in both directions, preserve receiver correlation evidence in one immutable assessment history record, and render ARP/ND only as passive local-link evidence or cross-subnet non-applicability.
 
 ## Constraints to Preserve
 
@@ -40,14 +41,14 @@ See: `.planning/PROJECT.md` (updated 2026-08-02)
 | Phase | Name | Status | Requirements |
 |-------|------|--------|--------------|
 | 1 | Private-Scope Policy Migration | Complete (2026-08-02) | SCOPE-01..03 |
-| 2 | Peer Receivers and Coverage Matrix | In progress | COVER-01..08 |
-| 3 | Multi-Range Internal Mapping Engine | Planned | MAP-01..04 |
+| 2 | Peer Receivers and Coverage Matrix | Complete (2026-08-02) | COVER-01..08 |
+| 3 | Multi-Range Internal Mapping Engine | In progress | MAP-01..04 |
 | 4 | Native Coverage and Operator Surfaces | Planned | NMAP-01..03, SURF-01..02, PEER-01, HIST-01 |
 | 5 | Verification, Documentation, and Release Migration | Planned | QUAL-01..03, DOC-01 |
 
 ## Next Action
 
-Execute `.planning/phases/02-peer-receivers-and-coverage-matrix/02-01-PLAN.md` next. Then execute Phases 3 through 5 strictly in roadmap order; configured peer receivers are delivered before the coverage assessment is exposed.
+Execute `.planning/phases/03-multi-range-internal-mapping-engine/03-01-PLAN.md` next. Then execute Phases 4 and 5 strictly in roadmap order.
 
 ---
 

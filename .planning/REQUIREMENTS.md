@@ -13,14 +13,14 @@
 
 ### Peer-Correlated Coverage
 
-- [ ] **COVER-01**: An operator can select a finite named coverage matrix containing TCP connect/tagged exchange, UDP tagged exchange, DNS over UDP/TCP, ICMP echo, TLS handshake, HTTP exchange, SSH banner, local ARP/IPv6-ND evidence, and optional native Nmap TCP/UDP/SCTP profiles.
-- [ ] **COVER-02**: A configured Mercury peer can provision only its configured short-lived receiver profiles and records correlation ID, protocol/profile, source/destination tuple, arrival time, payload digest/length, and reply result for every received test message.
-- [ ] **COVER-03**: A two-endpoint assessment runs each selected receiver-capable profile independently in both directions and correlates sender evidence with peer arrival/acknowledgement evidence.
-- [ ] **COVER-04**: TCP and UDP coverage results preserve connection/refusal/reset, tagged arrival, acknowledgement, ICMP unreachable, timeout, silent, permission-denied, and execution-error semantics separately.
-- [ ] **COVER-05**: DNS, TLS, HTTP, and SSH coverage use standards-compliant fixed request/handshake/banner exchanges against configured test receivers and never perform credential or login attempts.
-- [ ] **COVER-06**: ICMP echo records native reply/unreachable/timeout outcomes and adds peer arrival evidence only when the platform exposes a privileged capture/observer capability; otherwise it reports the capability gap.
-- [ ] **COVER-07**: ARP and IPv6 Neighbor Discovery are reported only as same-link evidence and are explicitly marked not applicable for cross-subnet remote-pair reachability.
-- [ ] **COVER-08**: An assessment lists positive candidate carriers, attempted profiles, unavailable/permission-denied/skipped/non-applicable profiles, and never claims that all possible tunnelling methods have been eliminated.
+- [ ] **COVER-01**: An operator can select a finite named coverage matrix containing TCP connect/tagged exchange, UDP tagged exchange, DNS over UDP/TCP, ICMP echo, TLS handshake, HTTP exchange, SSH banner, local ARP/IPv6-ND evidence, and optional native Nmap TCP/UDP/SCTP profiles. *(The non-native matrix completed in Phase 2; Nmap selection completes this in Phase 4.)*
+- [x] **COVER-02**: A configured Mercury peer can provision only its configured short-lived receiver profiles and records correlation ID, protocol/profile, source/destination tuple, arrival time, payload digest/length, and reply result for every received test message. *(Phase 2.)*
+- [x] **COVER-03**: A two-endpoint assessment runs each selected receiver-capable profile independently in both directions and correlates sender evidence with peer arrival/acknowledgement evidence. *(Phase 2.)*
+- [x] **COVER-04**: TCP and UDP coverage results preserve connection/refusal/reset, tagged arrival, acknowledgement, ICMP unreachable, timeout, silent, permission-denied, and execution-error semantics separately. *(Phase 2.)*
+- [x] **COVER-05**: DNS, TLS, HTTP, and SSH coverage use standards-compliant fixed request/handshake/banner exchanges against configured test receivers and never perform credential or login attempts. *(Phase 2.)*
+- [x] **COVER-06**: ICMP echo records native reply/unreachable/timeout outcomes and adds peer arrival evidence only when the platform exposes a privileged capture/observer capability; otherwise it reports the capability gap. *(Phase 2.)*
+- [x] **COVER-07**: ARP and IPv6 Neighbor Discovery are reported only as same-link evidence and are explicitly marked not applicable for cross-subnet remote-pair reachability. *(Phase 2.)*
+- [x] **COVER-08**: An assessment lists positive candidate carriers, attempted profiles, unavailable/permission-denied/skipped/non-applicable profiles, and never claims that all possible tunnelling methods have been eliminated. *(Phase 2.)*
 
 ### Mapping Plans
 
@@ -75,14 +75,14 @@
 | SCOPE-01 | Phase 1 | Complete |
 | SCOPE-02 | Phase 1 | Complete |
 | SCOPE-03 | Phase 1 | Complete |
-| COVER-01 | Phase 2 | Pending |
-| COVER-02 | Phase 2 | Pending |
-| COVER-03 | Phase 2 | Pending |
-| COVER-04 | Phase 2 | Pending |
-| COVER-05 | Phase 2 | Pending |
-| COVER-06 | Phase 2 | Pending |
-| COVER-07 | Phase 2 | Pending |
-| COVER-08 | Phase 2 | Pending |
+| COVER-01 | Phase 4 | Pending |
+| COVER-02 | Phase 2 | Complete |
+| COVER-03 | Phase 2 | Complete |
+| COVER-04 | Phase 2 | Complete |
+| COVER-05 | Phase 2 | Complete |
+| COVER-06 | Phase 2 | Complete |
+| COVER-07 | Phase 2 | Complete |
+| COVER-08 | Phase 2 | Complete |
 | MAP-01 | Phase 3 | Pending |
 | MAP-02 | Phase 3 | Pending |
 | MAP-03 | Phase 3 | Pending |

@@ -24,8 +24,8 @@ Within an explicitly declared private-network scope, show reproducible evidence 
 ### Active
 
 - [ ] Provide one private mapping request that accepts multiple internal CIDRs, finite transport/port profiles, rate, concurrency, and duration parameters.
-- [ ] Use paired, correlation-bound Mercury receivers to witness inbound TCP, UDP, DNS, ICMP (where the platform can observe it), TLS, HTTP, SSH-banner, and local-link ARP/ND coverage profiles in both directions.
-- [ ] Produce a tunnel-exposure coverage matrix that flags every tested carrier with positive arrival or reply evidence and lists every unavailable, skipped, and non-applicable profile.
+- ✅ Use paired, correlation-bound Mercury receivers to witness inbound TCP, UDP, DNS, ICMP (where the platform can observe it), TLS, HTTP, SSH-banner, and local-link ARP/ND coverage profiles in both directions. *(Phase 2, 2026-08-02.)*
+- ✅ Produce a tunnel-exposure coverage matrix that flags every tested carrier with positive arrival or reply evidence and lists every unavailable, skipped, and non-applicable profile. *(Phase 2, 2026-08-02.)*
 - [ ] Optionally use the locally installed Nmap executable through a fixed, policy-derived adapter, never an arbitrary Nmap command line.
 - [ ] Expose the same mapping service through CLI and Web UI while preserving peer trust controls, local evidence history, cancellation, redaction, and hard ceilings.
 - [ ] Replace the deleted project plan with requirements, roadmap, phase state, and a codebase map that make the product pivot executable.

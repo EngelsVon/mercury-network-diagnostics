@@ -27,9 +27,11 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 
 ## Phase 2: Peer Receivers and Coverage Matrix
 
+**Status:** Complete (2026-08-02)
+
 **Goal:** Give both configured Mercury endpoints a correlation-bound receive/acknowledgement surface for the supported coverage profiles and produce directional carrier evidence.
 
-**Requirements:** COVER-01, COVER-02, COVER-03, COVER-04, COVER-05, COVER-06, COVER-07, COVER-08
+**Requirements:** COVER-02, COVER-03, COVER-04, COVER-05, COVER-06, COVER-07, COVER-08
 
 **Success criteria:**
 
@@ -40,7 +42,7 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 5. ARP/ND is reported as local-link-only and automatically non-applicable to a cross-subnet remote pair.
 6. The final result lists candidate carriers and every coverage gap; it never claims all possible tunnels have been excluded.
 
-**Plans:** 1 ready
+**Plans:** 1 complete
 **UI hint:** no
 
 ## Phase 3: Multi-Range Internal Mapping Engine
@@ -64,7 +66,7 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 
 **Goal:** Add optional Nmap-native profiles and expose all mapping/coverage functionality through the shared CLI, Web UI, peer, and history boundaries.
 
-**Requirements:** NMAP-01, NMAP-02, NMAP-03, SURF-01, SURF-02, PEER-01, HIST-01
+**Requirements:** COVER-01, NMAP-01, NMAP-02, NMAP-03, SURF-01, SURF-02, PEER-01, HIST-01
 
 **Success criteria:**
 
@@ -100,7 +102,7 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 | SCOPE-01 | 1 |
 | SCOPE-02 | 1 |
 | SCOPE-03 | 1 |
-| COVER-01 | 2 |
+| COVER-01 | 4 |
 | COVER-02 | 2 |
 | COVER-03 | 2 |
 | COVER-04 | 2 |
