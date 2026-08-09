@@ -25,7 +25,7 @@ from .models import (
     Capability, CapabilityState, Conclusion, Confidence, Direction,
     Disposition, EffectiveConfig, EvidenceKind, Health, Observation,
     Progress, TaskResult, TaskState, utc_now,
-    CoverageProfile,
+    CoverageProfile, ProbeKind,
 )
 from .nmap_adapter import NativeNmapResult, NativePortState, run_nmap
 from .planner import (
@@ -361,7 +361,19 @@ class DiscoveryRequest:
 
 
 def default_discovery_grant(request: DiscoveryRequest) -> ScopeGrant:
-    return ScopeGrant(networks=(ipaddress.ip_network(request.scope),), ports=request.selected_ports, transports=("tcp",), probe_kinds=(), attested=request.authorized, purpose="authorized bounded TCP discovery", expires_at=datetime.now(timezone.utc) + timedelta(minutes=15))
+    # Full-port confirmation is digest-bound to the grant.  A fresh timestamp
+    # for every CLI invocation would make the previewed phrase impossible to
+    # submit on the next invocation, so keep the default grant stable within a
+    # short, explicit quarter-hour window.
+    now = datetime.now(timezone.utc)
+    expires_at = now.replace(second=0, microsecond=0) + timedelta(
+        minutes=15 - (now.minute % 15)
+    )
+    return ScopeGrant(
+        networks=(ipaddress.ip_network(request.scope),), ports=request.selected_ports,
+        transports=("tcp",), probe_kinds=(ProbeKind.TCP_CONNECT,), attested=request.authorized,
+        purpose="authorized bounded TCP discovery", expires_at=expires_at,
+    )
 
 
 def compile_discovery(request: DiscoveryRequest, *, grant: ScopeGrant) -> PlanPreview:
@@ -380,8 +392,26 @@ class DiscoveryRunner:
         self.protocol_dispatcher = protocol_dispatcher
 
     async def __call__(self, context: TaskContext) -> None:
+        if context.plan.preview.profile == "discovery-full-tcp-v1":
+            await self._run_full_profile(context)
+            return
         for step in context.plan.preview.steps:
             await self.protocol_dispatcher(context, step.id)
+
+    async def _run_full_profile(self, context: TaskContext) -> None:
+        """Use the plan's existing admission limits for the explicit full scan."""
+        steps = iter(context.plan.preview.steps)
+
+        async def worker() -> None:
+            while True:
+                try:
+                    step = next(steps)
+                except StopIteration:
+                    return
+                await self.protocol_dispatcher(context, step.id)
+
+        workers = min(context.plan.preview.limits.max_concurrency, context.total)
+        await asyncio.gather(*(worker() for _ in range(workers)))
 
 
 class MappingRunner(DiscoveryRunner):

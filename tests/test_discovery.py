@@ -9,7 +9,7 @@ import unittest
 
 from mercury.discovery import (
     DiscoveryRequest, DiscoveryRunner, collect_passive_discovery, compile_discovery,
-    default_discovery_grant, derive_ipv4_networks, parse_linux_neighbors,
+    default_discovery_grant, derive_ipv4_networks, full_confirmation_example, parse_linux_neighbors,
     parse_windows_neighbors, parse_windows_wifi, run_discovery,
 )
 from mercury.history import HistoryStore
@@ -126,12 +126,27 @@ class ActiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             DiscoveryRequest("127.0.0.1/32", "127.0.0.0/8", profile="custom", authorized=True)
 
+    async def test_private_discovery_grant_admits_its_fixed_tcp_probe(self):
+        request = DiscoveryRequest("10.20.30.10/32", "10.20.30.0/24", profile="custom", ports=(443,), authorized=True)
+        plan = authorize_plan(compile_discovery(request, grant=default_discovery_grant(request)))
+        prepared = plan.preflight_step(plan.preview.steps[0].id)
+        self.assertEqual((prepared.address, prepared.step.port), ("10.20.30.10", 443))
+
     async def test_full_profile_needs_digest_confirmation_before_task_submission(self):
         request = DiscoveryRequest("127.0.0.1/32", "127.0.0.0/8", profile="full", authorized=True)
         preview = compile_discovery(request, grant=default_discovery_grant(request))
         self.assertEqual(preview.required_confirmations, ("full_tcp",))
         with self.assertRaises(PermissionError):
             authorize_plan(preview)
+
+    async def test_default_full_grant_keeps_confirmation_stable_within_its_window(self):
+        request = DiscoveryRequest("127.0.0.1/32", "127.0.0.0/8", profile="full", authorized=True)
+        first, second = default_discovery_grant(request), default_discovery_grant(request)
+        self.assertEqual(first.expires_at, second.expires_at)
+        self.assertEqual(
+            full_confirmation_example(request, grant=first),
+            full_confirmation_example(request, grant=second),
+        )
 
     async def test_cancellation_preserves_partial_discovery_progress(self):
         request = DiscoveryRequest("127.0.0.0/30", "127.0.0.0/8", profile="custom", ports=(443,), authorized=True)

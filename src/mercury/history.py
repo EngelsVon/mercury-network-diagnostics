@@ -21,7 +21,10 @@ from .models import TaskResult, TaskState, utc_now
 MAX_TASKS_ABSOLUTE = 10_000
 MAX_AGE_DAYS_ABSOLUTE = 365
 MAX_EVENT_BYTES = 64 * 1024
-MAX_AUX_JSON_BYTES = 8 * 1024 * 1024
+# A fully admitted full-port plan and its result may use the product's 64 MiB
+# output ceiling.  History must accommodate that same bounded document or it
+# would reject a valid plan before the task can begin.
+MAX_AUX_JSON_BYTES = 64 * 1024 * 1024
 LEGACY_ACTIVE_LEASE_SECONDS = 3_660
 
 _SECRET_KEY_PARTS = (
