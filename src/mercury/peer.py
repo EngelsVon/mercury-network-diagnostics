@@ -125,6 +125,8 @@ class PeerConfig:
     token_path: Path | None
     peer_pins: tuple[str, ...]
     peer_addresses: tuple[str, ...]
+    control_bind_host: str | None = None
+    control_peer_addresses: tuple[str, ...] = ()
     unsafe_development: bool = False
     server_hostname: str | None = None
     paired_tcp_port: int | None = None
@@ -143,6 +145,13 @@ class PeerConfig:
         if bind_target.kind is not TargetKind.ADDRESS or bind_target.address is None:
             raise PeerConfigurationError("peer bind host must be an IP address")
         bound = bind_target.address
+        control_bind_value = self.bind_host if self.control_bind_host is None else self.control_bind_host
+        try:
+            control_bind_target = parse_target(control_bind_value)
+        except PolicyError as exc:
+            raise PeerConfigurationError("peer control bind host must be a private IP address") from exc
+        if control_bind_target.kind is not TargetKind.ADDRESS or control_bind_target.address is None:
+            raise PeerConfigurationError("peer control bind host must be an IP address")
         if isinstance(self.control_port, bool) or not 0 <= self.control_port <= 65535:
             raise PeerConfigurationError("peer control port is invalid")
         if not self.peer_addresses:
@@ -158,6 +167,20 @@ class PeerConfig:
             canonical_peers.add(target.canonical)
         object.__setattr__(self, "bind_host", bind_target.canonical)
         object.__setattr__(self, "peer_addresses", tuple(sorted(canonical_peers)))
+        control_values = self.control_peer_addresses or tuple(sorted(canonical_peers))
+        canonical_controls: set[str] = set()
+        for address in control_values:
+            try:
+                target = parse_target(address)
+            except PolicyError as exc:
+                raise PeerConfigurationError("peer control address must be a private IP address") from exc
+            if target.kind is not TargetKind.ADDRESS:
+                raise PeerConfigurationError("peer control address must be an IP address")
+            canonical_controls.add(target.canonical)
+        if not canonical_controls:
+            raise PeerConfigurationError("peer configuration requires fixed control addresses")
+        object.__setattr__(self, "control_bind_host", control_bind_target.canonical)
+        object.__setattr__(self, "control_peer_addresses", tuple(sorted(canonical_controls)))
         if not isinstance(self.receiver_profiles, (tuple, list)) or any(
             type(item) is not ReceiverProfileConfig for item in self.receiver_profiles
         ):
@@ -285,7 +308,7 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
     required = {"identity", "bind_host", "control_port", "peer_pins", "peer_addresses"}
     optional = {
         "certificate_path", "key_path", "ca_path", "token_path", "server_hostname",
-        "paired", "receivers", "coverage_profiles",
+        "paired", "receivers", "coverage_profiles", "control_bind_host", "control_peer_addresses",
     }
     if set(value) - required - optional or required - set(value):
         raise PeerConfigurationError("peer configuration fields are invalid")
@@ -296,8 +319,8 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
         if not isinstance(item, str) or not item or len(item) > 4096:
             raise PeerConfigurationError("peer configuration path is invalid")
         return (path.parent / item).resolve() if not Path(item).is_absolute() else Path(item)
-    pins, addresses = value["peer_pins"], value["peer_addresses"]
-    if not isinstance(pins, list) or not isinstance(addresses, list):
+    pins, addresses, controls = value["peer_pins"], value["peer_addresses"], value.get("control_peer_addresses", [])
+    if not isinstance(pins, list) or not isinstance(addresses, list) or not isinstance(controls, list):
         raise PeerConfigurationError("peer configuration peer lists are invalid")
     paired = value.get("paired")
     if paired is not None and (
@@ -350,6 +373,7 @@ def load_peer_config(path: Path, *, unsafe_development: bool = False) -> PeerCon
         certificate_path=path_value("certificate_path"), key_path=path_value("key_path"),
         ca_path=path_value("ca_path"), token_path=path_value("token_path"),
         peer_pins=tuple(pins), peer_addresses=tuple(addresses),
+        control_bind_host=value.get("control_bind_host"), control_peer_addresses=tuple(controls),
         unsafe_development=unsafe_development, server_hostname=value.get("server_hostname"),
         paired_tcp_port=None if paired is None else paired["tcp_port"],
         paired_udp_port=None if paired is None else paired["udp_port"],
@@ -727,7 +751,7 @@ class PeerAgent:
             ssl_context = create_server_ssl_context(self.config)
         self._server = await self._server_factory(
             self._handle_connection,
-            host=self.config.bind_host,
+            host=self.config.control_bind_host,
             port=self.config.control_port,
             ssl=ssl_context,
             limit=MAX_FRAME_BYTES + 4,
@@ -841,7 +865,7 @@ class PeerClient:
         context = None if self.config.unsafe_development else create_client_ssl_context(
             self.config, certificate_path=self._certificate_path, key_path=self._key_path,
         )
-        host = self.config.peer_addresses[0]
+        host = self.config.control_peer_addresses[0]
         try:
             reader, writer = await self._open_connection(
                 host,

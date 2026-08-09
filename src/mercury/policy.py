@@ -33,6 +33,9 @@ _IPV4_INTERNAL_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
+    # RFC 6598 shared address space is used by private tailnets such as
+    # Tailscale; it is not globally routable Internet address space.
+    ipaddress.ip_network("100.64.0.0/10"),
 )
 _IPV4_LOOPBACK_NETWORK = ipaddress.ip_network("127.0.0.0/8")
 _IPV6_LOOPBACK_NETWORK = ipaddress.ip_network("::1/128")
