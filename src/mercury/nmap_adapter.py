@@ -15,7 +15,9 @@ from pathlib import Path
 
 from .models import CoverageProfile
 from .planner import ProbePlan, validate_plan
-from .platform.common import CommandOutcome, CommandResult, run_command
+from .platform.common import (
+    MAX_COMMAND_OUTPUT_BYTES, CommandOutcome, CommandResult, run_command,
+)
 
 MAX_NMAP_XML_BYTES = 1_048_576
 MAX_NMAP_PORTS = 65_535
@@ -179,7 +181,11 @@ async def run_nmap(
         root = Path(directory).resolve()
         xml_path = root / "result.xml"
         argv = build_nmap_argv(plan, profile, executable=binary, xml_path=xml_path)
-        result: CommandResult = await command_runner(argv, min(30.0, float(plan.preview.limits.max_duration_s)), MAX_NMAP_XML_BYTES)
+        result: CommandResult = await command_runner(
+            argv,
+            min(30.0, float(plan.preview.limits.max_duration_s)),
+            MAX_COMMAND_OUTPUT_BYTES,
+        )
         if type(result) is not CommandResult:
             raise NmapError("native command runner returned an invalid result")
         if result.outcome not in {CommandOutcome.SUCCESS, CommandOutcome.NONZERO}:

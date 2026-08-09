@@ -6,6 +6,7 @@ from pathlib import Path
 
 from mercury.models import CoverageProfile
 from mercury.nmap_adapter import MAX_NMAP_XML_BYTES, NmapError, build_nmap_argv, parse_nmap_xml, run_nmap
+from mercury.platform.common import MAX_COMMAND_OUTPUT_BYTES
 from mercury.planner import InternalMappingRequest, authorize_internal_mapping
 from mercury.platform.common import CommandOutcome, CommandResult
 
@@ -67,7 +68,8 @@ class NmapAdapterTests(unittest.IsolatedAsyncioTestCase):
             binary.write_bytes(b"fixture")
             seen: list[Path] = []
 
-            async def runner(argv: tuple[str, ...], _timeout: float, _maximum: int) -> CommandResult:
+            async def runner(argv: tuple[str, ...], _timeout: float, maximum: int) -> CommandResult:
+                self.assertEqual(maximum, MAX_COMMAND_OUTPUT_BYTES)
                 output = Path(argv[argv.index("-oX") + 1])
                 seen.append(output)
                 output.write_text("<nmaprun><host><address addr='127.0.0.1' addrtype='ipv4'/><ports><port protocol='tcp' portid='53'><state state='open' reason='syn-ack'/></port></ports></host></nmaprun>", encoding="utf-8")
