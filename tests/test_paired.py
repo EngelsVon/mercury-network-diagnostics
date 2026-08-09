@@ -617,6 +617,94 @@ class MatrixTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AuthenticatedCompositionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_coverage_sender_starts_fixed_profiles_concurrently(self) -> None:
+        """Every configured receiver gets the same finite data window."""
+        from mercury.paired import ConfiguredCoverageExecutor
+
+        receivers = (
+            ReceiverProfileConfig(
+                CoverageProfile.TCP_TAGGED, "127.0.0.2", _port(socket.SOCK_STREAM), 1.0,
+            ),
+            ReceiverProfileConfig(
+                CoverageProfile.UDP_TAGGED, "127.0.0.2", _port(socket.SOCK_DGRAM), 1.0,
+            ),
+        )
+        config = PeerConfig(
+            identity="concurrent-coverage", bind_host="127.0.0.2", control_port=1,
+            certificate_path=None, key_path=None, ca_path=None, token_path=None,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+            receiver_profiles=receivers,
+        )
+        history = HistoryStore(":memory:")
+        self.addCleanup(history.close)
+        executor = ConfiguredCoverageExecutor(config, history)
+        active = 0
+        maximum_active = 0
+
+        async def observed_send(context, step, _receiver, profile, _correlation):
+            nonlocal active, maximum_active
+            prepared = await context.admit(step.id)
+            active += 1
+            maximum_active = max(maximum_active, active)
+            try:
+                await asyncio.sleep(0.25)
+            finally:
+                active -= 1
+            instant = utc_now()
+            context.record(Observation(
+                id=f"concurrent-{profile.value}", probe=step.probe_kind.value,
+                disposition=Disposition.INCONCLUSIVE, evidence_kind=EvidenceKind.SILENT,
+                direction=Direction.OUTBOUND, target=prepared.address or step.target,
+                started_at=instant, ended_at=instant, duration_ms=0.0,
+                source="tests.concurrent_coverage",
+                detail={"coverage_profile": profile.value},
+            ), step_id=step.id)
+            context.complete_attempt(step.id)
+
+        executor._send = observed_send  # type: ignore[method-assign]
+        result = await executor(
+            "A-to-B", "concurrent-correlation",
+            profiles=(CoverageProfile.TCP_TAGGED, CoverageProfile.UDP_TAGGED),
+        )
+        self.assertEqual(result.state, TaskState.COMPLETED)
+        self.assertEqual(result.progress.completed, 2)
+        self.assertEqual(maximum_active, 2)
+
+    async def test_forward_receipt_polling_stops_at_data_window_not_control_expiry(self) -> None:
+        """A silent data plane must not consume the longer control lease."""
+        from types import SimpleNamespace
+        from mercury.paired import AuthenticatedCoverageRunner
+
+        config = PeerConfig(
+            identity="receipt-deadline", bind_host="127.0.0.2", control_port=1,
+            certificate_path=None, key_path=None, ca_path=None, token_path=None,
+            peer_pins=(), peer_addresses=("127.0.0.1",), unsafe_development=True,
+            receiver_profiles=(ReceiverProfileConfig(
+                CoverageProfile.TCP_TAGGED, "127.0.0.2", _port(socket.SOCK_STREAM), 1.0,
+            ),),
+        )
+        history = HistoryStore(":memory:")
+        self.addCleanup(history.close)
+        runner = AuthenticatedCoverageRunner(PeerClient(config), config, history)
+        calls = 0
+
+        async def empty_receipts(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return SimpleNamespace(body={"receipts": []})
+
+        runner._request = empty_receipts  # type: ignore[method-assign]
+        started = asyncio.get_running_loop().time()
+        receipts = await runner._read_receipts(
+            "silent-forward", utc_now() + timedelta(seconds=10),
+            utc_now() + timedelta(seconds=0.05),
+            (CoverageProfile.TCP_TAGGED,), "127.0.0.2",
+        )
+        elapsed = asyncio.get_running_loop().time() - started
+        self.assertEqual(receipts, ())
+        self.assertGreaterEqual(calls, 2)
+        self.assertLess(elapsed, 0.5)
+
     async def test_coverage_runner_keeps_icmp_receiver_gap_distinct_in_both_directions(self) -> None:
         """ICMP replies are sender-side facts when no privileged peer observer exists."""
         from mercury.paired import AuthenticatedCoverageRunner, CoverageAssessmentRequest, ConfiguredCoverageExecutor

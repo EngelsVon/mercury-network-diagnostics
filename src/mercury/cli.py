@@ -21,7 +21,7 @@ from .codec import dumps_document, result_to_wire
 from .discovery import DiscoveryRequest
 from .trace import TraceRequest
 from .web import WebConfig, serve_web
-from .reports import ReportError, coverage_html_table, html_report, json_report
+from .reports import ReportError, html_report, json_report
 from .history import HistoryError, HistoryRecord, HistoryStore, default_history_path
 from .app import MercuryApplication
 from .models import CoverageProfile, Disposition, EvidenceKind, Health, TaskResult, TaskState
@@ -38,7 +38,7 @@ from .planner import (
 from .policy import PolicyError, ScopeGrant, parse_target
 from .profiles import DiagnosisRequest
 from .paired import CoverageAssessmentRequest, PairedRequest
-from .render import render_diagnosis, render_discovery, render_history, render_paired, render_preview, render_result, render_status, render_trace
+from .render import render_coverage, render_diagnosis, render_discovery, render_history, render_paired, render_preview, render_result, render_status, render_trace
 from .tasks import SyntheticRunner, TaskService
 
 EXIT_OK = 0
@@ -455,6 +455,17 @@ def paired_exit_code(result: TaskResult) -> int:
     return exit_code
 
 
+def coverage_exit_code(result: TaskResult) -> int:
+    conclusions = [item for item in result.conclusions if item.id == "coverage-assessment"]
+    if len(conclusions) != 1:
+        return task_exit_code(result)
+    return {
+        Health.HEALTHY: EXIT_OK,
+        Health.FAILED: EXIT_FAILED,
+        Health.PARTIAL: EXIT_PARTIAL,
+    }.get(conclusions[0].health, EXIT_INTERNAL)
+
+
 def task_exit_code(result: TaskResult) -> int:
     return {
         TaskState.COMPLETED: EXIT_OK,
@@ -553,9 +564,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                     unsafe_development=args.unsafe_development, local_network=args.local_network,
                     peer_network=args.peer_network,
                 )))
-                human = render_paired(result) + "\n\n" + coverage_html_table(result, requested=profiles)
+                human = render_coverage(result, requested=profiles)
                 _emit(result_to_wire(result), human, as_json=as_json)
-                return paired_exit_code(result)
+                return coverage_exit_code(result)
             request = DiagnosisRequest(
                 profile="custom" if args.target else args.profile,
                 targets=tuple(args.target), timeout_s=args.timeout,

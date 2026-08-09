@@ -62,6 +62,7 @@ _ROLE_B_TO_A = "B-to-A"
 # cancel retained state; otherwise a lease expiring on schedule races the final
 # read-result frame.
 _CONTROL_RESULT_GRACE_S = 2.0
+_CONTROL_POLL_INTERVAL_S = 0.5
 
 RoleExecutor = Callable[[str, str], Awaitable[TaskResult]]
 CoverageSenderExecutor = Callable[[str, str], Awaitable[TaskResult]]
@@ -344,7 +345,7 @@ class AuthenticatedPairedRunner:
         while True:
             remote = await self._request("read-result", correlation, expires_at, {})
             if set(remote.body) == {"status"} and remote.body["status"] == "pending":
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(_CONTROL_POLL_INTERVAL_S)
                 continue
             if set(remote.body) != {"result"}:
                 raise PairedError("configured peer returned an invalid paired result state")
@@ -561,7 +562,8 @@ class AuthenticatedCoverageRunner:
                     raise PairedError("coverage assessment selected no active profiles")
                 local_forward = await self._sender(_ROLE_A_TO_B, forward, profiles=active_profiles)
                 remote_receipts = await self._read_receipts(
-                    forward, control_expires_at, request.profiles, self._config.bind_host,
+                    forward, control_expires_at, forward_expires_at,
+                    request.profiles, self._config.bind_host,
                 )
 
                 reverse_expires_at = utc_now() + timedelta(seconds=request.timeout_s)
@@ -621,28 +623,30 @@ class AuthenticatedCoverageRunner:
     async def _read_receipts(
         self,
         correlation: str,
-        expires_at: datetime,
+        control_expires_at: datetime,
+        receipt_expires_at: datetime,
         profiles: tuple[CoverageProfile, ...],
         expected_source: str,
     ) -> tuple[CoverageReceipt, ...]:
         expected = _receipt_profiles(profiles)
         while True:
-            frame = await self._request("read-result", correlation, expires_at, {})
+            frame = await self._request("read-result", correlation, control_expires_at, {})
             receipts = frame.body.get("receipts")
             if not isinstance(receipts, list):
                 raise PairedError("configured peer did not return coverage receipts")
             validated = _validate_coverage_receipts(
                 tuple(_receipt_from_wire(item) for item in receipts), correlation, profiles, expected_source,
             )
-            if {item.profile for item in validated} == expected or utc_now() >= expires_at:
+            remaining_s = (receipt_expires_at - utc_now()).total_seconds()
+            if {item.profile for item in validated} == expected or remaining_s <= 0:
                 return validated
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(min(_CONTROL_POLL_INTERVAL_S, remaining_s))
 
     async def _read_coverage_result(self, correlation: str, expires_at: datetime) -> TaskResult:
         while True:
             frame = await self._request("read-result", correlation, expires_at, {})
             if frame.body == {"status": "pending"}:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(_CONTROL_POLL_INTERVAL_S)
                 continue
             if set(frame.body) != {"result"}:
                 raise PairedError("configured peer returned an invalid coverage result state")
@@ -1666,9 +1670,11 @@ class ConfiguredCoverageExecutor:
         service = TaskService(self._history)
 
         async def runner(context: TaskContext) -> None:
+            sends = []
             for step, profile in zip(plan.preview.steps, selected, strict=True):
                 receiver = None if profile is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(configured, profile)
-                await self._send(context, step, receiver, profile, correlation)
+                sends.append(self._send(context, step, receiver, profile, correlation))
+            await asyncio.gather(*sends)
 
         return await service.run(
             plan, runner, task_kind="coverage",
@@ -1846,16 +1852,21 @@ def _coverage_runtime_plan(config: PeerConfig, correlation: str, profiles: tuple
             http_scheme="http" if kind is ProbeKind.HTTP_EXCHANGE else None,
             cost=StepCost(1, 1 if transport is Transport.UDP else 0, tag_length if receiver is not None else 0, logical_packets=1),
         ))
+    profile_timeouts = tuple(
+        1.0 if item is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(receivers, item).timeout_s
+        for item in profiles
+    )
+    runtime_duration = max(1, math.ceil(max(profile_timeouts) + _CONTROL_RESULT_GRACE_S))
     grant = ScopeGrant(
         networks=(ipaddress.ip_network(f"{config.peer_addresses[0]}/{32 if ':' not in config.peer_addresses[0] else 128}"),),
         ports=tuple(_coverage_receiver_for(receivers, item).port for item in profiles if item is not CoverageProfile.ICMP_ECHO),
         transports=tuple(sorted({"udp" if item in {CoverageProfile.UDP_TAGGED, CoverageProfile.DNS_UDP} else "tcp" for item in profiles if item is not CoverageProfile.ICMP_ECHO})),
         attested=True, purpose="configured paired coverage sender",
-        expires_at=utc_now() + timedelta(seconds=max(1.0 if item is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(receivers, item).timeout_s for item in profiles)),
+        expires_at=utc_now() + timedelta(seconds=runtime_duration),
     )
     preview = preview_probe_plan(
         specs=tuple(specs), grant=grant, profile=_COVERAGE_MANIFEST,
-        limits=replace(DEFAULT_LIMITS, max_duration_s=max(1, math.ceil(sum(1.0 if item is CoverageProfile.ICMP_ECHO else _coverage_receiver_for(receivers, item).timeout_s for item in profiles)))),
+        limits=replace(DEFAULT_LIMITS, max_duration_s=runtime_duration),
     )
     return authorize_plan(preview)
 

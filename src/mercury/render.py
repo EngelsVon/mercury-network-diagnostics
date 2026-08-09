@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Iterable
 
 from .history import HistoryRecord
-from .models import EvidenceKind, TaskResult
-from .paired import paired_matrix
+from .models import CoverageProfile, EvidenceKind, TaskResult
+from .paired import coverage_matrix, paired_matrix
 from .planner import PlanPreview, confirmation_phrase
 
 
@@ -133,6 +133,26 @@ def render_paired(result: TaskResult) -> str:
         lines.extend(f"    Limitation: {item}" for item in row.limitations)
     lines.append(f"Paired diagnosis: {health[0].health.value}")
     lines.extend(f"Limitation: {item}" for item in health[0].limitations)
+    return "\n".join(lines)
+
+
+def render_coverage(
+    result: TaskResult, *, requested: tuple[CoverageProfile, ...],
+) -> str:
+    """Render the finite directional coverage matrix as terminal text."""
+    conclusions = [item for item in result.conclusions if item.id == "coverage-assessment"]
+    if len(conclusions) != 1:
+        return render_result(result)
+    lines = ["Coverage matrix"]
+    for row in coverage_matrix(result, requested=requested):
+        citations = ", ".join(row.observation_ids) or "none"
+        lines.append(
+            f"  {row.direction} | {row.profile.value} | {row.outcome.value} | "
+            f"evidence: {citations}"
+        )
+    lines.append(f"Coverage assessment: {conclusions[0].health.value}")
+    lines.append(conclusions[0].summary)
+    lines.extend(f"Limitation: {item}" for item in conclusions[0].limitations)
     return "\n".join(lines)
 
 

@@ -20,13 +20,14 @@ from mercury.cli import (
     CliError,
     _run_synthetic,
     build_parser,
+    coverage_exit_code,
     diagnosis_exit_code,
     paired_exit_code,
     main,
 )
 from mercury.history import HistoryStore
 from mercury.models import (
-    Confidence, Conclusion, Direction, Disposition, EffectiveConfig, EvidenceKind, Health, Observation, Progress,
+    Confidence, Conclusion, CoverageProfile, Direction, Disposition, EffectiveConfig, EvidenceKind, Health, Observation, Progress,
     TaskResult, TaskState,
 )
 from mercury.codec import result_to_wire
@@ -79,6 +80,26 @@ def paired_result(health: Health = Health.PARTIAL) -> TaskResult:
     )
 
 
+def coverage_result(health: Health = Health.PARTIAL) -> TaskResult:
+    result = diagnosis_result(None)
+    observation = result.observations[0]
+    covered = Observation(
+        "coverage-observation", observation.probe, observation.disposition,
+        EvidenceKind.PEER_OBSERVED_ARRIVAL, observation.direction, observation.target,
+        observation.started_at, observation.ended_at, observation.duration_ms,
+        detail={
+            "coverage_profile": CoverageProfile.TCP_TAGGED.value,
+            "paired_phase": "A-to-B", "paired_correlation": "coverage",
+        },
+    )
+    return TaskResult(
+        result.task_id, "coverage", result.direction, result.target, result.state,
+        result.started_at, result.ended_at, result.requested_config, result.effective_config,
+        result.progress, observations=(covered,), conclusions=(Conclusion(
+            "coverage-assessment", "Coverage assessment", "One row was observed.", health,
+            Confidence.HIGH, (covered.id,), limitations=("Finite profile only.",),
+        ),),
+    )
 class CliTests(unittest.TestCase):
     def test_agent_and_paired_accept_only_closed_configuration_inputs(self) -> None:
         parser = build_parser()
@@ -150,6 +171,37 @@ class CliTests(unittest.TestCase):
         self.assertEqual(paired_exit_code(paired_result(Health.FAILED)), EXIT_FAILED)
         with self.assertRaisesRegex(RuntimeError, "paired-health"):
             paired_exit_code(diagnosis_result())
+
+    def test_coverage_cli_uses_coverage_conclusion_and_plain_text_matrix(self) -> None:
+        result = coverage_result()
+
+        class FakeApplication:
+            def __init__(self, *, history):
+                self.history = history
+
+            async def run_coverage(self, request):
+                self.request = request
+                return result
+
+        self.assertEqual(coverage_exit_code(result), EXIT_PARTIAL)
+        with patch("mercury.cli.MercuryApplication", FakeApplication):
+            code, output, error = invoke(
+                "coverage", "--config", "peer.json", "--identity", "peer",
+                "--address", "127.0.0.1", "--profiles", "tcp_tagged",
+                "--authorized",
+            )
+        self.assertEqual((code, error), (EXIT_PARTIAL, ""))
+        self.assertTrue(output.startswith("Coverage matrix\n"))
+        self.assertIn("A-to-B | tcp_tagged | candidate_carrier", output)
+
+        with patch("mercury.cli.MercuryApplication", FakeApplication):
+            code, output, error = invoke(
+                "coverage", "--config", "peer.json", "--identity", "peer",
+                "--address", "127.0.0.1", "--profiles", "tcp_tagged",
+                "--authorized", "--json",
+            )
+        self.assertEqual((code, error), (EXIT_PARTIAL, ""))
+        self.assertEqual(json.loads(output), result_to_wire(result))
 
     def test_paired_cli_projects_the_exact_facade_result(self) -> None:
         result = paired_result(Health.PARTIAL)

@@ -1388,7 +1388,7 @@ def validate_preview(
     # with a fixed built-in UDP payload.  Recompile their exact step list
     # rather than forcing the legacy Cartesian payload summary to flatten it.
     if (
-        preview.profile == "internal-mapping-v1"
+        preview.profile in {"internal-mapping-v1", "coverage-v2"}
         or
         any(step.probe_kind not in {ProbeKind.TCP_CONNECT, ProbeKind.UDP_EXCHANGE} for step in preview.steps)
         or len({step.payload for step in preview.steps}) > 1

@@ -679,7 +679,7 @@ def _decode_authenticated(payload: bytes) -> tuple[PeerFrame, str]:
 
 
 class _NonceCache:
-    def __init__(self, capacity: int = 256) -> None:
+    def __init__(self, capacity: int = 1_024) -> None:
         self._capacity = capacity
         self._entries: dict[str, dict[str, datetime]] = {}
 
