@@ -410,6 +410,13 @@ class TaskContext:
             step.id: {"observations": 0, "capabilities": 0, "conclusions": 0, "errors": 0, "output_bytes": 0}
             for step in plan.preview.steps
         }
+        self._collection_output_bytes = {
+            "observations": 0,
+            "conclusions": 0,
+            "capabilities": 0,
+            "errors": 0,
+        }
+        self._collection_output_counts = dict.fromkeys(self._collection_output_bytes, 0)
         self._admission_lock = asyncio.Lock()
 
     @property
@@ -465,17 +472,31 @@ class TaskContext:
             errors=errors if errors is not None else tuple(self._errors),
         )
 
-    def _assert_output_fits(self, **changes: object) -> None:
+    def _reserve_output_item(self, collection: str, wire: object) -> None:
+        """Reserve one JSON list item without reserializing prior evidence."""
+        if collection not in self._collection_output_bytes:
+            raise TaskError("runner output collection is invalid")
         try:
-            candidate = self._candidate_result(**changes)
+            baseline = self._candidate_result(
+                observations=(), conclusions=(), capabilities=(), errors=(),
+            )
         except Exception as exc:
             raise TaskError("runner contribution would make the result invalid") from exc
-        size = _result_bytes(candidate)
+        contribution = len(dumps_document(wire).encode("utf-8"))
+        if self._collection_output_counts[collection]:
+            contribution += 1  # compact JSON list comma
+        size = (
+            _result_bytes(baseline)
+            + sum(self._collection_output_bytes.values())
+            + contribution
+        )
         if size > self.plan.preview.limits.max_output_bytes:
             raise TaskError(
                 "task output budget exhausted "
                 f"({size}>{self.plan.preview.limits.max_output_bytes} bytes)"
             )
+        self._collection_output_bytes[collection] += contribution
+        self._collection_output_counts[collection] += 1
 
     async def admit(
         self,
@@ -730,8 +751,7 @@ class TaskContext:
         assert_persistence_safe(wire, path="$.result.observations[]")
         if self._event_count + 2 > self.plan.preview.limits.max_events:
             raise TaskError("task event budget exhausted")
-        candidate = (*self._observations, observation)
-        self._assert_output_fits(observations=candidate)
+        self._reserve_output_item("observations", wire)
         self._observations.append(observation)
         self._event_count += 1
         self.history.append_event(
@@ -768,8 +788,7 @@ class TaskContext:
             conclusion_to_wire(conclusion),
             path="$.result.conclusions[]",
         )
-        candidate = (*self._conclusions, conclusion)
-        self._assert_output_fits(conclusions=candidate)
+        self._reserve_output_item("conclusions", conclusion_to_wire(conclusion))
         self._conclusions.append(conclusion)
         if step_id is not None:
             self._step_counts[step_id]["conclusions"] += 1
@@ -789,8 +808,7 @@ class TaskContext:
             capability_to_wire(capability),
             path="$.result.capabilities[]",
         )
-        candidate = (*self._capabilities, capability)
-        self._assert_output_fits(capabilities=candidate)
+        self._reserve_output_item("capabilities", capability_to_wire(capability))
         self._capabilities.append(capability)
         if step_id is not None:
             self._step_counts[step_id]["capabilities"] += 1
@@ -805,12 +823,12 @@ class TaskContext:
         if len(self._errors) >= MAX_CONTEXT_ERRORS:
             return False
         message = sanitize_persisted_text(value, maximum=1_024)
-        candidate = (*self._errors, message or "unspecified task error")
+        candidate = message or "unspecified task error"
         try:
-            self._assert_output_fits(errors=candidate)
+            self._reserve_output_item("errors", candidate)
         except TaskError:
             return False
-        self._errors.append(candidate[-1])
+        self._errors.append(candidate)
         if step_id is not None:
             self._step_counts[step_id]["errors"] += 1
         return True

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import namedtuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import errno
 import socket
 import unittest
@@ -143,6 +143,7 @@ class ActiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         request = DiscoveryRequest("127.0.0.1/32", "127.0.0.0/8", profile="full", authorized=True)
         first, second = default_discovery_grant(request), default_discovery_grant(request)
         self.assertEqual(first.expires_at, second.expires_at)
+        self.assertGreater(first.expires_at - datetime.now(timezone.utc), timedelta(minutes=44))
         self.assertEqual(
             full_confirmation_example(request, grant=first),
             full_confirmation_example(request, grant=second),

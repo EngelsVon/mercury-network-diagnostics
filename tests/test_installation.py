@@ -100,6 +100,7 @@ class InstalledEntryPointTests(unittest.TestCase):
                     "install",
                     "--no-index",
                     "--no-deps",
+                    "--force-reinstall",
                     str(wheels[0]),
                 ],
                 cwd=root,

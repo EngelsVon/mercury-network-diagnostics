@@ -363,11 +363,16 @@ class DiscoveryRequest:
 def default_discovery_grant(request: DiscoveryRequest) -> ScopeGrant:
     # Full-port confirmation is digest-bound to the grant.  A fresh timestamp
     # for every CLI invocation would make the previewed phrase impossible to
-    # submit on the next invocation, so keep the default grant stable within a
-    # short, explicit quarter-hour window.
+    # submit on the next invocation, so keep the grant identity stable within
+    # a quarter-hour window.  The full plan itself gets up to one hour from the
+    # start of that window so a 1..65535 run cannot expire at the next boundary.
     now = datetime.now(timezone.utc)
-    expires_at = now.replace(second=0, microsecond=0) + timedelta(
-        minutes=15 - (now.minute % 15)
+    window_start = now.replace(
+        minute=now.minute - (now.minute % 15), second=0, microsecond=0,
+    )
+    expires_at = window_start + timedelta(
+        hours=1 if request.profile == "full" else 0,
+        minutes=0 if request.profile == "full" else 15,
     )
     return ScopeGrant(
         networks=(ipaddress.ip_network(request.scope),), ports=request.selected_ports,
