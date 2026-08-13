@@ -7,14 +7,14 @@ name = "mercury-netdiag"
 dynamic = ["version"]
 description = "Evidence-first local and paired network reachability diagnostics"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["psutil>=7.0,<8"]
 authors = [{name = "Mercury contributors"}]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
-  "License :: OSI Approved :: Apache Software License",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",

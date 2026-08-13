@@ -26,8 +26,9 @@ message between two configured endpoints, and show the exact coverage gaps.
 - Phase 6: Apache-2.0 open-source packaging, English/Chinese documentation,
   GitHub community files, CI, and a validated intelligent-agent skill.
 - CI portability follow-up: GitHub-hosted Windows/Ubuntu runners install the
-  explicit wheel build backend, compare canonical Windows paths, and wait for
-  paired reverse-role listeners to bind before acknowledging control submit.
+  explicit wheel build backend, use isolated declared build requirements,
+  compare canonical Windows paths, and wait for paired reverse-role listeners
+  to bind before acknowledging control submit.
 
 ## Verification Evidence
 
