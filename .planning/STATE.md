@@ -25,6 +25,9 @@ message between two configured endpoints, and show the exact coverage gaps.
   CLI help, and isolated wheel-install/import/help smoke.
 - Phase 6: Apache-2.0 open-source packaging, English/Chinese documentation,
   GitHub community files, CI, and a validated intelligent-agent skill.
+- CI portability follow-up: GitHub-hosted Windows/Ubuntu runners install the
+  explicit wheel build backend, compare canonical Windows paths, and wait for
+  paired reverse-role listeners to bind before acknowledging control submit.
 
 ## Verification Evidence
 
@@ -35,6 +38,8 @@ message between two configured endpoints, and show the exact coverage gaps.
 - The built wheel was installed into an isolated temporary target with
   `--no-index --no-deps`; `import mercury` and `python -m mercury --help`
   passed with only that target on `PYTHONPATH`.
+- `python -m unittest discover -s tests -q`: 296 passed, 3 platform-condition
+  skips after the 2026-08-13 CI portability fix.
 
 ## Constraints Preserved
 
@@ -67,4 +72,4 @@ the supplied peer endpoint or any real non-loopback target.
 
 ---
 
-*Last updated: 2026-08-13 after the bilingual open-source release.*
+*Last updated: 2026-08-13 after CI portability verification.*

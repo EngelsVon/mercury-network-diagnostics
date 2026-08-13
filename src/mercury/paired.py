@@ -247,6 +247,11 @@ class PairedPeerService:
             name=f"mercury:paired:{frame.correlation_id}",
         )
         self._tasks[frame.correlation_id] = task
+        wait_ready = getattr(self._role_executor, "wait_ready", None)
+        if callable(wait_ready) and role == _ROLE_B_TO_A:
+            await wait_ready(frame.correlation_id)
+            if task.done():
+                task.result()
         return {"status": "accepted"}
 
     async def _run_role(self, role: str, correlation: str) -> None:
@@ -1530,6 +1535,19 @@ class ConfiguredPairedExecutor:
         if type(config) is not PeerConfig or not config.paired_enabled:
             raise PairedError("paired runtime requires a configured fixed profile")
         self._config, self._history = config, history
+        self._ready_events: dict[str, asyncio.Event] = {}
+        self._ready_errors: dict[str, BaseException] = {}
+
+    async def wait_ready(self, correlation: str) -> None:
+        """Wait until the fixed reverse-role listeners are bound."""
+        event = self._ready_events.setdefault(correlation, asyncio.Event())
+        try:
+            await event.wait()
+            error = self._ready_errors.pop(correlation, None)
+            if error is not None:
+                raise PairedError("paired reverse-role listeners did not start") from error
+        finally:
+            self._ready_events.pop(correlation, None)
 
     async def __call__(self, role: str, correlation: str) -> TaskResult:
         if role not in {_ROLE_A_TO_B, _ROLE_B_TO_A}:
@@ -1539,13 +1557,19 @@ class ConfiguredPairedExecutor:
 
         async def runner(context: TaskContext) -> None:
             if role == _ROLE_B_TO_A:
+                ready = self._ready_events.setdefault(correlation, asyncio.Event())
                 listener = PairedListenerService(lease, context=context)
-                await listener.start()
                 try:
+                    await listener.start()
+                    ready.set()
                     while context.completed < context.total:
                         await context.cancellation.checkpoint()
                         await asyncio.sleep(0.01)
+                except BaseException as exc:
+                    self._ready_errors[correlation] = exc
+                    raise
                 finally:
+                    ready.set()
                     await listener.stop(mark_silence=True)
             else:
                 await self._send_fixed_profile(context, lease)

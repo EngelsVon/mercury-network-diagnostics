@@ -75,7 +75,7 @@ class PeerStartupTests(unittest.IsolatedAsyncioTestCase):
                 "token_path": "token.txt",
             }), encoding="utf-8")
             config = load_peer_config(config_path, unsafe_development=True)
-            self.assertEqual(config.token_path, Path(temporary) / "token.txt")
+            self.assertEqual(config.token_path, (Path(temporary) / "token.txt").resolve())
             self.assertTrue(config.unsafe_development)
             config_path.write_text('{"identity":"x"}', encoding="utf-8")
             with self.assertRaisesRegex(PeerConfigurationError, "fields"):
