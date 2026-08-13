@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a private-network diagnostic improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What authorized private-network diagnostic problem should Mercury solve?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable evidence and how uncertainty should be presented.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Project boundaries
+      options:
+        - label: This request remains private-network-only and does not require arbitrary command forwarding.
+          required: true

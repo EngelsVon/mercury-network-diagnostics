@@ -29,6 +29,7 @@ Within an explicitly declared private-network scope, show reproducible evidence 
 - [x] Optionally use the locally installed Nmap executable through a fixed, policy-derived adapter, never an arbitrary Nmap command line. *(Phase 4, 2026-08-02.)*
 - [x] Expose the same mapping and coverage services through CLI and Web UI while preserving peer trust controls, local evidence history, cancellation, redaction, and hard ceilings. *(Phase 4, 2026-08-02.)*
 - [x] Replace the deleted project plan with requirements, roadmap, phase state, and a codebase map that make the product pivot executable. *(Planning migration, 2026-08-02.)*
+- [x] Publish equivalent English and Simplified Chinese operator/contributor documentation and a reusable intelligent-agent skill under Apache-2.0. *(Open-source documentation release, 2026-08-13.)*
 
 ### Out of Scope
 
@@ -93,4 +94,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-*Last updated: 2026-08-02 after Phase 5 controlled verification and release smoke*
+*Last updated: 2026-08-13 after the bilingual open-source documentation release*

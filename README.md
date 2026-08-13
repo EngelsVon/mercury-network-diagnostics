@@ -1,280 +1,206 @@
+<!-- generated-by: gsd-doc-writer -->
 # Mercury
 
-Mercury is a local-first, evidence-first internal-network diagnostics tool. It
-reports what was observed for selected private endpoints and layers; it is not a
-topology oracle or a replacement for MTR, iperf3, or LLDP tooling.
+[简体中文](README.zh-CN.md)
+
+Mercury is a local-first network diagnostics tool for administrators who need reproducible evidence about reachability inside an explicitly authorized private network.
+
+Mercury's CLI, peer agent, and WebUI use the same Python engine and versioned evidence model. It preserves protocol-specific outcomes instead of turning silence into success or failure, and it reports the limits of every conclusion.
+
+> Mercury is private-network-only. Active work admits loopback, RFC1918 IPv4, RFC6598 shared IPv4, IPv6 ULA, and scoped IPv6 link-local destinations as supported by the selected operation. Public, documentation, multicast, unspecified, and broadcast destinations are rejected before network or native-tool I/O. Non-loopback work requires an explicit authorization attestation. Multi-range `mapping` is narrower: it accepts loopback and RFC1918 IPv4 CIDRs only.
+
+## Feature matrix
+
+| Capability | What Mercury provides | Important boundary |
+| --- | --- | --- |
+| Passive status and discovery | Interfaces, routes, DNS, neighbors, Wi-Fi, capabilities, and direct LLDP evidence when the platform exposes them | A gateway, route hop, or ARP/ND neighbor is not labeled as a switch |
+| Layered diagnosis | Bounded DNS, TCP, TLS, HTTP, native ping, and route evidence for selected private endpoints | A result applies only to the selected endpoint and observed layer |
+| Internal mapping | One immutable plan over multiple private IPv4 CIDRs, fixed profiles, selected ports, rate, concurrency, and duration | Active work is subject to host, port, attempt, logical-packet, application-byte, rate, concurrency, duration, event, and output ceilings |
+| Paired coverage | Directional TCP, UDP, DNS over UDP/TCP, ICMP, TLS, HTTP, SSH-banner, and same-link ARP/IPv6-ND evidence | Receiver-capable profiles require reciprocal, administrator-provisioned Mercury peers |
+| Optional Nmap evidence | Fixed TCP connect, TCP SYN, UDP, and SCTP INIT profiles parsed from bounded XML | No arbitrary flags, scripts, target files, proxies, decoys, payloads, or destinations |
+| WebUI | Accessible task creation, progress, cancellation, coverage matrices, gaps, and local history | Browser code performs no network probes; non-loopback listeners require TLS and a token |
+| History and reports | Local SQLite task history, comparison, JSON, and HTML reports | Credentials are always rejected or redacted; identifiers and payloads are redacted by default |
+
+Mercury v1 targets Windows and Ubuntu. Unsupported native capabilities are reported as evidence rather than silently ignored. macOS and other platforms are not release targets.
 
 ## Installation
 
-Mercury supports CPython 3.11+ and has one runtime dependency, `psutil`.
+Mercury requires CPython 3.11 or newer and has one runtime dependency, `psutil`. From a checkout, install it with either `uv` or `pip`:
 
-```powershell
-uv tool install mercury-netdiag
+```bash
+uv tool install .
 mercury --help
 ```
 
-For a checkout, use `uv run --no-sync python -m mercury --help`. Linux users
-can use the identical command in an Ubuntu shell. Mercury v1 supports Windows
-and Ubuntu; macOS and other platforms explicitly report unsupported capability
-evidence and are not release targets.
+```bash
+python -m venv .venv
+# PowerShell: .venv\Scripts\Activate.ps1
+# Ubuntu: source .venv/bin/activate
+python -m pip install .
+python -m mercury --help
+```
+
+For development from the checkout, `uv sync` followed by `uv run python -m mercury --help` uses the locked environment. See [Getting Started](docs/GETTING-STARTED.md) for the full setup.
 
 ## Quick start
 
-`status` is passive and collects local host, interface, route, DNS, capability,
-and limitation evidence:
+The safest first run is passive and sends no probes:
 
-```powershell
-uv run --no-sync python -m mercury status
-uv run --no-sync python -m mercury status --json
+1. Inspect the CLI and evidence contract.
+
+   ```bash
+   mercury --help
+   mercury model
+   ```
+
+2. Collect local status evidence.
+
+   ```bash
+   mercury status
+   mercury status --json
+   ```
+
+3. Collect passive discovery evidence.
+
+   ```bash
+   mercury discover --passive
+   ```
+
+Use `mercury plan --help` to preview and cost authorized active work before executing it. Never substitute a public, third-party, or unapproved destination.
+
+## Internal mapping
+
+`mapping` canonicalizes overlapping private IPv4 CIDRs, selected fixed profiles, and ports into one immutable outbound plan. `--rate` counts logical attempt starts per second. `--duration 0` removes only the operator-selected early cutoff; compiled hard ceilings still terminate the task.
+
+```bash
+mercury mapping \
+  --cidr <owned-private-cidr> \
+  --profiles tcp_connect,udp_tagged \
+  --ports 53,80,443 \
+  --rate 20 \
+  --concurrency 4 \
+  --duration 0 \
+  --authorized
 ```
 
-Run diagnosis only for private endpoints you own or are authorized to test.
-The immutable `basic-v1` profile uses loopback; custom endpoints are exact
-repeatable private `HOST:PORT` values, including `[::1]:443`.
-
-```powershell
-uv run --no-sync python -m mercury diagnose --profile basic --authorized
-uv run --no-sync python -m mercury diagnose --target example.internal:443 --target [::1]:443 --timeout 3 --authorized --json
-```
-
-Timeouts are finite and inclusive: `0.1..30` seconds. DNS results can change
-between planning and connection; Mercury rechecks the admitted numeric address
-and reports a scoped rejection rather than silently switching destinations.
-
-## Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| 0 | Passive status completed, or diagnosis health is `healthy` |
-| 1 | Diagnosis has explicit selected-endpoint failure evidence |
-| 2 | Invalid command input |
-| 3 | Authorization or scope policy rejected the operation |
-| 4 | Diagnosis is partial, mixed, silent, unavailable, or inconclusive |
-| 70 | Internal result-contract error |
-
-## Platform capabilities
-
-Windows and Ubuntu are Mercury's supported platforms. Ordinary-user status
-collection reports each native adapter's available, unavailable, permission, or
-error state. Optional native ping/path tools degrade explicitly. A gateway,
-ARP/NDP neighbor, or first route hop is not an observed access switch: status
-states `Access switch: not observable` until direct LLDP or managed evidence
-exists. Other platforms, including macOS, return explicit unsupported capability
-evidence and are not supported release targets.
-
-| Capability | Windows | Ubuntu | macOS / other |
-| --- | --- | --- | --- |
-| Passive status, interfaces, routes and DNS | Supported with typed adapter evidence | Supported with typed adapter evidence | Explicitly unsupported |
-| Passive neighbor / Wi-Fi / direct LLDP enrichment | Best-effort capability evidence | Best-effort capability evidence | Explicitly unsupported |
-| Native ping and route trace | Uses bounded native commands when present | Uses bounded native commands when present | Explicitly unsupported |
-| Paired and Web modes | Supported subject to configured trust | Supported subject to configured trust | Not a v1 release target |
-
-### Operator release smoke (Windows and Ubuntu)
-
-Run this procedure only on a device and network you administer. It makes no
-public or third-party scan.
-
-1. From a clean checkout, run `uv run --no-sync python -m unittest discover -s tests -v`.
-2. Run `uv run --no-sync python -m mercury status --json` and confirm that the
-   platform, route/DNS and capability/degradation observations are explicit.
-3. Run `uv run --no-sync python -m mercury discover --passive` and confirm it
-   does not call an active profile.
-4. On an owned loopback or lab CIDR, preview and run one authorized common TCP
-   discovery, then one authorized bounded trace. Confirm refusal, timeout and
-   unanswered-hop evidence are not relabeled as success.
-5. Start `uv run --no-sync python -m mercury web`, open the shown loopback URL,
-   submit passive status and verify task polling/cancellation. Do not bind it
-   remotely without certificate, key and token file.
-6. If two lab endpoints are configured, run the operator-provisioned paired
-   profile in both directions and retain its directional matrix. Never use an
-   unconfigured address.
-
-## Authenticated paired diagnostics
-
-Paired diagnostics use two reciprocal, operator-provisioned configurations. The
-CLI never accepts a data-plane target, CIDR, port, or payload. Each file fixes
-one peer address, a TCP port, a UDP port, and a finite profile timeout; the two
-endpoints use the same pair identity and ports, with their own local bind and
-peer address reversed.
-
-```json
-{
-  "identity": "campus-pair-01",
-  "bind_host": "10.20.30.10",
-  "control_port": 9443,
-  "peer_addresses": ["10.20.30.20"],
-  "peer_pins": ["sha256:<configured-peer-certificate-fingerprint>"],
-  "certificate_path": "server-cert.pem",
-  "key_path": "server-key.pem",
-  "ca_path": "trusted-client-ca.pem",
-  "token_path": "pair-token",
-  "paired": {"tcp_port": 45001, "udp_port": 45002, "timeout_s": 3.0}
-}
-```
-
-Secret values stay in the referenced files, never in the configuration or CLI.
-Start the agent on both endpoints, then invoke `mercury paired --config ...
---identity campus-pair-01 --address <configured-peer-IP> --timeout 3
---authorized`. Non-loopback operation requires mTLS, a configured certificate
-pin, and a token. `--unsafe-development` is loopback-only.
-
-### Coverage receiver configuration
-
-For two-endpoint coverage, each reciprocal peer file adds a local `receivers`
-table and an explicit `coverage_profiles` list. Receiver ports are fixed by the
-administrator; the coverage command cannot provide a listener address, port,
-payload, or receiver profile to the other peer.
-
-```json
-{
-  "receivers": [
-    {"profile": "tcp_tagged", "bind_host": "172.26.4.10", "port": 45101, "timeout_s": 3},
-    {"profile": "udp_tagged", "bind_host": "172.26.4.10", "port": 45102, "timeout_s": 3},
-    {"profile": "dns_udp", "bind_host": "172.26.4.10", "port": 45103, "timeout_s": 3},
-    {"profile": "dns_tcp", "bind_host": "172.26.4.10", "port": 45104, "timeout_s": 3},
-    {"profile": "http_exchange", "bind_host": "172.26.4.10", "port": 45105, "timeout_s": 3},
-    {"profile": "ssh_banner", "bind_host": "172.26.4.10", "port": 45106, "timeout_s": 3}
-  ],
-  "coverage_profiles": ["tcp_connect", "tcp_tagged", "udp_tagged", "dns_udp", "dns_tcp", "http_exchange", "ssh_banner", "icmp_echo", "arp", "ipv6_nd"]
-}
-```
-
-Add `tls_handshake` only with its own receiver entry and a fixed `tls` object
-containing certificate, key, CA, and server-name paths. The normal peer-control
-fields—local certificate/key/CA paths, token path, one fixed peer address, and
-the peer certificate pin—remain required for a non-loopback agent. Start each
-endpoint with `mercury agent --config peer.json`; then invoke `coverage` from
-one endpoint using that same configured identity and peer address.
-
-## Discovery and routes
-
-Start with passive discovery; it reads local IPv4 interface, route, neighbor,
-Wi-Fi and optional direct-LLDP evidence without sending probes. It does not
-identify a switch from a gateway, ARP/NDP entry or route hop.
-
-```powershell
-uv run --no-sync python -m mercury discover --passive
-uv run --no-sync python -m mercury discover --network 10.20.30.0/30 --scope 10.20.30.0/24 --profile common --authorized
-uv run --no-sync python -m mercury trace 10.20.30.10 --scope 10.20.30.0/24 --authorized
-```
-
-Active discovery is TCP-only and requires an authorized CIDR. `common` is the
-normal bounded profile; `custom` requires an explicit port list. `full` is a
-finite 1–65535 TCP plan and requires the digest-bound confirmation printed by
-the preview. Native route tracing is repeated and retains unanswered or
-alternate hops; it does not claim one certain path.
+The angle-bracket value is a placeholder. Replace it only with a private IPv4 CIDR that you administer and are authorized to test.
 
 ## Internal mapping and two-endpoint coverage
 
-`mapping` expands one or more RFC1918/loopback IPv4 CIDRs into a single
-immutable, outbound plan. Select only named profiles and ports; its rate is
-logical attempt starts per second, and `--duration 0` means "finish the
-selected plan where possible" within compiled hard ceilings, not an unlimited
-scan.
+### Coverage receiver configuration
 
-```powershell
-uv run --no-sync python -m mercury mapping --cidr 172.26.4.0/24 --cidr 172.27.20.0/24 --profiles tcp_connect,udp_tagged --ports 53,80,443 --rate 20 --concurrency 4 --duration 0 --authorized
-uv run --no-sync python -m mercury mapping --cidr 172.26.4.0/24 --profiles nmap_tcp_connect --ports 1-1024 --rate 20 --concurrency 4 --duration 0 --authorized
+A paired assessment uses reciprocal peer configuration files created by an administrator. Each file fixes the peer identity and addresses, control channel, certificate and token paths, certificate pins, allowed coverage profiles, and receiver ports. The CLI cannot turn a peer into an arbitrary third-party scan relay.
+
+The peer JSON binds the finite `coverage_profiles` list and receiver table. See [Configuration](docs/CONFIGURATION.md) for the full schema and reciprocal examples.
+
+Receiver-capable profiles are `tcp_tagged`, `udp_tagged`, `dns_udp`, `dns_tcp`, `tls_handshake`, `http_exchange`, and `ssh_banner`. `tcp_connect` uses the configured TCP receiver. `icmp_echo` uses native platform evidence and records an observer capability gap when peer arrival cannot be observed. `arp` and `ipv6_nd` are same-link evidence and become `not_applicable` for a cross-subnet pair.
+
+On each configured endpoint, start its local agent:
+
+```bash
+mercury agent --config <local-peer-config.json>
 ```
 
-Nmap selection is optional and closed: `nmap_tcp_connect`, `nmap_tcp_syn`,
-`nmap_udp`, and `nmap_sctp_init` are the only native profiles. Mercury derives
-their arguments from the approved plan; there is no `--nmap-args`, script,
-proxy, decoy, target-file, payload, or arbitrary destination option. Native
-results retain Nmap `open`, `closed`, `filtered`, and `open|filtered` as native
-provenance, rather than claiming that Mercury observed an equivalent direct
-socket response. Missing Nmap or native privilege is capability evidence.
+Then start the assessment from one endpoint with values that exactly match its configuration:
 
-For a directed isolation-boundary assessment, provision reciprocal Mercury
-peers with fixed receiver profile ports, start an agent on both, then run the
-configured matrix from the initiating endpoint:
-
-```powershell
-uv run --no-sync python -m mercury coverage --config peer.json --identity campus-pair-01 --address 172.27.20.20 --profiles tcp_tagged,udp_tagged,dns_udp,dns_tcp,icmp_echo,tls_handshake,http_exchange,ssh_banner,arp,ipv6_nd --local-network 172.26.4.0/24 --peer-network 172.27.20.0/24 --authorized
+```bash
+mercury coverage \
+  --config <local-peer-config.json> \
+  --identity <configured-identity> \
+  --address <configured-private-peer-address> \
+  --profiles tcp_tagged,udp_tagged,dns_udp,dns_tcp,icmp_echo,tls_handshake,http_exchange,ssh_banner,arp,ipv6_nd \
+  --local-network <owned-local-private-cidr> \
+  --peer-network <owned-peer-private-cidr> \
+  --authorized
 ```
 
-Receivers record only configured short-lived leases and correlate a fixed
-Mercury test record in both directions. TCP, UDP, DNS-over-UDP/TCP, ICMP echo,
-TLS, HTTP, and SSH-banner tests are available when configured; no login or
-credentials are attempted. ARP and IPv6 ND are passive same-link evidence:
-between different subnets they are explicitly `not_applicable`, never evidence
-that the remote peer was reached.
+The assessment runs eligible profiles in both directions and correlates sender evidence with peer receipts. No DNS profile performs general name resolution, and no SSH profile attempts credentials or login.
 
-An assessment can identify a tested candidate carrier, for example a tagged
-UDP/DNS message whose peer receipt matches. It cannot establish that every
-untested custom packet sequence or tunnel is impossible. Each result records
-the profile, port, direction, packet shape, time window, evidence, and gaps.
+## Optional Nmap
 
-## Web dashboard and history reports
+If an `nmap` executable is installed locally, mapping can select exactly one of these closed native profiles per task:
 
-The dashboard uses the same `MercuryApplication` service boundary as the CLI;
-browser code never probes a network directly.
+- `nmap_tcp_connect`
+- `nmap_tcp_syn`
+- `nmap_udp`
+- `nmap_sctp_init`
 
-```powershell
+Mercury validates the private plan first and derives the complete Nmap argument vector itself. Results retain native `open`, `closed`, `filtered`, and `open|filtered` states with native provenance. A missing executable, insufficient privilege, timeout, malformed output, or unsupported profile remains distinct capability or error evidence. Mercury does not expose an arbitrary Nmap command line.
+
+## WebUI
+
+Start the local dashboard:
+
+```bash
 uv run --no-sync python -m mercury web
 ```
 
-Open the printed loopback address in a browser. The default listener accepts
-only loopback requests. It validates Host, same-origin mutations, a SameSite
-session cookie, CSRF header and bounded JSON bodies; responses include a CSP.
-For an intentional non-loopback listener, provide a numeric bind address,
-certificate, key and token file:
+Open the printed loopback URL. The WebUI submits the same typed requests to `MercuryApplication` as the CLI and supports passive status, diagnosis, discovery, trace, mapping, paired coverage, progress, cancellation, history comparison, and redacted reports.
 
-```powershell
-uv run --no-sync python -m mercury web --bind 10.20.30.10 --cert web-cert.pem --key web-key.pem --token-file web-token.txt
+For an intentional non-loopback listener, provide a private numeric bind address, a certificate/key pair, and a token file:
+
+```bash
+mercury web \
+  --bind <private-listener-address> \
+  --cert <certificate.pem> \
+  --key <private-key.pem> \
+  --token-file <token-file>
 ```
 
-The token stays in its local file and is never printed or persisted. Web mode
-does not expose peer-agent control.
+These are placeholders, not bundled credentials. The listener also validates the Host header, same-origin mutations, its session cookie and CSRF header, and bounded JSON request bodies. Web mode does not expose the peer-agent control surface.
 
-Completed local tasks can be compared only when their kind and model schema are
-compatible. Missing evidence means it was absent from one run, not that the
-network failed. Exports redact credentials unconditionally and redact
-hostnames, addresses, MACs and payloads by default.
+## Evidence semantics
 
-```powershell
-uv run --no-sync python -m mercury history list
-uv run --no-sync python -m mercury history compare <older-task-id> <newer-task-id>
-uv run --no-sync python -m mercury history export <task-id> --format html
+Every observation records an evidence kind, semantic disposition, direction, target, start/end time, duration, attempt number, provenance source, and bounded details. Conclusions reference their supporting observation IDs and add confidence, alternatives, and limitations.
+
+- Positive evidence means the selected exchange produced a defined response or a correlated peer arrival; it does not prove a broader topology or deployed tunnel.
+- Direct negative evidence, such as TCP refusal or ICMP unreachable, is kept separate from timeout and silence.
+- Timeout and silence are inconclusive. They are never rendered as a closed port, successful isolation, or failed network.
+- Unsupported, permission-denied, skipped, and not-applicable rows are coverage gaps or applicability statements, not negative reachability evidence.
+- A finite paired matrix can identify a tested candidate carrier. It cannot prove that every untested payload, state sequence, protocol, or tunnel is absent.
+
+See [Evidence Semantics](docs/EVIDENCE-SEMANTICS.md) for the normative interpretation guide and [Architecture](docs/ARCHITECTURE.md) for the shared execution path.
+
+## History and reports
+
+```bash
+mercury history list
+mercury history show <task-id>
+mercury history compare <older-task-id> <newer-task-id>
+mercury history export <task-id> --format html
 ```
 
-`--retain-sensitive` is an explicit local export choice for identifiers and
-payloads. It never retains credentials, tokens or private keys.
+Only compatible completed task kinds and model schemas can be compared. Missing evidence in one run means it was not recorded in that run, not that a network condition was proven. `--retain-sensitive` can retain identifiers and payloads in a local export, but never credentials, tokens, or private keys.
 
-## Safety and limitations
+## Documentation
 
-- Active work is normalized, authorized, admitted, rate-limited, and bounded
-  before it starts. Public, documentation, multicast, unspecified, and
-  broadcast destinations are rejected before I/O.
-- DNS, TCP, TLS, HTTP, native ping, and path observations retain separate
-  outcomes; silence and timeout are inconclusive, not success or failure.
-- Diagnosis conclusions cover only the selected endpoints and observed layers;
-  Mercury never makes a universal Internet or root-cause claim.
-- Tests use fakes and loopback only. They never resolve or connect to real
-  non-loopback targets.
-- SQLite history rejects credentials and secret material; reports repeat that
-  protection by default.
-- If a native command is absent or permission is insufficient, inspect the
-  capability evidence instead of treating the result as a connectivity claim.
-- A finite matrix can prove that one emitted carrier worked, or show a direct
-  profile-specific negative; it cannot prove that no arbitrary tunnel, packet
-  mutation, or unknown protocol can ever cross the boundary.
-- For a refused TCP connection, inspect the TCP observation; for timeouts or
-  UDP silence, treat the result as inconclusive and compare a controlled second
-  endpoint or route trace where authorized.
+| English | 简体中文 |
+| --- | --- |
+| [Getting Started](docs/GETTING-STARTED.md) | [入门指南](docs/zh-CN/GETTING-STARTED.md) |
+| [Architecture](docs/ARCHITECTURE.md) | [架构](docs/zh-CN/ARCHITECTURE.md) |
+| [Evidence Semantics](docs/EVIDENCE-SEMANTICS.md) | [证据语义](docs/zh-CN/EVIDENCE-SEMANTICS.md) |
+| [CLI Reference](docs/CLI-REFERENCE.md) | [CLI 参考](docs/zh-CN/CLI-REFERENCE.md) |
+| [Configuration](docs/CONFIGURATION.md) | [配置](docs/zh-CN/CONFIGURATION.md) |
+| [Deployment](docs/DEPLOYMENT.md) | [部署](docs/zh-CN/DEPLOYMENT.md) |
+| [Development](docs/DEVELOPMENT.md) | [开发](docs/zh-CN/DEVELOPMENT.md) |
+| [Testing](docs/TESTING.md) | [测试](docs/zh-CN/TESTING.md) |
+| [Contributing](CONTRIBUTING.md) | [贡献指南](CONTRIBUTING.zh-CN.md) |
+| [Security](SECURITY.md) | [安全](SECURITY.zh-CN.md) |
+| [Code of Conduct](CODE_OF_CONDUCT.md) | [行为准则](CODE_OF_CONDUCT.zh-CN.md) |
+| [Mercury network-diagnostics skill](skills/mercury-network-diagnostics/SKILL.md) | 同一技能文档 |
 
-## Verification and non-goals
+## Development and verification
 
-Run the controlled suite from a checkout:
+### Operator release smoke
 
-```powershell
-uv run --no-sync python -m unittest discover -s tests -v
-uv run --no-sync python -m compileall -q src tests
-uv run --no-sync ruff check src tests
-uv build
+The controlled test suite uses fakes, fixtures, and loopback; it does not contact real non-loopback targets and does not scan unowned networks.
+
+```bash
+python -m unittest discover -s tests -v
+python -m compileall -q src tests
+python -m build
 ```
 
-Tests use fakes, fixtures and loopback only. Mercury does not scan unowned
-networks, evade network controls, enumerate all packet kinds, identify an L2
-switch without direct evidence, provide a remote Web/peer control plane, or
-replace Nmap, iperf3, MTR, packet capture or centralized fleet management.
+## License
+
+See [LICENSE](LICENSE).

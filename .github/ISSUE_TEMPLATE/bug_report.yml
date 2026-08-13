@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible Mercury defect without publishing secrets or sensitive network data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Mercury. Redact addresses, hostnames, tokens, certificates, payloads, and organization details. Report security vulnerabilities through GitHub Security Advisories, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Mercury version
+      description: Output of `mercury version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Windows, Ubuntu, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include the command shape and redacted human-readable result.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Safety check
+      options:
+        - label: I tested only systems and private networks I was authorized to assess.
+          required: true
+        - label: I removed credentials, keys, tokens, certificates, and sensitive network identifiers.
+          required: true

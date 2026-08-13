@@ -129,7 +129,7 @@ class TargetPolicyTests(unittest.TestCase):
         for value in (
             "127.0.0.1",
             "10.20.30.40",
-            "172.27.20.195",
+            "172.20.30.40",
             "192.168.1.4",
             "::1",
             "fc00::1",

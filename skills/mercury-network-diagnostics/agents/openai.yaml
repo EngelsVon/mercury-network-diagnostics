@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mercury Network Diagnostics"
+  short_description: "Operate Mercury private-network diagnostics safely"
+  default_prompt: "Use $mercury-network-diagnostics to plan and run an authorized private-network reachability assessment."

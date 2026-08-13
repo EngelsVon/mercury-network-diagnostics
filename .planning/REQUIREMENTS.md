@@ -48,6 +48,7 @@
 - [x] **QUAL-02**: Controlled tests prove sender/receiver correlation and directional semantics for every supported coverage profile, including receiver-capability gaps and cross-subnet ARP/ND non-applicability. *(53 tests: paired, peer, reports; 2026-08-02.)*
 - [x] **QUAL-03**: Controlled tests prove Nmap argv/XML handling, CLI/Web shared-service routing, history safety, and peer trust controls without a real non-loopback scan. *(70 tests plus a wheel-install/import/help smoke; 2026-08-02.)*
 - [x] **DOC-01**: README, CLI help, Web copy, and release smoke instructions describe the supported coverage matrix, peer receiver prerequisites, hard ceilings, zero-duration semantics, Nmap capability limits, ARP/ND boundary, and assessment-gap semantics accurately. *(Documentation and UI/CLI tests; 2026-08-02.)*
+- [x] **DOC-02**: The open-source distribution provides equivalent English and Simplified Chinese operator, architecture, configuration, deployment, development, testing, security, and contribution guidance plus a validated Mercury agent skill. *(Open-source documentation release, 2026-08-13.)*
 
 ## v2 Requirements
 
@@ -98,14 +99,15 @@
 | QUAL-02 | Phase 5 | Complete |
 | QUAL-03 | Phase 5 | Complete |
 | DOC-01 | Phase 5 | Complete |
+| DOC-02 | Phase 6 | Complete |
 
 **Coverage:**
 
-- v1 requirements: 26 total
-- Mapped to phases: 26
+- v1 requirements: 27 total
+- Mapped to phases: 27
 - Unmapped: 0 ✅
 
 ---
 
 *Requirements defined: 2026-08-02*
-*Last updated: 2026-08-02 after Phase 5 controlled verification and release smoke*
+*Last updated: 2026-08-13 after the bilingual open-source documentation release*

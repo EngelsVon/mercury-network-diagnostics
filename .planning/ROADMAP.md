@@ -101,6 +101,24 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 **Plans:** 1 complete
 **UI hint:** yes
 
+## Phase 6: Bilingual Open-Source Release
+
+**Status:** Complete (2026-08-13)
+
+**Goal:** Publish a contributor-ready, bilingual Mercury repository with operator documentation and an installable intelligent-agent skill.
+
+**Requirements:** DOC-02
+
+**Success criteria:**
+
+1. English and Simplified Chinese documentation cover installation, architecture, CLI, configuration, deployment, evidence semantics, testing, contribution, conduct, and private vulnerability reporting.
+2. Apache-2.0 licensing, CI, dependency updates, issue forms, and pull-request guidance are present without publishing lab credentials or endpoint-specific configuration.
+3. A concise `mercury-network-diagnostics` skill contains operational guardrails, command patterns, evidence semantics, UI metadata, and passes the skill validator.
+4. Package metadata and public documentation point to the canonical GitHub repository.
+
+**Plans:** 1 inline documentation release complete
+**UI hint:** no
+
 ## Requirement Coverage
 
 | Requirement | Phase |
@@ -131,10 +149,11 @@ The coverage contract is defined in .planning/TUNNEL-COVERAGE.md. It requires re
 | QUAL-02 | 5 |
 | QUAL-03 | 5 |
 | DOC-01 | 5 |
+| DOC-02 | 6 |
 
-**Coverage:** 26 of 26 v1 requirements are mapped exactly once.
+**Coverage:** 27 of 27 v1 requirements are mapped exactly once.
 
 ---
 
 *Roadmap created: 2026-08-02*
-*Last updated: 2026-08-02 after completing executable plans for all internal-coverage phases*
+*Last updated: 2026-08-13 after completing the bilingual open-source release*

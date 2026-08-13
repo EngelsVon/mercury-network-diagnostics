@@ -8,7 +8,7 @@ See: `.planning/PROJECT.md` (updated 2026-08-02)
 every tested transport or application carrier that can convey a correlated
 message between two configured endpoints, and show the exact coverage gaps.
 
-**Current focus:** Milestone complete; ready for controlled operator deployment.
+**Current focus:** Milestone complete; bilingual open-source release prepared.
 
 ## Completed Work
 
@@ -23,6 +23,8 @@ message between two configured endpoints, and show the exact coverage gaps.
   coverage evidence/gap rendering.
 - Phase 5: requirement-focused controlled tests, package build, compilation,
   CLI help, and isolated wheel-install/import/help smoke.
+- Phase 6: Apache-2.0 open-source packaging, English/Chinese documentation,
+  GitHub community files, CI, and a validated intelligent-agent skill.
 
 ## Verification Evidence
 
@@ -55,6 +57,7 @@ message between two configured endpoints, and show the exact coverage gaps.
 | 3 | Multi-Range Internal Mapping Engine | Complete | MAP-01..04 |
 | 4 | Native Coverage and Operator Surfaces | Complete | NMAP-01..03, SURF-01..02, PEER-01, HIST-01 |
 | 5 | Verification, Documentation, and Release Migration | Complete | QUAL-01..03, DOC-01 |
+| 6 | Bilingual Open-Source Release | Complete | DOC-02 |
 
 ## Deployment Note
 
@@ -64,4 +67,4 @@ the supplied peer endpoint or any real non-loopback target.
 
 ---
 
-*Last updated: 2026-08-02 after Phase 5 completion.*
+*Last updated: 2026-08-13 after the bilingual open-source release.*

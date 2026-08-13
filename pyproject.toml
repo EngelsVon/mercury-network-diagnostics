@@ -7,18 +7,28 @@ name = "mercury-netdiag"
 dynamic = ["version"]
 description = "Evidence-first local and paired network reachability diagnostics"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = ["psutil>=7.0,<8"]
 authors = [{name = "Mercury contributors"}]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: System :: Networking",
 ]
+
+[project.urls]
+Homepage = "https://github.com/EngelsVon/mercury-network-diagnostics"
+Documentation = "https://github.com/EngelsVon/mercury-network-diagnostics#documentation"
+Issues = "https://github.com/EngelsVon/mercury-network-diagnostics/issues"
+Source = "https://github.com/EngelsVon/mercury-network-diagnostics"
 
 [project.scripts]
 mercury = "mercury.cli:main"
